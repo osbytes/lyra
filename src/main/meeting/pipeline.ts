@@ -24,6 +24,7 @@ import {
   type VoiceMatch
 } from '../voices'
 import { transcribePcm } from '../whisper'
+import { splitNotes, TRANSCRIPT_DIVIDER } from './notesFormat'
 import type { DiarizeResult, DiarizedSegment } from './protocol'
 import { diarize, embedVoice, ensureSpeakerModels } from './speakers'
 import { mixTracks, readWav } from './wav'
@@ -286,9 +287,14 @@ function enqueue(recording: MeetingRecording): void {
   })
 }
 
-/** Rewrites "Old:" speaker prefixes and the People line after a relabel. */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/** Rewrites "Old:" speaker prefixes, the People line, and names in the notes after a relabel. */
 function relabel(body: string, from: string, to: string, speakers: readonly MeetingSpeaker[]): string {
-  return body
+  const { notes, transcript } = splitNotes(body)
+  const lines = transcript
     .split('\n')
     .map((line) => {
       if (line.startsWith('People: ')) return peopleLine(speakers)
@@ -296,6 +302,9 @@ function relabel(body: string, from: string, to: string, speakers: readonly Meet
       return match?.[1] && match[2] === from ? `${match[1]}${to}: ${line.slice(match[0].length)}` : line
     })
     .join('\n')
+  if (!notes) return lines
+  const renamed = notes.replace(new RegExp(`\\b${escapeRegExp(from)}\\b`, 'g'), to)
+  return `${renamed}\n\n${TRANSCRIPT_DIVIDER}\n\n${lines}`
 }
 
 export async function assignSpeaker(

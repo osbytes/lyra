@@ -95,7 +95,7 @@ export type SpeakerAssignment =
 
 export type MeetingStatus = {
   pageId: string
-  state: 'downloading' | 'diarizing' | 'transcribing' | 'done' | 'error'
+  state: 'downloading' | 'diarizing' | 'transcribing' | 'summarizing' | 'done' | 'error'
   /** 0–1 within the current state. */
   progress: number
   message?: string
@@ -178,6 +178,11 @@ export type VoicePagesApi = {
   getMeetingSpeakers: (pageId: string) => Promise<MeetingSpeaker[] | null>
   assignSpeaker: (pageId: string, cluster: number, assignment: SpeakerAssignment) => Promise<void>
   onMeetingStatus: (callback: (status: MeetingStatus) => void) => () => void
+  /** (Re)writes the notes section at the top of a meeting note with the chosen engine. */
+  generateNotes: (pageId: string) => Promise<void>
+  hasClaudeKey: () => Promise<boolean>
+  /** Stores the key encrypted with the OS keychain; null removes it. */
+  setClaudeKey: (key: string | null) => Promise<void>
   copyText: (text: string) => void
   platform: string
   /** Downloads the model if needed and loads it into memory. */

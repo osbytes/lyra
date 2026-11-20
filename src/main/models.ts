@@ -5,9 +5,12 @@ import { join } from 'node:path'
 import { finished } from 'node:stream/promises'
 import { log } from './log'
 
-/** Where downloaded model files live: `userData/models`. */
+/**
+ * Where downloaded model files live: `userData/models`. Smoke tests can set
+ * LYRA_MODELS_DIR to reuse one download across throwaway profiles.
+ */
 export function modelsDir(): string {
-  return join(app.getPath('userData'), 'models')
+  return process.env.LYRA_MODELS_DIR ?? join(app.getPath('userData'), 'models')
 }
 
 export type DownloadProgress = (received: number, total: number) => void

@@ -78,6 +78,9 @@ const api: VoicePagesApi = {
   assignSpeaker: (pageId, cluster, assignment) =>
     ipcRenderer.invoke('meeting:assign', pageId, cluster, assignment),
   onMeetingStatus: (callback) => subscribe<MeetingStatus>('meeting:status', callback),
+  generateNotes: (pageId) => ipcRenderer.invoke('notes:generate', pageId),
+  hasClaudeKey: () => ipcRenderer.invoke('secrets:hasClaudeKey'),
+  setClaudeKey: (key) => ipcRenderer.invoke('secrets:setClaudeKey', key),
   copyText: (text) => clipboard.writeText(text),
   platform: process.platform,
   warmUp: () => ipcRenderer.invoke('whisper:warmUp'),

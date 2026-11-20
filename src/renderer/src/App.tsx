@@ -257,7 +257,11 @@ export default function App(): React.JSX.Element {
                   {words} {words === 1 ? 'word' : 'words'}
                   {words > 0 ? ` · ${readingMinutes(words)} min read` : ''}
                 </p>
-                <MeetingSpeakers pageId={current.id} body={current.body} />
+                <MeetingSpeakers
+                  pageId={current.id}
+                  body={current.body}
+                  notesEngine={settings?.notesEngine ?? 'off'}
+                />
                 <Editor
                   value={current.body}
                   ghost={dictation.live}

@@ -38,6 +38,8 @@ import {
 import { getSettings, onSettingsChanged, overrideSettings, updateSettings } from './settings'
 import { assignSpeaker, processMeeting, registerMeetingPipeline } from './meeting/pipeline'
 import { listPeople } from './voices'
+import { generateNotes, registerMeetingNotes } from './meeting/notes'
+import { stopNotesWorker } from './meeting/notesLocal'
 import { stopSpeakerWorker } from './meeting/speakers'
 import { registerRecorderIpc, trackPath } from './recorder'
 import { createTray } from './tray'
@@ -302,6 +304,17 @@ async function runMeetingFixture(wavPath: string): Promise<void> {
       throw new Error('relabel did not update the note or save the voice')
     }
     process.stdout.write('meeting-fixture: relabel ok\n')
+
+    // Optional: LYRA_NOTES_ENGINE=local|claude also writes meeting notes.
+    const engine = process.env.LYRA_NOTES_ENGINE
+    if (engine === 'local' || engine === 'claude') {
+      overrideSettings({ notesEngine: engine })
+      const notesStarted = Date.now()
+      await generateNotes(page.id)
+      const withNotes = await getPage(page.id)
+      const notesTook = ((Date.now() - notesStarted) / 1000).toFixed(1)
+      process.stdout.write(`meeting-fixture notes (${engine}, ${notesTook} s):\n${withNotes.body}\n`)
+    }
     app.exit(0)
   } catch (error) {
     console.error('meeting-fixture failed', error)
@@ -409,6 +422,7 @@ void app.whenReady().then(() => {
   registerSessionIpc()
   registerRecorderIpc()
   registerMeetingPipeline({ processRecordings: !isTestRun })
+  registerMeetingNotes()
   registerUpdater()
   if (!isTestRun) {
     createTray()
@@ -439,6 +453,7 @@ app.on('before-quit', () => {
 app.on('will-quit', () => {
   unregisterHotkeys()
   stopSpeakerWorker()
+  stopNotesWorker()
   stopMicPrompt()
 })
 

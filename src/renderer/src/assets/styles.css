@@ -1139,6 +1139,13 @@ kbd {
   backdrop-filter: blur(12px);
 }
 
+.settings-notice.is-warning {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--record-soft);
+  color: var(--text);
+}
+
 .settings-notice.is-error {
   color: var(--danger);
 }

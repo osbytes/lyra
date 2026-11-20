@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { MeetingSpeaker, MeetingStatus } from '../../../shared/types'
+import type { MeetingSpeaker, MeetingStatus, Settings } from '../../../shared/types'
 import { usePeople } from './People'
 
 const NEW_PERSON = '__new__'
@@ -8,11 +8,13 @@ function statusLabel(status: MeetingStatus): string {
   const pct = `${Math.round(status.progress * 100)}%`
   switch (status.state) {
     case 'downloading':
-      return `Downloading speaker models… ${pct}`
+      return `Downloading ${status.message ?? 'speaker models'}… ${pct}`
     case 'diarizing':
       return 'Finding who spoke when…'
     case 'transcribing':
       return `Transcribing each speaker… ${pct}`
+    case 'summarizing':
+      return 'Writing meeting notes…'
     case 'error':
       return `Couldn’t label speakers: ${status.message ?? 'unknown error'}`
     case 'done':
@@ -111,9 +113,15 @@ function SpeakerChip({ pageId, speaker }: { pageId: string; speaker: MeetingSpea
 }
 
 /** "Who's who" bar on a labeled meeting note: rename a speaker everywhere in one step. */
-export function MeetingSpeakers({ pageId, body }: { pageId: string; body: string }) {
+/** Must match TRANSCRIPT_DIVIDER in src/main/meeting/notesFormat.ts. */
+const TRANSCRIPT_DIVIDER = '──── Transcript ────'
+
+type Props = { pageId: string; body: string; notesEngine: Settings['notesEngine'] }
+
+export function MeetingSpeakers({ pageId, body, notesEngine }: Props) {
   const [speakers, setSpeakers] = useState<MeetingSpeaker[] | null>(null)
   const status = useMeetingStatus(pageId)
+  const busy = !!status && status.state !== 'done' && status.state !== 'error'
 
   const load = useCallback(() => {
     void window.api.getMeetingSpeakers(pageId).then(setSpeakers)
@@ -136,6 +144,20 @@ export function MeetingSpeakers({ pageId, body }: { pageId: string; body: string
           {speakers.map((speaker) => (
             <SpeakerChip key={speaker.cluster} pageId={pageId} speaker={speaker} />
           ))}
+          {notesEngine !== 'off' ? (
+            <button
+              className="btn ghost"
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                window.api.generateNotes(pageId).catch(() => {
+                  // Shown through the meeting status line.
+                })
+              }}
+            >
+              {body.includes(TRANSCRIPT_DIVIDER) ? 'Rewrite notes' : 'Write notes'}
+            </button>
+          ) : null}
         </>
       ) : null}
     </div>

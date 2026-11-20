@@ -18,6 +18,8 @@ asarUnpack:
   - '**/*.so.*'
   - node_modules/@kutalia/whisper-node-addon/**
   - node_modules/sherpa-onnx-*/**
+  - node_modules/node-llama-cpp/**
+  - node_modules/@node-llama-cpp/**
 win:
   icon: build/icon.png
   executableName: Lyra

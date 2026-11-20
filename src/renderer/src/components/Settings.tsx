@@ -210,6 +210,90 @@ function MeetingsSection({ settings, update }: Pick<Props, 'settings' | 'update'
   )
 }
 
+function MeetingNotesSection({ settings, update }: Pick<Props, 'settings' | 'update'>) {
+  const [hasKey, setHasKey] = useState(false)
+  const [key, setKey] = useState('')
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    void window.api.hasClaudeKey().then(setHasKey)
+  }, [])
+
+  const saveKey = async (value: string | null): Promise<void> => {
+    setError(null)
+    try {
+      await window.api.setClaudeKey(value)
+      setHasKey(value !== null)
+      setKey('')
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Could not save the key')
+    }
+  }
+
+  return (
+    <Section title="Meeting notes">
+      <Row label="Write notes after meetings" hint="A summary, decisions, action items, and open questions at the top of the note.">
+        <select
+          className="settings-select"
+          value={settings.notesEngine}
+          onChange={(event) => {
+            const value = event.target.value
+            if (value === 'off' || value === 'local' || value === 'claude') void update({ notesEngine: value })
+          }}
+        >
+          <option value="off">Off</option>
+          <option value="local">On this computer</option>
+          <option value="claude">With Claude</option>
+        </select>
+      </Row>
+      {settings.notesEngine === 'local' ? (
+        <p className="settings-notice">
+          Runs a small model on this computer — nothing leaves it. The first time downloads about
+          2 GB; long meetings can take a few minutes.
+        </p>
+      ) : null}
+      {settings.notesEngine === 'claude' ? (
+        <>
+          <p className="settings-notice is-warning">
+            Sends the meeting transcript to Anthropic’s API to write the notes. Audio and voiceprints
+            stay on this computer. Uses your own API key and is billed to your account.
+          </p>
+          <Row label="Claude API key" hint={hasKey ? 'Saved in your system keychain.' : 'From console.anthropic.com.'}>
+            {hasKey ? (
+              <button className="btn" type="button" onClick={() => void saveKey(null)}>
+                Remove key
+              </button>
+            ) : (
+              <>
+                <input
+                  className="settings-input"
+                  type="password"
+                  value={key}
+                  placeholder="sk-ant-…"
+                  autoComplete="off"
+                  onChange={(event) => {
+                    setKey(event.target.value)
+                  }}
+                  aria-label="Claude API key"
+                />
+                <button
+                  className="btn"
+                  type="button"
+                  disabled={!key.trim()}
+                  onClick={() => void saveKey(key)}
+                >
+                  Save
+                </button>
+              </>
+            )}
+          </Row>
+          {error ? <p className="settings-notice is-error">{error}</p> : null}
+        </>
+      ) : null}
+    </Section>
+  )
+}
+
 function PromptsSection({ settings, update }: Pick<Props, 'settings' | 'update'>) {
   const { enabled, ignoredApps } = settings.micPrompt
   const setPrompt = (patch: Partial<SettingsValue['micPrompt']>): void => {
@@ -291,6 +375,7 @@ export function SettingsDialog({ settings, update, onClose }: Props) {
           </Section>
           <ShortcutsSection settings={settings} update={update} />
           <MeetingsSection settings={settings} update={update} />
+          <MeetingNotesSection settings={settings} update={update} />
           <Section title="People">
             <PeopleSettings micDeviceId={settings.micDeviceId} />
           </Section>
