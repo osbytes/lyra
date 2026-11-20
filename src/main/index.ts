@@ -227,6 +227,14 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
           }
           const list = await window.api.listPages()
           if (!list.some((page) => page.id === created.id)) fail('page missing from list')
+
+          // Untitled: the body's first line must not turn into the title on reload.
+          const twoParagraphs = ['First line', '', 'Second'].join(String.fromCharCode(10))
+          await window.api.savePage({ id: created.id, title: 'Untitled', body: twoParagraphs })
+          const untitled = await window.api.getPage(created.id)
+          if (untitled.title !== 'Untitled' || untitled.body !== twoParagraphs) {
+            fail(fileFormat + ' untitled page did not round-trip: ' + JSON.stringify(untitled))
+          }
           await window.api.deletePage(created.id)
         }
 

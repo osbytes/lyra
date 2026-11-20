@@ -81,18 +81,23 @@ function parseFrontmatter(block: string): Record<string, string> {
 export function serializePage(page: Pick<Page, 'id' | 'title' | 'body' | 'updatedAt'>): string {
   if (formatOf(page.id) === 'txt') {
     const title = page.title.trim()
-    if (!title || title === 'Untitled') return page.body
+    // An empty first line means "no title", so the body's first line isn't read back as one.
+    if (!title || title === 'Untitled') return `\n${page.body}`
     return `${title.replace(/\r?\n/g, ' ')}\n\n${page.body}`
   }
   return `---\nid: ${page.id}\ntitle: ${JSON.stringify(page.title)}\nupdatedAt: ${page.updatedAt}\n---\n\n${page.body}`
 }
 
-/** `.txt`: the first line is the title, the rest is the body. */
+/** `.txt`: the first line is the title (blank = untitled), the rest is the body. */
 function parseText(raw: string, id: string, mtime: string): Page {
   const text = raw.startsWith(BOM) ? raw.slice(1) : raw
   const [line = ''] = text.split(/\r?\n/, 1)
   const first = line.trim()
-  if (!first || first.length > MAX_TITLE) {
+  if (!first) {
+    const body = text.slice(line.length).replace(/^\r?\n/, '')
+    return { id, title: 'Untitled', body, updatedAt: mtime }
+  }
+  if (first.length > MAX_TITLE) {
     return { id, title: 'Untitled', body: text, updatedAt: mtime }
   }
   const body = text.slice(line.length).replace(/^(?:\r?\n)+/, '')
