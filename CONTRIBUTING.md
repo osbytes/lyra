@@ -31,15 +31,9 @@ pnpm smoke:ui   # page create/save/list/delete through the UI bridge
 
 ## Release
 
-One command from a clean `main`:
+Every PR carries a changeset: run `pnpm changeset` and write the note for someone using Lyra (`pnpm changeset --empty` for docs-only or internal changes). CI refuses a PR without one.
 
-```bash
-pnpm release
-```
-
-That bumps the patch version, tags, and pushes. GitHub Actions builds the binaries and publishes the GitHub Release.
-
-Use `pnpm release minor` or `pnpm release major` when you want those. First public cut of `0.1.0`: `pnpm release current`.
+Merging to `main` keeps a "Release" PR open with the next version and `CHANGELOG.md`. Merging that PR tags `vX.Y.Z`, and GitHub Actions builds the installers and publishes the GitHub Release. The full flow is in [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Conduct
 

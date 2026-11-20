@@ -1,6 +1,7 @@
 {
   "name": "lyra",
-  "version": "0.1.1",
+  "version": "0.1.2",
+  "private": true,
   "description": "Lyra — a local voice notebook: talk onto pages, autosave markdown, all on device.",
   "main": "./out/main/index.js",
   "author": "Lyra contributors",
@@ -18,7 +19,9 @@
     "smoke": "electron scripts/smoke-native.cjs",
     "smoke:ui": "electron-vite build && node scripts/run-ui-smoke.cjs",
     "screenshot": "electron-vite build && node scripts/capture-screenshot.cjs",
-    "release": "node scripts/release.cjs",
+    "changeset": "changeset",
+    "release:version": "changeset version",
+    "release:tag": "sh scripts/release-tag.sh",
     "build:unpack": "pnpm build && electron-builder --dir --publish never",
     "build:win": "pnpm build && electron-builder --win --publish never",
     "build:mac": "pnpm build && electron-builder --mac --publish never",
@@ -30,6 +33,8 @@
     "electron-updater": "^6.8.9"
   },
   "devDependencies": {
+    "@changesets/changelog-github": "^1.0.1",
+    "@changesets/cli": "^3.0.3",
     "@electron-toolkit/tsconfig": "^2.0.0",
     "@types/node": "^22.19.1",
     "@types/react": "^19.2.7",
