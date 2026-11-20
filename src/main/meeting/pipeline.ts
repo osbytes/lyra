@@ -14,6 +14,7 @@ import { getSettings } from '../settings'
 import {
   addPerson,
   addSample,
+  cosine,
   deletePerson,
   getPerson,
   listPeople,
@@ -43,6 +44,8 @@ const SELF_MIC_SHARE = 0.67
 const MATCH_THRESHOLD = 0.5
 /** A match this strong is added to the person's voiceprint automatically. */
 const REINFORCE_THRESHOLD = 0.75
+/** Below this much total speech, a "speaker" is folded into the closest real one. */
+const MIN_SPEAKER_SECONDS = 2
 /** Clustering distance threshold for diarization. */
 const CLUSTER_THRESHOLD = 0.5
 const PROMPT_CHARS = 200
@@ -87,6 +90,43 @@ async function writeMeta(pageId: string, meta: MeetingMeta): Promise<void> {
   await mkdir(join(notesDir(), '.meta'), { recursive: true })
   await writeFile(`${path}.tmp`, JSON.stringify(meta), 'utf8')
   await rename(`${path}.tmp`, path)
+}
+
+/**
+ * Folds "speakers" with almost no speech into the closest-sounding real speaker.
+ * A voiceprint from a fraction of a second ("That's that.") is mostly noise, so the
+ * diarizer tends to give such a fragment its own cluster: a phantom extra person.
+ */
+export function mergeTinySpeakers(result: DiarizeResult): DiarizeResult {
+  const seconds = new Map<number, number>()
+  for (const segment of result.segments) {
+    seconds.set(segment.speaker, (seconds.get(segment.speaker) ?? 0) + segment.end - segment.start)
+  }
+  const real = result.clusters.filter((c) => (seconds.get(c.speaker) ?? 0) >= MIN_SPEAKER_SECONDS)
+  // With nobody past the bar there's nothing better to merge into.
+  if (real.length === 0) return result
+
+  const into = new Map<number, number>()
+  for (const cluster of result.clusters) {
+    if (real.includes(cluster)) continue
+    let best = real[0]
+    let bestScore = -Infinity
+    for (const candidate of real) {
+      const score = cosine(cluster.embedding, candidate.embedding)
+      if (score > bestScore) {
+        best = candidate
+        bestScore = score
+      }
+    }
+    if (best) into.set(cluster.speaker, best.speaker)
+  }
+  if (into.size === 0) return result
+  log('meeting', 'merged tiny speakers', Object.fromEntries(into))
+  return {
+    ...result,
+    segments: result.segments.map((s) => ({ ...s, speaker: into.get(s.speaker) ?? s.speaker })),
+    clusters: real
+  }
 }
 
 /** Joins each speaker's nearby segments into turns, split so none exceeds MAX_TURN_SECONDS. */
@@ -255,8 +295,9 @@ export async function processMeeting(recording: MeetingRecording): Promise<void>
     rtf: +((Date.now() - started) / 1000 / Math.max(1, result.seconds)).toFixed(3)
   })
 
-  const speakers = await nameSpeakers(result, recording.systemPath !== null)
-  const turns = buildTurns(result.segments)
+  const merged = mergeTinySpeakers(result)
+  const speakers = await nameSpeakers(merged, recording.systemPath !== null)
+  const turns = buildTurns(merged.segments)
   status('transcribing', 0)
   const lines = await transcribeTurns(recording, turns, speakers, (done) => {
     status('transcribing', done / Math.max(1, turns.length))
