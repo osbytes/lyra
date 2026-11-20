@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import type { PageSummary, UpdateStatus } from '../../../shared/types'
 import lyraIcon from '../assets/lyra-icon.png'
 import { relativeTime, shortcutLabel } from '../lib/format'
-import { PlusIcon, SearchIcon, TrashIcon } from './Icons'
+import { GearIcon, PlusIcon, SearchIcon, TrashIcon } from './Icons'
 
 type Props = {
   pages: PageSummary[]
@@ -11,6 +11,7 @@ type Props = {
   onOpen: (id: string) => void
   onCreate: () => void
   onDelete: (page: PageSummary) => void
+  onSettings: () => void
 }
 
 function updateLabel(status: UpdateStatus): string | null {
@@ -28,7 +29,15 @@ function updateLabel(status: UpdateStatus): string | null {
   }
 }
 
-export function Sidebar({ pages, activeId, update, onOpen, onCreate, onDelete }: Props) {
+export function Sidebar({
+  pages,
+  activeId,
+  update,
+  onOpen,
+  onCreate,
+  onDelete,
+  onSettings
+}: Props) {
   const [query, setQuery] = useState('')
 
   const visible = useMemo(() => {
@@ -100,8 +109,8 @@ export function Sidebar({ pages, activeId, update, onOpen, onCreate, onDelete }:
         )}
       </nav>
 
-      {label ? (
-        <div className="sidebar-footer">
+      <div className="sidebar-footer">
+        {label ? (
           <button
             className="update-chip"
             type="button"
@@ -111,8 +120,19 @@ export function Sidebar({ pages, activeId, update, onOpen, onCreate, onDelete }:
             <span className="update-dot" />
             {label}
           </button>
-        </div>
-      ) : null}
+        ) : (
+          <span />
+        )}
+        <button
+          className="icon-btn"
+          type="button"
+          onClick={onSettings}
+          title={`Settings (${shortcutLabel(',')})`}
+          aria-label="Settings"
+        >
+          <GearIcon />
+        </button>
+      </div>
     </aside>
   )
 }

@@ -5,5 +5,6 @@
 export function log(scope: string, message: string, data?: unknown): void {
   console.debug(`[${scope}] ${message}`, data ?? '')
   // Absent outside Electron (e.g. when the audio code runs under a test harness).
-  globalThis.window?.api?.log(scope, message, data)
+  const api = (globalThis as { window?: Partial<Window> }).window?.api
+  api?.log(scope, message, data)
 }

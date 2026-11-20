@@ -28,8 +28,8 @@ function canInstallInPlace(): boolean {
   const result = spawnSync('codesign', ['-dv', '--verbose=2', macAppBundle()], {
     encoding: 'utf8'
   })
-  const text = `${result.stdout ?? ''}${result.stderr ?? ''}`
-  return /Authority=Developer ID Application/.test(text)
+  const text = result.stdout + result.stderr
+  return text.includes('Authority=Developer ID Application')
 }
 
 function broadcast(status: UpdateStatus): void {
@@ -117,5 +117,5 @@ export function registerUpdater(): void {
     userInitiated = false
     void checkForUpdates()
   }, CHECK_EVERY_MS)
-  checkTimer.unref?.()
+  checkTimer.unref()
 }
