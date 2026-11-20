@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import type { Settings as SettingsValue } from '../../../shared/types'
+import type { HotkeyStatus, Settings as SettingsValue } from '../../../shared/types'
+import { HotkeyInput } from './HotkeyInput'
 import { CloseIcon, FolderIcon } from './Icons'
 import { MicrophoneSelect } from './MicrophoneSelect'
 
@@ -87,6 +88,50 @@ function NotesSection({ settings, update }: Pick<Props, 'settings' | 'update'>) 
   )
 }
 
+const DEFAULT_HOTKEY = 'CommandOrControl+Shift+Space'
+
+function ShortcutsSection({ settings, update }: Pick<Props, 'settings' | 'update'>) {
+  const [status, setStatus] = useState<HotkeyStatus | null>(null)
+
+  useEffect(() => {
+    void window.api.getHotkeyStatus().then(setStatus)
+    return window.api.onHotkeyStatus(setStatus)
+  }, [])
+
+  const problem =
+    status?.accelerator === settings.hotkey && !status.registered ? status.error : null
+
+  return (
+    <Section title="Shortcuts">
+      <Row
+        label="Start or stop dictation"
+        hint="Works from any app, even when Lyra is hidden. Starts a new note."
+      >
+        <HotkeyInput value={settings.hotkey} onChange={(hotkey) => void update({ hotkey })} />
+        {settings.hotkey !== DEFAULT_HOTKEY ? (
+          <button
+            className="btn"
+            type="button"
+            onClick={() => void update({ hotkey: DEFAULT_HOTKEY })}
+          >
+            Reset
+          </button>
+        ) : null}
+      </Row>
+      {problem ? <p className="settings-notice is-error">{problem}</p> : null}
+      <Row label="Open at login" hint="Keeps the shortcut available after a restart.">
+        <input
+          type="checkbox"
+          className="settings-toggle"
+          checked={settings.launchAtLogin}
+          onChange={(event) => void update({ launchAtLogin: event.target.checked })}
+          aria-label="Open Lyra at login"
+        />
+      </Row>
+    </Section>
+  )
+}
+
 export function SettingsDialog({ settings, update, onClose }: Props) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
@@ -121,6 +166,7 @@ export function SettingsDialog({ settings, update, onClose }: Props) {
               />
             </Row>
           </Section>
+          <ShortcutsSection settings={settings} update={update} />
         </div>
       </div>
     </div>

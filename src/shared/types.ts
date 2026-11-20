@@ -27,6 +27,26 @@ export type Settings = {
 
 export type MoveNotesResult = { moved: number; skipped: number }
 
+export type SessionKind = 'dictation' | 'meeting'
+export type SessionPhase = 'idle' | 'starting' | 'listening' | 'finishing'
+
+/** What the main window's recorder is doing; mirrored to the tray and the overlay. */
+export type SessionState = {
+  phase: SessionPhase
+  kind: SessionKind
+  /** Epoch ms when listening began, or null when idle. */
+  startedAt: number | null
+  micName: string
+}
+
+/** High-frequency recording feedback for the overlay pill. */
+export type OverlayFrame = { level: number; live: string }
+
+/** Sent from main to the main window's recorder. */
+export type SessionCommand = { type: 'toggle'; kind: SessionKind } | { type: 'stop' }
+
+export type HotkeyStatus = { accelerator: string; registered: boolean; error: string | null }
+
 export type PageSummary = {
   id: string
   title: string
@@ -70,6 +90,22 @@ export type VoicePagesApi = {
   /** Moves notes from the old folder into the current one. */
   moveNotes: (fromDir: string) => Promise<MoveNotesResult>
   revealNotesFolder: () => Promise<void>
+  /** Main window: commands from the tray, global hotkey, or overlay. */
+  onSessionCommand: (callback: (command: SessionCommand) => void) => () => void
+  /** Main window: report recorder state changes. */
+  reportSession: (state: SessionState) => void
+  /** Main window: report level and live text (throttled by the caller). */
+  reportOverlayFrame: (frame: OverlayFrame) => void
+  /** Overlay: the recorder's current state, then follow changes with `onSessionState`. */
+  getSessionState: () => Promise<SessionState>
+  onSessionState: (callback: (state: SessionState) => void) => () => void
+  onOverlayFrame: (callback: (frame: OverlayFrame) => void) => () => void
+  /** Overlay: ask the recorder to stop. */
+  requestStop: () => void
+  /** Brings the main window to the front. */
+  showMainWindow: () => void
+  getHotkeyStatus: () => Promise<HotkeyStatus>
+  onHotkeyStatus: (callback: (status: HotkeyStatus) => void) => () => void
   copyText: (text: string) => void
   platform: string
   /** Downloads the model if needed and loads it into memory. */

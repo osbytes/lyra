@@ -47,6 +47,7 @@ export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
   const [notice, setNotice] = useState<string | null>(null)
 
   const session = useRef<Session | null>(null)
+  const starting = useRef<{ cancelled: boolean } | null>(null)
   const levelListeners = useRef(new Set<LevelListener>())
   const options = useRef({ getContext, onCommit, getDeviceId })
   options.current = { getContext, onCommit, getDeviceId }
@@ -59,7 +60,12 @@ export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
   }, [])
 
   const start = useCallback(async (): Promise<void> => {
-    if (session.current) return
+    if (session.current || starting.current) return
+    // Stop can arrive while the model warms up; this lets it cancel the start.
+    const attempt = { cancelled: false }
+    starting.current = attempt
+    // A function, so TypeScript doesn't assume the flag is unchanged across awaits.
+    const cancelled = (): boolean => attempt.cancelled
     setError(null)
     setNotice(null)
     setLive('')
@@ -86,10 +92,25 @@ export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
     }
 
     try {
-      const [{ stream, usedFallback }] = await Promise.all([
-        openMicrophone(options.current.getDeviceId()),
-        window.api.warmUp()
-      ])
+      // Open the mic and warm the model in parallel, but check for a cancel after each.
+      const warm = window.api.warmUp()
+      const { stream, usedFallback } = await openMicrophone(options.current.getDeviceId())
+      const releaseMic = (): void => {
+        stream.getTracks().forEach((track) => {
+          track.stop()
+        })
+        log('dictation', 'start cancelled')
+      }
+      if (cancelled()) {
+        releaseMic()
+        void warm.catch(() => undefined)
+        return
+      }
+      await warm
+      if (cancelled()) {
+        releaseMic()
+        return
+      }
       if (usedFallback) setNotice('Your chosen microphone isn’t available — using the default.')
       const streamer = new StreamingTranscriber(
         transcribe,
@@ -165,16 +186,28 @@ export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
       setMicName(capture.micName)
       setPhase('listening')
       log('dictation', 'listening')
+      // A stop that arrived while the audio graph was starting.
+      if (cancelled()) void stopRef.current()
     } catch (caught) {
       log('dictation', 'failed to start', String(caught))
       fail(caught)
       setPhase('idle')
+    } finally {
+      if (starting.current === attempt) starting.current = null
     }
   }, [])
 
   const stop = useCallback(async (): Promise<void> => {
     const current = session.current
-    if (!current) return
+    if (!current) {
+      if (starting.current) {
+        // Still warming up: give up on this start now rather than after the model loads.
+        starting.current.cancelled = true
+        starting.current = null
+        setPhase('idle')
+      }
+      return
+    }
     session.current = null
     log('dictation', 'stopping')
     setPhase('finishing')

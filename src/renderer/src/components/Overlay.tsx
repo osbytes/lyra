@@ -1,0 +1,101 @@
+import { useEffect, useRef, useState } from 'react'
+import type { SessionState } from '../../../shared/types'
+import { formatDuration } from '../lib/format'
+import { StopIcon } from './Icons'
+
+const BAR_COUNT = 16
+const LIVE_CHARS = 60
+
+function useNow(running: boolean): number {
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => {
+    if (!running) return
+    const timer = setInterval(() => {
+      setNow(Date.now())
+    }, 500)
+    return () => {
+      clearInterval(timer)
+    }
+  }, [running])
+  return now
+}
+
+/** The floating recording pill shown while Lyra's main window is out of view. */
+export function Overlay() {
+  const [state, setState] = useState<SessionState | null>(null)
+  const [live, setLive] = useState('')
+  const bars = useRef<(HTMLSpanElement | null)[]>([])
+
+  useEffect(() => {
+    // Subscribe first, then fetch, so a change in between isn't lost.
+    const stop = window.api.onSessionState(setState)
+    void window.api.getSessionState().then((initial) => {
+      setState((current) => current ?? initial)
+    })
+    return stop
+  }, [])
+
+  useEffect(() => {
+    const history = new Array<number>(BAR_COUNT).fill(0)
+    return window.api.onOverlayFrame((frame) => {
+      setLive(frame.live)
+      history.shift()
+      history.push(frame.level)
+      history.forEach((value, i) => {
+        const bar = bars.current[i]
+        if (bar) bar.style.transform = `scaleY(${0.15 + Math.min(1, value * 1.6) * 0.85})`
+      })
+    })
+  }, [])
+
+  const listening = state?.phase === 'listening'
+  const now = useNow(listening)
+  const elapsed = state?.startedAt ? Math.max(0, now - state.startedAt) : 0
+  const tail = live.length > LIVE_CHARS ? `…${live.slice(-LIVE_CHARS)}` : live
+
+  const label =
+    state?.phase === 'starting'
+      ? 'Warming up…'
+      : state?.phase === 'finishing'
+        ? 'Saving…'
+        : tail || (state?.kind === 'meeting' ? 'Recording meeting' : 'Listening')
+
+  return (
+    <div className="overlay-pill" role="status">
+      <button
+        type="button"
+        className="overlay-body"
+        onClick={() => {
+          window.api.showMainWindow()
+        }}
+        title="Open Lyra"
+      >
+        <span className={`overlay-dot${listening ? ' is-live' : ''}`} />
+        <span className="overlay-time">{formatDuration(elapsed)}</span>
+        <span className="overlay-bars" aria-hidden="true">
+          {Array.from({ length: BAR_COUNT }, (_, i) => (
+            <span
+              key={i}
+              ref={(el) => {
+                bars.current[i] = el
+              }}
+            />
+          ))}
+        </span>
+        <span className="overlay-live">{label}</span>
+      </button>
+      <button
+        type="button"
+        className="overlay-stop"
+        onClick={() => {
+          window.api.requestStop()
+        }}
+        disabled={!listening}
+        aria-label="Stop recording"
+        title="Stop recording"
+      >
+        <StopIcon />
+      </button>
+    </div>
+  )
+}

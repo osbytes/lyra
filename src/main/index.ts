@@ -24,7 +24,16 @@ import {
   savePage,
   startWatchingNotes
 } from './pages'
-import { getSettings, overrideSettings, updateSettings } from './settings'
+import { registerHotkeys, unregisterHotkeys } from './hotkey'
+import { registerOverlay, watchMainWindow } from './overlay'
+import {
+  getMainWindow,
+  registerSessionIpc,
+  setMainWindow,
+  showMainWindow
+} from './session'
+import { getSettings, onSettingsChanged, overrideSettings, updateSettings } from './settings'
+import { createTray } from './tray'
 import { registerUpdater } from './updater'
 import { broadcastStatus, pcmFromIpc, transcribePcm, warmUp } from './whisper'
 import { log, logPath } from './log'
@@ -45,6 +54,23 @@ if (isTestRun) {
       '---\nid: legacy-smoke\ntitle: "Legacy page"\nupdatedAt: 2025-01-01T00:00:00.000Z\n---\n\nold body'
     )
   }
+}
+
+/** Set once the user really quits, so closing the window can mean "hide" until then. */
+let quitting = false
+
+// One Lyra at a time: a second launch focuses the first instead.
+if (!isTestRun && !app.requestSingleInstanceLock()) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    showMainWindow()
+  })
+}
+
+function applyLoginItem(openAtLogin: boolean): void {
+  if (isTestRun || !app.isPackaged) return
+  app.setLoginItemSettings({ openAtLogin })
 }
 
 function appIcon(): Electron.NativeImage {
@@ -70,8 +96,19 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: true,
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      // Keep audio capture and transcription running while the window is hidden.
+      backgroundThrottling: false
     }
+  })
+  setMainWindow(mainWindow)
+  watchMainWindow(mainWindow)
+
+  // Closing the window hides it; Lyra keeps running in the tray for the global hotkey.
+  mainWindow.on('close', (event) => {
+    if (quitting || isTestRun) return
+    event.preventDefault()
+    mainWindow.hide()
   })
 
   if (process.env.VOICE_PAGES_SMOKE !== '1') {
@@ -271,13 +308,21 @@ void app.whenReady().then(() => {
   })
 
   app.on('browser-window-created', (_event, window) => {
-    // @electron-toolkit/utils types BrowserWindow from its own copy of electron's typings.
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-class-instance-assignment
     optimizer.watchWindowShortcuts(window)
   })
 
   registerIpc()
+  registerSessionIpc()
   registerUpdater()
+  if (!isTestRun) {
+    createTray()
+    registerHotkeys()
+    registerOverlay()
+    applyLoginItem(getSettings().launchAtLogin)
+    onSettingsChanged((next, prev) => {
+      if (next.launchAtLogin !== prev.launchAtLogin) applyLoginItem(next.launchAtLogin)
+    })
+  }
   void migrateLegacyPages().finally(() => {
     startWatchingNotes()
     createWindow()
@@ -285,8 +330,17 @@ void app.whenReady().then(() => {
   broadcastStatus({ state: 'idle' })
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    if (getMainWindow()) showMainWindow()
+    else createWindow()
   })
+})
+
+app.on('before-quit', () => {
+  quitting = true
+})
+
+app.on('will-quit', () => {
+  unregisterHotkeys()
 })
 
 app.on('window-all-closed', () => {

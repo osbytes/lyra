@@ -1,6 +1,10 @@
 import { clipboard, contextBridge, ipcRenderer } from 'electron'
 import type {
+  HotkeyStatus,
+  OverlayFrame,
   Page,
+  SessionCommand,
+  SessionState,
   Settings,
   UpdateStatus,
   VoicePagesApi,
@@ -34,6 +38,24 @@ const api: VoicePagesApi = {
   pickFolder: () => ipcRenderer.invoke('settings:pickFolder'),
   moveNotes: (fromDir) => ipcRenderer.invoke('notes:move', fromDir),
   revealNotesFolder: () => ipcRenderer.invoke('notes:reveal'),
+  onSessionCommand: (callback) => subscribe<SessionCommand>('session:command', callback),
+  reportSession: (state) => {
+    ipcRenderer.send('session:report', state)
+  },
+  reportOverlayFrame: (frame) => {
+    ipcRenderer.send('overlay:frame', frame)
+  },
+  getSessionState: () => ipcRenderer.invoke('session:get'),
+  onSessionState: (callback) => subscribe<SessionState>('session:state', callback),
+  onOverlayFrame: (callback) => subscribe<OverlayFrame>('overlay:frame', callback),
+  requestStop: () => {
+    ipcRenderer.send('session:requestStop')
+  },
+  showMainWindow: () => {
+    ipcRenderer.send('window:showMain')
+  },
+  getHotkeyStatus: () => ipcRenderer.invoke('hotkey:status'),
+  onHotkeyStatus: (callback) => subscribe<HotkeyStatus>('hotkey:status', callback),
   copyText: (text) => clipboard.writeText(text),
   platform: process.platform,
   warmUp: () => ipcRenderer.invoke('whisper:warmUp'),

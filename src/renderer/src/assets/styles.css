@@ -61,6 +61,103 @@ body {
   overflow: hidden;
 }
 
+/* Recording pill window */
+.is-overlay,
+.is-overlay body {
+  background: transparent;
+}
+
+.overlay-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 100vh;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: var(--shadow-dock);
+  -webkit-app-region: drag;
+}
+
+.overlay-body {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 6px 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  -webkit-app-region: no-drag;
+}
+
+.overlay-dot {
+  flex-shrink: 0;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.overlay-dot.is-live {
+  background: var(--record);
+  box-shadow: 0 0 0 4px var(--record-soft);
+}
+
+.overlay-time {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.overlay-bars {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 2px;
+  height: 20px;
+}
+
+.overlay-bars span {
+  width: 2px;
+  height: 100%;
+  border-radius: 1px;
+  background: var(--accent);
+  transform: scaleY(0.15);
+  transition: transform 80ms linear;
+}
+
+.overlay-live {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overlay-stop {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--record);
+  color: #fff;
+  -webkit-app-region: no-drag;
+}
+
+.overlay-stop:disabled {
+  opacity: 0.5;
+}
+
 button,
 input,
 textarea {
@@ -787,6 +884,35 @@ kbd {
   background: var(--surface);
   color: var(--text);
   font: inherit;
+}
+
+.hotkey-input {
+  min-width: 120px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-hover);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.hotkey-input.is-recording {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.settings-toggle {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+.settings-notice.is-error {
+  color: var(--danger);
 }
 
 .settings-notice {

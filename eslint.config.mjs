@@ -57,6 +57,9 @@ export default tseslint.config(
       '@typescript-eslint/no-confusing-void-expression': ['error', { ignoreArrowShorthand: true }],
       // `a || b` on strings is deliberate (empty string falls back), so allow it in ternaries.
       '@typescript-eslint/prefer-nullish-coalescing': ['error', { ignoreTernaryTests: true }],
+      // Electron hands out class instances from factories and events (Menu.buildFromTemplate,
+      // BrowserWindow from 'browser-window-created'), which this rule misreports as unsafe.
+      '@typescript-eslint/no-unsafe-class-instance-assignment': 'off',
       eqeqeq: ['error', 'always'],
       'no-console': ['warn', { allow: ['warn', 'error'] }]
     }

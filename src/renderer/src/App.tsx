@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { PageSummary, UpdateStatus, WhisperStatus } from '../../shared/types'
+import type { PageSummary, SessionKind, UpdateStatus, WhisperStatus } from '../../shared/types'
 import { DictationDock } from './components/DictationDock'
 import { Editor } from './components/Editor'
 import { CheckIcon, CopyIcon, PlusIcon } from './components/Icons'
@@ -10,6 +10,9 @@ import { usePages } from './hooks/usePages'
 import { useSettings } from './hooks/useSettings'
 import { readingMinutes, relativeTime, wordCount } from './lib/format'
 import { appendTranscript, promptFor } from './text/transcript'
+
+/** The overlay pill doesn't need every audio frame; ~12 updates a second look smooth. */
+const OVERLAY_FRAME_MS = 80
 
 function toMarkdown(title: string, body: string): string {
   return title && title !== 'Untitled' ? `# ${title}\n\n${body}` : body
@@ -68,12 +71,56 @@ export default function App(): React.JSX.Element {
     await flush()
   }, [stopDictation, flush])
 
+  const sessionKind = useRef<SessionKind>('dictation')
+
   /** Starts dictating into a new note named for this moment. */
-  const startSession = useCallback(async () => {
-    await stop()
-    await create({ startedAt: new Date().toISOString() })
-    await start()
-  }, [stop, create, start])
+  const startSession = useCallback(
+    async (kind: SessionKind = 'dictation') => {
+      await stop()
+      sessionKind.current = kind
+      await create({ startedAt: new Date().toISOString() })
+      await start()
+    },
+    [stop, create, start]
+  )
+
+  // Commands from the tray, the global hotkey, and the overlay pill.
+  const recordingRef = useRef(recording)
+  recordingRef.current = recording
+  useEffect(
+    () =>
+      window.api.onSessionCommand((command) => {
+        if (command.type === 'stop' || recordingRef.current) void stop()
+        else void startSession(command.kind)
+      }),
+    [stop, startSession]
+  )
+
+  // Mirror recorder state to main for the tray and the overlay pill.
+  const { phase, live, micName, subscribeLevel } = dictation
+  const listeningSince = useRef<number | null>(null)
+  useEffect(() => {
+    if (phase === 'listening') listeningSince.current ??= Date.now()
+    if (phase === 'idle') listeningSince.current = null
+    window.api.reportSession({
+      phase,
+      kind: sessionKind.current,
+      startedAt: listeningSince.current,
+      micName
+    })
+  }, [phase, micName])
+
+  const liveRef = useRef(live)
+  liveRef.current = live
+  useEffect(() => {
+    let last = 0
+    return subscribeLevel((level) => {
+      const now = performance.now()
+      if (now - last < OVERLAY_FRAME_MS) return
+      last = now
+      window.api.reportOverlayFrame({ level, live: liveRef.current })
+    })
+  }, [subscribeLevel])
 
   const toggleDictation = useCallback(() => {
     if (recording) void stop()
@@ -118,7 +165,7 @@ export default function App(): React.JSX.Element {
         toggleDictation()
       } else if (key === 'n' && event.shiftKey) {
         event.preventDefault()
-        void startSession()
+        void startSession('dictation')
       } else if (key === 'n') {
         event.preventDefault()
         void newPage()
