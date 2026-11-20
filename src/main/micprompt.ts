@@ -6,7 +6,7 @@ import { hidePrompt, showPrompt } from './overlay'
 import { isRecording, onSessionState, toggleSession } from './session'
 import { getSettings, onSettingsChanged, updateSettings } from './settings'
 
-const ANSWERS: readonly PromptAnswer[] = ['start', 'dismiss', 'ignore']
+const ANSWERS: readonly PromptAnswer[] = ['meeting', 'dictation', 'dismiss', 'ignore']
 
 /** Apps using the mic at the last poll. */
 let previous: MicUsers = new Set()
@@ -58,8 +58,8 @@ function answer(value: PromptAnswer): void {
   const name = current
   current = null
   hidePrompt()
-  if (value === 'start') {
-    toggleSession('dictation')
+  if (value === 'meeting' || value === 'dictation') {
+    toggleSession(value)
   } else if (value === 'ignore' && name) {
     const ignoredApps = [...getSettings().micPrompt.ignoredApps, name]
     void updateSettings({ micPrompt: { ...getSettings().micPrompt, ignoredApps } })

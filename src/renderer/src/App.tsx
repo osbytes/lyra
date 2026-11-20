@@ -14,6 +14,13 @@ import { appendTranscript, promptFor } from './text/transcript'
 /** The overlay pill doesn't need every audio frame; ~12 updates a second look smooth. */
 const OVERLAY_FRAME_MS = 80
 
+const MEETING_TITLE_FORMAT: Intl.DateTimeFormatOptions = {
+  month: 'short',
+  day: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit'
+}
+
 function toMarkdown(title: string, body: string): string {
   return title && title !== 'Untitled' ? `# ${title}\n\n${body}` : body
 }
@@ -78,10 +85,19 @@ export default function App(): React.JSX.Element {
     async (kind: SessionKind = 'dictation') => {
       await stop()
       sessionKind.current = kind
-      await create({ startedAt: new Date().toISOString() })
-      await start()
+      const startedAt = new Date()
+      const page = await create({ startedAt: startedAt.toISOString() })
+      if (kind === 'meeting') {
+        edit({ title: `Meeting · ${startedAt.toLocaleString(undefined, MEETING_TITLE_FORMAT)}` })
+        await start({
+          pageId: page.id,
+          systemAudio: settingsRef.current?.captureSystemAudio ?? true
+        })
+      } else {
+        await start()
+      }
     },
-    [stop, create, start]
+    [stop, create, start, edit]
   )
 
   // Commands from the tray, the global hotkey, and the overlay pill.
@@ -124,7 +140,10 @@ export default function App(): React.JSX.Element {
 
   const toggleDictation = useCallback(() => {
     if (recording) void stop()
-    else if (currentRef.current) void start()
+    else if (currentRef.current) {
+      sessionKind.current = 'dictation'
+      void start()
+    }
   }, [recording, stop, start, currentRef])
 
   const openPage = async (id: string): Promise<void> => {
@@ -251,6 +270,7 @@ export default function App(): React.JSX.Element {
               status={status}
               error={dictation.error}
               notice={dictation.notice}
+              kind={sessionKind.current}
               micDeviceId={settings?.micDeviceId ?? null}
               onMicChange={(micDeviceId) => void updateSettings({ micDeviceId })}
               subscribeLevel={dictation.subscribeLevel}

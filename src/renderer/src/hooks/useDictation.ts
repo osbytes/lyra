@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { openMicrophone, startCapture } from '../audio/capture'
+import { openMicrophone, openSystemAudio, startCapture } from '../audio/capture'
+import { MeetingRecorder } from '../audio/meetingRecorder'
 import { StreamingTranscriber } from '../audio/streaming'
 import { VoiceDetector } from '../audio/vad'
 import { log } from '../lib/log'
@@ -20,6 +21,9 @@ type Options = {
   /** Microphone to open, read when recording starts; `null` = system default. */
   getDeviceId: () => string | null
 }
+
+/** Extra work for a meeting: record the audio to disk, optionally with system audio. */
+export type MeetingOptions = { pageId: string; systemAudio: boolean }
 
 type Session = {
   stop: () => Promise<void>
@@ -59,7 +63,7 @@ export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
     }
   }, [])
 
-  const start = useCallback(async (): Promise<void> => {
+  const start = useCallback(async (meeting?: MeetingOptions): Promise<void> => {
     if (session.current || starting.current) return
     // Stop can arrive while the model warms up; this lets it cancel the start.
     const attempt = { cancelled: false }
@@ -112,6 +116,24 @@ export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
         return
       }
       if (usedFallback) setNotice('Your chosen microphone isn’t available — using the default.')
+
+      let system: MediaStream | null = null
+      let recorder: MeetingRecorder | null = null
+      if (meeting) {
+        system = meeting.systemAudio ? await openSystemAudio() : null
+        if (cancelled()) {
+          system?.getTracks().forEach((track) => {
+            track.stop()
+          })
+          releaseMic()
+          return
+        }
+        if (meeting.systemAudio && !system) {
+          setNotice('Couldn’t capture computer audio — recording your microphone only.')
+        }
+        recorder = await MeetingRecorder.start(meeting.pageId, system !== null)
+      }
+      const activeRecorder = recorder
       const streamer = new StreamingTranscriber(
         transcribe,
         {
@@ -152,6 +174,16 @@ export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
         (reason) => {
           setError(reason)
           void stopRef.current()
+        },
+        {
+          ...(system ? { system } : {}),
+          ...(activeRecorder
+            ? {
+                onTracks: (mic: Float32Array, other: Float32Array | null) => {
+                  activeRecorder.push(mic, other)
+                }
+              }
+            : {})
         }
       )
 
@@ -177,6 +209,7 @@ export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
         stop: async () => {
           clearInterval(heartbeat)
           capture.stop()
+          await activeRecorder?.stop()
           voice.flush()
           levelListeners.current.forEach((listener) => listener(0))
           await streamer.idle()

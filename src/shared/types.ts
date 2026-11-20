@@ -47,9 +47,27 @@ export type SessionCommand = { type: 'toggle'; kind: SessionKind } | { type: 'st
 
 /** "Another app started using the mic" prompt. `app` is '' when the app is unknown (macOS). */
 export type MicPrompt = { app: string }
-export type PromptAnswer = 'start' | 'dismiss' | 'ignore'
+export type PromptAnswer = 'meeting' | 'dictation' | 'dismiss' | 'ignore'
 
-export type HotkeyStatus = { accelerator: string; registered: boolean; error: string | null }
+export type HotkeyAction = SessionKind
+
+export type HotkeyStatus = {
+  action: HotkeyAction
+  accelerator: string
+  registered: boolean
+  error: string | null
+}
+
+export type AudioTrack = 'mic' | 'system'
+
+/** A finished meeting recording: 16 kHz mono 16-bit WAV files in `<notes>/.audio`. */
+export type MeetingRecording = {
+  pageId: string
+  micPath: string
+  /** null when system audio wasn't captured. */
+  systemPath: string | null
+  seconds: number
+}
 
 export type PageSummary = {
   id: string
@@ -111,8 +129,12 @@ export type VoicePagesApi = {
   requestStop: () => void
   /** Brings the main window to the front. */
   showMainWindow: () => void
-  getHotkeyStatus: () => Promise<HotkeyStatus>
-  onHotkeyStatus: (callback: (status: HotkeyStatus) => void) => () => void
+  getHotkeyStatus: () => Promise<HotkeyStatus[]>
+  onHotkeyStatus: (callback: (status: HotkeyStatus[]) => void) => () => void
+  /** Meeting audio: open WAV files for a page, append 16-bit PCM chunks, then finalize. */
+  startRecording: (pageId: string, withSystem: boolean) => Promise<void>
+  appendRecording: (track: AudioTrack, pcm16: Int16Array) => void
+  stopRecording: () => Promise<MeetingRecording | null>
   copyText: (text: string) => void
   platform: string
   /** Downloads the model if needed and loads it into memory. */

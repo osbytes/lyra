@@ -60,7 +60,12 @@ const api: VoicePagesApi = {
     ipcRenderer.send('window:showMain')
   },
   getHotkeyStatus: () => ipcRenderer.invoke('hotkey:status'),
-  onHotkeyStatus: (callback) => subscribe<HotkeyStatus>('hotkey:status', callback),
+  onHotkeyStatus: (callback) => subscribe<HotkeyStatus[]>('hotkey:status', callback),
+  startRecording: (pageId, withSystem) => ipcRenderer.invoke('recorder:start', pageId, withSystem),
+  appendRecording: (track, pcm16) => {
+    ipcRenderer.send('recorder:append', track, pcm16)
+  },
+  stopRecording: () => ipcRenderer.invoke('recorder:stop'),
   copyText: (text) => clipboard.writeText(text),
   platform: process.platform,
   warmUp: () => ipcRenderer.invoke('whisper:warmUp'),

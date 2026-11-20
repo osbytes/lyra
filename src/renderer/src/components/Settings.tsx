@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import type { HotkeyStatus, Settings as SettingsValue } from '../../../shared/types'
+import type { HotkeyAction, HotkeyStatus, Settings as SettingsValue } from '../../../shared/types'
 import { HotkeyInput } from './HotkeyInput'
 import { CloseIcon, FolderIcon } from './Icons'
 import { MicrophoneSelect } from './MicrophoneSelect'
@@ -88,44 +88,117 @@ function NotesSection({ settings, update }: Pick<Props, 'settings' | 'update'>) 
   )
 }
 
-const DEFAULT_HOTKEY = 'CommandOrControl+Shift+Space'
+const DEFAULT_HOTKEYS: Record<HotkeyAction, string> = {
+  dictation: 'CommandOrControl+Shift+Space',
+  meeting: 'CommandOrControl+Shift+M'
+}
+const HOTKEY_SETTING: Record<HotkeyAction, 'hotkey' | 'meetingHotkey'> = {
+  dictation: 'hotkey',
+  meeting: 'meetingHotkey'
+}
 
-function ShortcutsSection({ settings, update }: Pick<Props, 'settings' | 'update'>) {
-  const [status, setStatus] = useState<HotkeyStatus | null>(null)
-
-  useEffect(() => {
-    void window.api.getHotkeyStatus().then(setStatus)
-    return window.api.onHotkeyStatus(setStatus)
-  }, [])
-
-  const problem =
-    status?.accelerator === settings.hotkey && !status.registered ? status.error : null
-
+function HotkeyRow({
+  action,
+  label,
+  hint,
+  settings,
+  update,
+  status
+}: Pick<Props, 'settings' | 'update'> & {
+  action: HotkeyAction
+  label: string
+  hint: string
+  status: HotkeyStatus | undefined
+}) {
+  const key = HOTKEY_SETTING[action]
+  const value = settings[key]
+  const problem = status?.accelerator === value && !status.registered ? status.error : null
   return (
-    <Section title="Shortcuts">
-      <Row
-        label="Start or stop dictation"
-        hint="Works from any app, even when Lyra is hidden. Starts a new note."
-      >
-        <HotkeyInput value={settings.hotkey} onChange={(hotkey) => void update({ hotkey })} />
-        {settings.hotkey !== DEFAULT_HOTKEY ? (
+    <>
+      <Row label={label} hint={hint}>
+        <HotkeyInput value={value} onChange={(next) => void update({ [key]: next })} />
+        {value !== DEFAULT_HOTKEYS[action] ? (
           <button
             className="btn"
             type="button"
-            onClick={() => void update({ hotkey: DEFAULT_HOTKEY })}
+            onClick={() => void update({ [key]: DEFAULT_HOTKEYS[action] })}
           >
             Reset
           </button>
         ) : null}
       </Row>
       {problem ? <p className="settings-notice is-error">{problem}</p> : null}
-      <Row label="Open at login" hint="Keeps the shortcut available after a restart.">
+    </>
+  )
+}
+
+function ShortcutsSection({ settings, update }: Pick<Props, 'settings' | 'update'>) {
+  const [statuses, setStatuses] = useState<HotkeyStatus[]>([])
+
+  useEffect(() => {
+    void window.api.getHotkeyStatus().then(setStatuses)
+    return window.api.onHotkeyStatus(setStatuses)
+  }, [])
+
+  const statusOf = (action: HotkeyAction): HotkeyStatus | undefined =>
+    statuses.find((status) => status.action === action)
+
+  return (
+    <Section title="Shortcuts">
+      <HotkeyRow
+        action="dictation"
+        label="Start or stop dictation"
+        hint="Works from any app, even when Lyra is hidden. Starts a new note."
+        settings={settings}
+        update={update}
+        status={statusOf('dictation')}
+      />
+      <HotkeyRow
+        action="meeting"
+        label="Start or stop a meeting"
+        hint="Records your mic and the computer's audio, then labels who said what."
+        settings={settings}
+        update={update}
+        status={statusOf('meeting')}
+      />
+      <Row label="Open at login" hint="Keeps the shortcuts available after a restart.">
         <input
           type="checkbox"
           className="settings-toggle"
           checked={settings.launchAtLogin}
           onChange={(event) => void update({ launchAtLogin: event.target.checked })}
           aria-label="Open Lyra at login"
+        />
+      </Row>
+    </Section>
+  )
+}
+
+function MeetingsSection({ settings, update }: Pick<Props, 'settings' | 'update'>) {
+  return (
+    <Section title="Meetings">
+      <Row
+        label="Capture computer audio"
+        hint="Records the other side of calls (Zoom, Meet, Teams). On macOS this needs Screen Recording permission."
+      >
+        <input
+          type="checkbox"
+          className="settings-toggle"
+          checked={settings.captureSystemAudio}
+          onChange={(event) => void update({ captureSystemAudio: event.target.checked })}
+          aria-label="Capture computer audio in meetings"
+        />
+      </Row>
+      <Row
+        label="Keep meeting audio"
+        hint="Otherwise the recording is deleted once the transcript is labeled."
+      >
+        <input
+          type="checkbox"
+          className="settings-toggle"
+          checked={settings.keepMeetingAudio}
+          onChange={(event) => void update({ keepMeetingAudio: event.target.checked })}
+          aria-label="Keep meeting audio"
         />
       </Row>
     </Section>
@@ -212,6 +285,7 @@ export function SettingsDialog({ settings, update, onClose }: Props) {
             </Row>
           </Section>
           <ShortcutsSection settings={settings} update={update} />
+          <MeetingsSection settings={settings} update={update} />
           <PromptsSection settings={settings} update={update} />
         </div>
       </div>

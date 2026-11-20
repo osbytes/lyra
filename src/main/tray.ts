@@ -37,6 +37,18 @@ function buildMenu(state: SessionState): Menu {
             toggleSession('dictation')
           }
         },
+    ...(recording
+      ? []
+      : [
+          {
+            label: 'Start meeting',
+            accelerator: getSettings().meetingHotkey || undefined,
+            registerAccelerator: false,
+            click: () => {
+              toggleSession('meeting')
+            }
+          }
+        ]),
     { type: 'separator' },
     { label: 'Open Lyra', click: showMainWindow },
     {

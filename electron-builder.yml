@@ -36,6 +36,7 @@ mac:
   extendInfo:
     NSMicrophoneUsageDescription: Lyra records audio so it can transcribe your pages on this device.
     NSDocumentsFolderUsageDescription: Lyra stores your markdown pages on disk.
+    NSAudioCaptureUsageDescription: Lyra records the other side of your calls when you start a meeting.
   notarize: false
   target:
     - dmg

@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  desktopCapturer,
   dialog,
   ipcMain,
   nativeImage,
@@ -35,6 +36,7 @@ import {
   showMainWindow
 } from './session'
 import { getSettings, onSettingsChanged, overrideSettings, updateSettings } from './settings'
+import { registerRecorderIpc } from './recorder'
 import { createTray } from './tray'
 import { registerUpdater } from './updater'
 import { broadcastStatus, pcmFromIpc, transcribePcm, warmUp } from './whisper'
@@ -298,6 +300,15 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
           await window.api.deletePage(created.id)
         }
 
+        const meetingPage = await window.api.createPage()
+        await window.api.startRecording(meetingPage.id, false)
+        window.api.appendRecording('mic', new Int16Array(16000).fill(1000))
+        const recording = await window.api.stopRecording()
+        if (!recording || Math.abs(recording.seconds - 1) > 0.01 || recording.systemPath !== null) {
+          fail('meeting recording was wrong: ' + JSON.stringify(recording))
+        }
+        await window.api.deletePage(meetingPage.id)
+
         for (const bad of ['../escape.txt', '..\\\\escape.txt', '.hidden.txt', 'x/y.txt', 'note.exe']) {
           const rejected = await window.api.getPage(bad).then(() => false, () => true)
           if (!rejected) fail('path guard let through ' + bad)
@@ -329,6 +340,23 @@ void app.whenReady().then(() => {
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
     callback(permission === 'media' || permission === 'clipboard-sanitized-write')
   })
+  // Meetings ask for system audio via getDisplayMedia; answer with the loopback
+  // device and the primary screen (its video track is discarded) — no picker.
+  session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
+    if (request.frame?.top !== getMainWindow()?.webContents.mainFrame) {
+      callback({})
+      return
+    }
+    desktopCapturer.getSources({ types: ['screen'] }).then(
+      ([screen]) => {
+        callback(screen ? { video: screen, audio: 'loopback' } : {})
+      },
+      (error: unknown) => {
+        log('capture', 'could not list screens for system audio', String(error))
+        callback({})
+      }
+    )
+  })
 
   app.on('browser-window-created', (_event, window) => {
     optimizer.watchWindowShortcuts(window)
@@ -336,6 +364,7 @@ void app.whenReady().then(() => {
 
   registerIpc()
   registerSessionIpc()
+  registerRecorderIpc()
   registerUpdater()
   if (!isTestRun) {
     createTray()

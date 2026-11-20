@@ -25,17 +25,26 @@ function PromptCard({ prompt }: { prompt: MicPrompt }) {
   return (
     <div className="overlay-prompt" role="alertdialog" aria-label="Start a Lyra session?">
       <p>
-        {who} is using your microphone. Start a Lyra note?
+        {who} is using your microphone. Record it in Lyra?
       </p>
       <div className="overlay-prompt-actions">
         <button
           type="button"
           className="btn primary"
           onClick={() => {
-            window.api.answerMicPrompt('start')
+            window.api.answerMicPrompt('meeting')
           }}
         >
-          Start dictation
+          Record meeting
+        </button>
+        <button
+          type="button"
+          className="btn"
+          onClick={() => {
+            window.api.answerMicPrompt('dictation')
+          }}
+        >
+          Dictate
         </button>
         <button
           type="button"
