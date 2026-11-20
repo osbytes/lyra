@@ -16,13 +16,15 @@ function toMarkdown(title: string, body: string): string {
 }
 
 export default function App(): React.JSX.Element {
-  const { pages, current, currentRef, saveState, edit, open, create, remove } = usePages()
+  const { pages, current, currentRef, saveState, edit, open, create, remove, flush } = usePages()
   const [status, setStatus] = useState<WhisperStatus>({ state: 'idle' })
   const [update, setUpdate] = useState<UpdateStatus>({ state: 'idle' })
   const [copied, setCopied] = useState(false)
   const { settings, update: updateSettings } = useSettings()
   const [showSettings, setShowSettings] = useState(false)
   const closeSettings = useCallback(() => setShowSettings(false), [])
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
   const titleInput = useRef<HTMLInputElement>(null)
   const scroller = useRef<HTMLDivElement>(null)
 
@@ -55,8 +57,23 @@ export default function App(): React.JSX.Element {
     return page ? promptFor(page.title, page.body) : ''
   }, [currentRef])
 
-  const dictation = useDictation({ getContext, onCommit })
-  const { recording, stop, start } = dictation
+  const getDeviceId = useCallback(() => settingsRef.current?.micDeviceId ?? null, [])
+
+  const dictation = useDictation({ getContext, onCommit, getDeviceId })
+  const { recording, stop: stopDictation, start } = dictation
+
+  /** Stops recording and writes the page to disk right away, so the file is complete. */
+  const stop = useCallback(async () => {
+    await stopDictation()
+    await flush()
+  }, [stopDictation, flush])
+
+  /** Starts dictating into a new note named for this moment. */
+  const startSession = useCallback(async () => {
+    await stop()
+    await create({ startedAt: new Date().toISOString() })
+    await start()
+  }, [stop, create, start])
 
   const toggleDictation = useCallback(() => {
     if (recording) void stop()
@@ -99,7 +116,10 @@ export default function App(): React.JSX.Element {
       if (key === 'd' && event.shiftKey) {
         event.preventDefault()
         toggleDictation()
-      } else if (key === 'n' && !event.shiftKey) {
+      } else if (key === 'n' && event.shiftKey) {
+        event.preventDefault()
+        void startSession()
+      } else if (key === 'n') {
         event.preventDefault()
         void newPage()
       } else if (key === ',') {
@@ -109,7 +129,7 @@ export default function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [toggleDictation, newPage])
+  }, [toggleDictation, newPage, startSession])
 
   const words = current ? wordCount(current.body) : 0
 
@@ -183,6 +203,9 @@ export default function App(): React.JSX.Element {
               micName={dictation.micName}
               status={status}
               error={dictation.error}
+              notice={dictation.notice}
+              micDeviceId={settings?.micDeviceId ?? null}
+              onMicChange={(micDeviceId) => void updateSettings({ micDeviceId })}
               subscribeLevel={dictation.subscribeLevel}
               onToggle={toggleDictation}
             />

@@ -17,6 +17,8 @@ type Options = {
   getContext: () => string
   /** Called with each piece of confirmed text, in order. */
   onCommit: (text: string) => void
+  /** Microphone to open, read when recording starts; `null` = system default. */
+  getDeviceId: () => string | null
 }
 
 type Session = {
@@ -37,16 +39,17 @@ function transcribe(pcm: Float32Array, prompt: string) {
  * Confirmed words are handed to `onCommit` as soon as Whisper is sure of them;
  * `live` holds the words it is still deciding on, for display as ghost text.
  */
-export function useDictation({ getContext, onCommit }: Options) {
+export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
   const [phase, setPhase] = useState<DictationPhase>('idle')
   const [live, setLive] = useState('')
   const [micName, setMicName] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
 
   const session = useRef<Session | null>(null)
   const levelListeners = useRef(new Set<LevelListener>())
-  const options = useRef({ getContext, onCommit })
-  options.current = { getContext, onCommit }
+  const options = useRef({ getContext, onCommit, getDeviceId })
+  options.current = { getContext, onCommit, getDeviceId }
 
   const subscribeLevel = useCallback((listener: LevelListener) => {
     levelListeners.current.add(listener)
@@ -58,6 +61,7 @@ export function useDictation({ getContext, onCommit }: Options) {
   const start = useCallback(async (): Promise<void> => {
     if (session.current) return
     setError(null)
+    setNotice(null)
     setLive('')
     setPhase('starting')
 
@@ -82,7 +86,11 @@ export function useDictation({ getContext, onCommit }: Options) {
     }
 
     try {
-      const [stream] = await Promise.all([openMicrophone(), window.api.warmUp()])
+      const [{ stream, usedFallback }] = await Promise.all([
+        openMicrophone(options.current.getDeviceId()),
+        window.api.warmUp()
+      ])
+      if (usedFallback) setNotice('Your chosen microphone isn’t available — using the default.')
       const streamer = new StreamingTranscriber(
         transcribe,
         {
@@ -187,6 +195,7 @@ export function useDictation({ getContext, onCommit }: Options) {
     live,
     micName,
     error,
+    notice,
     start,
     stop,
     subscribeLevel

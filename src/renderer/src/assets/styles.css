@@ -496,7 +496,8 @@ kbd {
   pointer-events: auto;
 }
 
-.dock-error {
+.dock-error,
+.dock-notice {
   max-width: min(560px, 100%);
   margin: 0;
   padding: 10px 16px;
@@ -511,6 +512,25 @@ kbd {
   background: var(--record-soft);
   color: var(--danger);
   backdrop-filter: blur(12px);
+}
+
+.dock-notice {
+  background: var(--accent-soft);
+  color: var(--text);
+  backdrop-filter: blur(12px);
+}
+
+.dock-mic {
+  max-width: 180px;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  text-overflow: ellipsis;
 }
 
 .dock {

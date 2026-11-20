@@ -3,6 +3,7 @@ import type { WhisperStatus } from '../../../shared/types'
 import type { DictationPhase } from '../hooks/useDictation'
 import { formatDuration, shortcutLabel } from '../lib/format'
 import { MicIcon, StopIcon } from './Icons'
+import { MicrophoneSelect } from './MicrophoneSelect'
 
 const BAR_COUNT = 28
 
@@ -13,8 +14,11 @@ type Props = {
   micName: string
   status: WhisperStatus
   error: string | null
+  notice: string | null
   subscribeLevel: SubscribeLevel
   onToggle: () => void
+  micDeviceId: string | null
+  onMicChange: (deviceId: string | null) => void
 }
 
 /**
@@ -69,7 +73,7 @@ function statusText(phase: DictationPhase, status: WhisperStatus, micName: strin
 }
 
 export function DictationDock(props: Props) {
-  const { phase, micName, status, error, subscribeLevel, onToggle } = props
+  const { phase, micName, status, error, notice, subscribeLevel, onToggle } = props
   const listening = phase === 'listening'
   const busy = phase === 'starting' || phase === 'finishing'
   const elapsed = useElapsed(listening)
@@ -86,6 +90,10 @@ export function DictationDock(props: Props) {
       {error ? (
         <p className="dock-error" role="alert">
           {error}
+        </p>
+      ) : notice ? (
+        <p className="dock-notice" role="status">
+          {notice}
         </p>
       ) : null}
 
@@ -118,7 +126,14 @@ export function DictationDock(props: Props) {
             <Waveform subscribe={subscribeLevel} />
             <span className="dock-timer">{formatDuration(elapsed)}</span>
           </>
-        ) : null}
+        ) : (
+          <MicrophoneSelect
+            className="dock-mic"
+            value={props.micDeviceId}
+            onChange={props.onMicChange}
+            disabled={busy}
+          />
+        )}
       </div>
     </div>
   )

@@ -43,9 +43,16 @@ export type CaptureHandle = {
   stop: () => void
 }
 
-export async function openMicrophone(): Promise<MediaStream> {
-  const stream = await navigator.mediaDevices.getUserMedia({
+export type OpenedMicrophone = {
+  stream: MediaStream
+  /** The requested device was unavailable, so the system default was used. */
+  usedFallback: boolean
+}
+
+function requestMicrophone(deviceId: string | null): Promise<MediaStream> {
+  return navigator.mediaDevices.getUserMedia({
     audio: {
+      ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
       channelCount: 1,
       echoCancellation: false,
       noiseSuppression: true,
@@ -53,6 +60,27 @@ export async function openMicrophone(): Promise<MediaStream> {
     },
     video: false
   })
+}
+
+function isMissingDevice(error: unknown): boolean {
+  return (
+    error instanceof DOMException &&
+    (error.name === 'OverconstrainedError' || error.name === 'NotFoundError')
+  )
+}
+
+/** Opens `deviceId` (or the system default), falling back to the default if it's gone. */
+export async function openMicrophone(deviceId: string | null = null): Promise<OpenedMicrophone> {
+  let stream: MediaStream
+  let usedFallback = false
+  try {
+    stream = await requestMicrophone(deviceId)
+  } catch (error) {
+    if (!deviceId || !isMissingDevice(error)) throw error
+    log('capture', 'chosen microphone unavailable, using default', { deviceId })
+    stream = await requestMicrophone(null)
+    usedFallback = true
+  }
   const track = stream.getAudioTracks()[0]
   if (track?.readyState !== 'live') {
     stream.getTracks().forEach((t) => t.stop())
@@ -60,7 +88,7 @@ export async function openMicrophone(): Promise<MediaStream> {
       'The microphone did not start. Check System Settings → Privacy & Security → Microphone.'
     )
   }
-  return stream
+  return { stream, usedFallback }
 }
 
 /** Streams 16 kHz mono frames from `stream` to `onFrame` until stopped. */

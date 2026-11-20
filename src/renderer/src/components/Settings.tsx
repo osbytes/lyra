@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import type { Settings as SettingsValue } from '../../../shared/types'
 import { CloseIcon, FolderIcon } from './Icons'
+import { MicrophoneSelect } from './MicrophoneSelect'
 
 type Props = {
   settings: SettingsValue
@@ -112,6 +113,14 @@ export function SettingsDialog({ settings, update, onClose }: Props) {
         </header>
         <div className="modal-body">
           <NotesSection settings={settings} update={update} />
+          <Section title="Microphone">
+            <Row label="Input device" hint="Used for dictation and meetings.">
+              <MicrophoneSelect
+                value={settings.micDeviceId}
+                onChange={(micDeviceId) => void update({ micDeviceId })}
+              />
+            </Row>
+          </Section>
         </div>
       </div>
     </div>
