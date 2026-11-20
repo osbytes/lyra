@@ -3,9 +3,11 @@ import type { PageSummary, UpdateStatus, WhisperStatus } from '../../shared/type
 import { DictationDock } from './components/DictationDock'
 import { Editor } from './components/Editor'
 import { CheckIcon, CopyIcon, PlusIcon } from './components/Icons'
+import { SettingsDialog } from './components/Settings'
 import { Sidebar } from './components/Sidebar'
 import { useDictation } from './hooks/useDictation'
 import { usePages } from './hooks/usePages'
+import { useSettings } from './hooks/useSettings'
 import { readingMinutes, relativeTime, wordCount } from './lib/format'
 import { appendTranscript, promptFor } from './text/transcript'
 
@@ -18,6 +20,9 @@ export default function App(): React.JSX.Element {
   const [status, setStatus] = useState<WhisperStatus>({ state: 'idle' })
   const [update, setUpdate] = useState<UpdateStatus>({ state: 'idle' })
   const [copied, setCopied] = useState(false)
+  const { settings, update: updateSettings } = useSettings()
+  const [showSettings, setShowSettings] = useState(false)
+  const closeSettings = useCallback(() => setShowSettings(false), [])
   const titleInput = useRef<HTMLInputElement>(null)
   const scroller = useRef<HTMLDivElement>(null)
 
@@ -97,6 +102,9 @@ export default function App(): React.JSX.Element {
       } else if (key === 'n' && !event.shiftKey) {
         event.preventDefault()
         void newPage()
+      } else if (key === ',') {
+        event.preventDefault()
+        setShowSettings(true)
       }
     }
     window.addEventListener('keydown', onKey)
@@ -114,6 +122,7 @@ export default function App(): React.JSX.Element {
         onOpen={(id) => void openPage(id)}
         onCreate={() => void newPage()}
         onDelete={(page) => void deletePage(page)}
+        onSettings={() => setShowSettings(true)}
       />
 
       <main className="workspace">
@@ -183,7 +192,9 @@ export default function App(): React.JSX.Element {
             <h2>Talk your next post into existence</h2>
             <p>
               Create a page and start dictating. Everything is transcribed on this computer and
-              saved as Markdown. The first session downloads a ~150 MB speech model.
+              saved as files in{' '}
+              <code>{settings?.notesDir ?? 'your notes folder'}</code>. The first session
+              downloads a ~150 MB speech model.
             </p>
             <button className="btn primary" type="button" onClick={() => void newPage()}>
               <PlusIcon />
@@ -192,6 +203,10 @@ export default function App(): React.JSX.Element {
           </div>
         )}
       </main>
+
+      {showSettings && settings ? (
+        <SettingsDialog settings={settings} update={updateSettings} onClose={closeSettings} />
+      ) : null}
     </div>
   )
 }

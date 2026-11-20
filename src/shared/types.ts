@@ -5,6 +5,28 @@ export type Page = {
   updatedAt: string
 }
 
+export type NoteFormat = 'txt' | 'md'
+
+export type Settings = {
+  /** Absolute folder that holds the notes. Default `~/.lyra`. */
+  notesDir: string
+  /** Format used for new notes; both are always readable. */
+  fileFormat: NoteFormat
+  /** `null` = the system default microphone. */
+  micDeviceId: string | null
+  /** Electron accelerators for the global shortcuts. */
+  hotkey: string
+  meetingHotkey: string
+  launchAtLogin: boolean
+  micPrompt: { enabled: boolean; ignoredApps: string[] }
+  keepMeetingAudio: boolean
+  captureSystemAudio: boolean
+  notesEngine: 'off' | 'local' | 'claude'
+  speakerMatchThreshold: number
+}
+
+export type MoveNotesResult = { moved: number; skipped: number }
+
 export type PageSummary = {
   id: string
   title: string
@@ -34,9 +56,20 @@ export type UpdateStatus =
 export type VoicePagesApi = {
   listPages: () => Promise<PageSummary[]>
   getPage: (id: string) => Promise<Page>
-  createPage: () => Promise<Page>
+  /** `startedAt` (ISO) names the file after a session's start time; defaults to now. */
+  createPage: (options?: { startedAt?: string }) => Promise<Page>
   savePage: (page: Pick<Page, 'id' | 'title' | 'body'>) => Promise<Page>
   deletePage: (id: string) => Promise<void>
+  /** Fires when files in the notes folder change outside of `savePage`. */
+  onPagesChanged: (callback: () => void) => () => void
+  getSettings: () => Promise<Settings>
+  updateSettings: (patch: Partial<Settings>) => Promise<Settings>
+  onSettingsChanged: (callback: (settings: Settings) => void) => () => void
+  /** Opens a folder picker; resolves to the chosen absolute path or null. */
+  pickFolder: () => Promise<string | null>
+  /** Moves notes from the old folder into the current one. */
+  moveNotes: (fromDir: string) => Promise<MoveNotesResult>
+  revealNotesFolder: () => Promise<void>
   copyText: (text: string) => void
   platform: string
   /** Downloads the model if needed and loads it into memory. */

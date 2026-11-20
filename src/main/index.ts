@@ -1,16 +1,50 @@
-import { app, BrowserWindow, ipcMain, nativeImage, nativeTheme, session, shell } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  nativeImage,
+  nativeTheme,
+  session,
+  shell
+} from 'electron'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import { createPage, deletePage, getPage, listPages, savePage } from './pages'
+import {
+  createPage,
+  deletePage,
+  getPage,
+  listPages,
+  migrateLegacyPages,
+  moveNotes,
+  notesDir,
+  savePage,
+  startWatchingNotes
+} from './pages'
+import { getSettings, overrideSettings, updateSettings } from './settings'
 import { registerUpdater } from './updater'
 import { broadcastStatus, pcmFromIpc, transcribePcm, warmUp } from './whisper'
 import { log, logPath } from './log'
-import type { Page } from '../shared/types'
+import type { Page, Settings } from '../shared/types'
 
-if (process.env.VOICE_PAGES_SMOKE === '1' || process.env.VOICE_PAGES_SCREENSHOT === '1') {
+const isTestRun =
+  process.env.VOICE_PAGES_SMOKE === '1' || process.env.VOICE_PAGES_SCREENSHOT === '1'
+
+if (isTestRun) {
   app.setPath('userData', join(tmpdir(), `voice-pages-smoke-${process.pid}`))
+  overrideSettings({ notesDir: join(app.getPath('userData'), 'notes') })
+  if (process.env.VOICE_PAGES_SMOKE === '1') {
+    // A pre-0.2 page in the old location, for the migration check.
+    const legacy = join(app.getPath('userData'), 'pages')
+    mkdirSync(legacy, { recursive: true })
+    writeFileSync(
+      join(legacy, 'legacy-smoke.md'),
+      '---\nid: legacy-smoke\ntitle: "Legacy page"\nupdatedAt: 2025-01-01T00:00:00.000Z\n---\n\nold body'
+    )
+  }
 }
 
 function appIcon(): Electron.NativeImage {
@@ -74,7 +108,31 @@ function createWindow(): void {
 function registerIpc(): void {
   ipcMain.handle('pages:list', () => listPages())
   ipcMain.handle('pages:get', (_event, id: string) => getPage(id))
-  ipcMain.handle('pages:create', () => createPage())
+  ipcMain.handle('pages:create', (_event, options: unknown) =>
+    createPage(options && typeof options === 'object' ? options : {})
+  )
+  ipcMain.handle('settings:get', () => getSettings())
+  ipcMain.handle('settings:update', (_event, patch: Partial<Settings>) => updateSettings(patch))
+  ipcMain.handle('settings:pickFolder', async (event) => {
+    const options: Electron.OpenDialogOptions = {
+      title: 'Choose notes folder',
+      defaultPath: notesDir(),
+      properties: ['openDirectory', 'createDirectory']
+    }
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const result = win
+      ? await dialog.showOpenDialog(win, options)
+      : await dialog.showOpenDialog(options)
+    return result.canceled ? null : (result.filePaths[0] ?? null)
+  })
+  ipcMain.handle('notes:move', (_event, fromDir: unknown) => {
+    if (typeof fromDir !== 'string') throw new Error('Invalid folder')
+    return moveNotes(fromDir)
+  })
+  ipcMain.handle('notes:reveal', async () => {
+    const error = await shell.openPath(notesDir())
+    if (error) throw new Error(error)
+  })
   ipcMain.handle('pages:save', (_event, page: Pick<Page, 'id' | 'title' | 'body'>) =>
     savePage(page)
   )
@@ -147,17 +205,31 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
   try {
     const result = await win.webContents.executeJavaScript(`
       (async () => {
-        const created = await window.api.createPage()
-        await window.api.savePage({ id: created.id, title: 'Smoke page', body: 'hello from smoke' })
-        const loaded = await window.api.getPage(created.id)
-        if (loaded.body !== 'hello from smoke') {
-          throw new Error('page body did not persist')
+        const fail = (message) => { throw new Error(message) }
+        const list0 = await window.api.listPages()
+        const legacy = list0.find((page) => page.id === 'legacy-smoke.md')
+        if (!legacy || legacy.title !== 'Legacy page') fail('legacy page was not migrated')
+
+        for (const fileFormat of ['txt', 'md']) {
+          await window.api.updateSettings({ fileFormat })
+          const created = await window.api.createPage({ startedAt: '2026-01-02T03:04:05' })
+          if (!created.id.startsWith('2026-01-02_03-04-05') || !created.id.endsWith('.' + fileFormat)) {
+            fail('unexpected file name ' + created.id)
+          }
+          await window.api.savePage({ id: created.id, title: 'Smoke page', body: 'hello from smoke' })
+          const loaded = await window.api.getPage(created.id)
+          if (loaded.title !== 'Smoke page' || loaded.body !== 'hello from smoke') {
+            fail(fileFormat + ' page did not round-trip: ' + JSON.stringify(loaded))
+          }
+          const list = await window.api.listPages()
+          if (!list.some((page) => page.id === created.id)) fail('page missing from list')
+          await window.api.deletePage(created.id)
         }
-        const list = await window.api.listPages()
-        if (!list.some((page) => page.id === created.id)) {
-          throw new Error('page missing from list')
+
+        for (const bad of ['../escape.txt', '..\\\\escape.txt', '.hidden.txt', 'x/y.txt', 'note.exe']) {
+          const rejected = await window.api.getPage(bad).then(() => false, () => true)
+          if (!rejected) fail('path guard let through ' + bad)
         }
-        await window.api.deletePage(created.id)
         return 'ok'
       })()
     `)
@@ -191,7 +263,10 @@ app.whenReady().then(() => {
 
   registerIpc()
   registerUpdater()
-  createWindow()
+  void migrateLegacyPages().finally(() => {
+    startWatchingNotes()
+    createWindow()
+  })
   broadcastStatus({ state: 'idle' })
 
   app.on('activate', () => {
