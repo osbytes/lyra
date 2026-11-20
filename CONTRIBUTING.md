@@ -18,7 +18,7 @@ On macOS, grant microphone access when prompted. The first **Record** click down
 Run these before opening a pull request:
 
 ```bash
-pnpm typecheck
+pnpm check      # typecheck + lint (no `any`; see .agents/rules/typescript.md)
 pnpm smoke      # native Whisper addon loads in Electron
 pnpm smoke:ui   # page create/save/list/delete through the UI bridge
 ```

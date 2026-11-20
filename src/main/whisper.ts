@@ -4,7 +4,6 @@ import { createWriteStream } from 'node:fs'
 import { mkdir, rename, stat, unlink } from 'node:fs/promises'
 import { arch, platform } from 'node:os'
 import { join } from 'node:path'
-import { promisify } from 'node:util'
 import { finished } from 'node:stream/promises'
 import type { TranscriptWord, WhisperStatus } from '../shared/types'
 import { log } from './log'
@@ -55,8 +54,15 @@ function loadTranscribe(): TranscribeFn {
   const pkgRoot = join(require.resolve('@kutalia/whisper-node-addon/package.json'), '..')
   const addonPath = join(pkgRoot, 'dist', addonFolder(), 'whisper.node')
   const native = require(addonPath) as { whisper: NativeWhisper }
-  transcribeFn = promisify(native.whisper) as TranscribeFn
-  return transcribeFn
+  const run: TranscribeFn = (options) =>
+    new Promise((resolve, reject) => {
+      native.whisper(options, (error, result) => {
+        if (error) reject(error)
+        else resolve(result)
+      })
+    })
+  transcribeFn = run
+  return run
 }
 
 export async function modelExists(): Promise<boolean> {
@@ -81,14 +87,14 @@ export async function ensureModel(): Promise<void> {
       throw new Error(`Failed to download Whisper model (${response.status})`)
     }
 
-    const total = Number(response.headers.get('content-length') || 0)
+    const total = Number(response.headers.get('content-length') ?? 0)
     let received = 0
     broadcastStatus({ state: 'downloading', received, total })
 
     const file = createWriteStream(temp)
     const reader = response.body.getReader()
 
-    while (true) {
+    for (;;) {
       const { done, value } = await reader.read()
       if (done) break
       received += value.byteLength
@@ -113,7 +119,7 @@ export function pcmFromIpc(payload: unknown): Float32Array {
   if (payload instanceof ArrayBuffer) {
     bytes = new Uint8Array(payload)
   } else if (ArrayBuffer.isView(payload)) {
-    const view = payload as ArrayBufferView
+    const view = payload
     bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength)
   } else {
     throw new Error('Invalid audio payload from renderer')
@@ -133,7 +139,7 @@ const HALLUCINATIONS = new Set(['you', 'thank you', 'thanks for watching', 'bye'
 function seconds(stamp: unknown): number {
   const match = /^(\d+):(\d+):(\d+)[,.](\d+)$/.exec(String(stamp))
   if (!match) return 0
-  const [, h, m, s, ms] = match.map(Number)
+  const [, h = 0, m = 0, s = 0, ms = 0] = match.map(Number)
   return h * 3600 + m * 60 + s + ms / 1000
 }
 
@@ -144,7 +150,7 @@ function seconds(stamp: unknown): number {
  * [BLANK_AUDIO] or (music) are dropped.
  */
 function wordsFromTokens(result: { transcription?: unknown }): TranscriptWord[] {
-  const rows = Array.isArray(result?.transcription) ? result.transcription : []
+  const rows: unknown[] = Array.isArray(result.transcription) ? result.transcription : []
   const words: TranscriptWord[] = []
   let bracketDepth = 0
 
@@ -223,7 +229,7 @@ export function warmUp(): Promise<void> {
   warmed ??= ensureModel()
     .then(() => runSerial(() => runWhisper(new Float32Array(16000), '')))
     .then(() => undefined)
-    .catch((error) => {
+    .catch((error: unknown) => {
       warmed = null
       throw error
     })

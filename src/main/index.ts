@@ -81,14 +81,14 @@ function createWindow(): void {
   }
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    void shell.openExternal(details.url)
     return { action: 'deny' }
   })
 
-  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+  if (is.dev && process.env.ELECTRON_RENDERER_URL) {
+    void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    void mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
 
   if (process.env.VOICE_PAGES_SMOKE === '1') {
@@ -183,17 +183,21 @@ async function seedScreenshotPages(): Promise<void> {
 async function captureScreenshot(win: BrowserWindow): Promise<void> {
   try {
     await seedScreenshotPages()
-    await win.webContents.reload()
-    await new Promise<void>((resolve) => {
-      win.webContents.once('did-finish-load', () => resolve())
+    const reloaded = new Promise<void>((resolve) => {
+      win.webContents.once('did-finish-load', () => {
+        resolve()
+      })
     })
+    win.webContents.reload()
+    await reloaded
     await new Promise((resolve) => setTimeout(resolve, 600))
     const image = await win.webContents.capturePage()
     const outDir = join(__dirname, '../../docs')
     const outPath = join(outDir, 'screenshot.png')
     await mkdir(outDir, { recursive: true })
     await writeFile(outPath, image.toPNG())
-    console.log('screenshot:', outPath)
+    process.stdout.write(`screenshot: ${outPath}
+`)
     app.exit(0)
   } catch (error) {
     console.error('screenshot failed', error)
@@ -203,7 +207,7 @@ async function captureScreenshot(win: BrowserWindow): Promise<void> {
 
 async function runUiSmoke(win: BrowserWindow): Promise<void> {
   try {
-    const result = await win.webContents.executeJavaScript(`
+    const result: unknown = await win.webContents.executeJavaScript(`
       (async () => {
         const fail = (message) => { throw new Error(message) }
         const list0 = await window.api.listPages()
@@ -233,7 +237,8 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         return 'ok'
       })()
     `)
-    console.log('ui-smoke:', result)
+    process.stdout.write(`ui-smoke: ${String(result)}
+`)
     app.exit(0)
   } catch (error) {
     console.error('ui-smoke failed', error)
@@ -241,7 +246,7 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
   }
 }
 
-app.whenReady().then(() => {
+void app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.voicepages.app')
   log('app', `started ${app.getVersion()}`, { log: logPath() })
 
@@ -258,6 +263,8 @@ app.whenReady().then(() => {
   })
 
   app.on('browser-window-created', (_event, window) => {
+    // @electron-toolkit/utils types BrowserWindow from its own copy of electron's typings.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-class-instance-assignment
     optimizer.watchWindowShortcuts(window)
   })
 

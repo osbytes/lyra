@@ -64,8 +64,12 @@ const wordKey = (word: TranscriptWord): string => word.text.toLowerCase().replac
 
 function agreedPrefix(a: TranscriptWord[], b: TranscriptWord[]): number {
   let n = 0
-  while (n < a.length && n < b.length && wordKey(a[n]) === wordKey(b[n])) n++
-  return n
+  for (;;) {
+    const left = a[n]
+    const right = b[n]
+    if (!left || !right || wordKey(left) !== wordKey(right)) return n
+    n++
+  }
 }
 
 export class StreamingTranscriber {
@@ -184,9 +188,10 @@ export class StreamingTranscriber {
   }
 
   private commit(words: TranscriptWord[]): void {
-    if (!words.length) return
+    const lastWord = words.at(-1)
+    if (!lastWord) return
     this.committed.push(...words)
-    this.lastCommittedEnd = words.at(-1)!.end
+    this.lastCommittedEnd = lastWord.end
     this.events.onCommit(joinWords(words))
   }
 
@@ -207,7 +212,8 @@ export class StreamingTranscriber {
         for (const end of shift ? [done + shift, done - shift] : [done]) {
           if (end < n || end > words.length) continue
           if (words.slice(end - n, end).map(wordKey).join(' ') !== tail) continue
-          this.recoverPunctuation(words[end - 1])
+          const matched = words[end - 1]
+          if (matched) this.recoverPunctuation(matched)
           return words.slice(end)
         }
       }
@@ -225,10 +231,10 @@ export class StreamingTranscriber {
    * ("again" → later "again."). Commit the late punctuation on its own.
    */
   private recoverPunctuation(retranscribed: TranscriptWord): void {
-    const last = this.committed.at(-1)!
+    const last = this.committed.at(-1)
     // Only sentence ends: a late comma is usually Whisper hedging, not structure.
     const added = /[.!?]+$/.exec(retranscribed.text)?.[0]
-    if (!added || /[.,!?;:]$/.test(last.text)) return
+    if (!last || !added || /[.,!?;:]$/.test(last.text)) return
     last.text += added
     this.events.onCommit(added)
   }
@@ -245,10 +251,11 @@ export class StreamingTranscriber {
     const last = this.committed.findLastIndex((word) => SENTENCE_END.test(word.text))
     const boundary =
       last >= 0 ? last : this.length >= MAX_BUFFER ? this.committed.length - 1 : -1
+    const at = words[boundary]
     const next = words[boundary + 1]
-    if (boundary < 0 || !next) return
+    if (boundary < 0 || !at || !next) return
 
-    const cut = Math.min(words[boundary].end, next.start)
+    const cut = Math.min(at.end, next.start)
     const before = this.length
     this.trimTo(Math.round(cut * SAMPLE_RATE))
     log('stream', last >= 0 ? 'trimmed at sentence' : 'trimmed at word (buffer full)', {
@@ -264,6 +271,7 @@ export class StreamingTranscriber {
     this.length -= drop
     while (drop > 0) {
       const head = this.chunks[0]
+      if (!head) break
       if (head.length <= drop) {
         this.chunks.shift()
         drop -= head.length

@@ -54,7 +54,7 @@ export async function openMicrophone(): Promise<MediaStream> {
     video: false
   })
   const track = stream.getAudioTracks()[0]
-  if (!track || track.readyState !== 'live') {
+  if (track?.readyState !== 'live') {
     stream.getTracks().forEach((t) => t.stop())
     throw new Error(
       'The microphone did not start. Check System Settings → Privacy & Security → Microphone.'
@@ -101,13 +101,13 @@ export async function startCapture(
     if (!stopped && context.state !== 'running' && context.state !== 'closed') {
       context.resume().then(
         () => log('capture', `audio context resumed (${context.state})`),
-        (error) => log('capture', 'audio context resume failed', String(error))
+        (error: unknown) => log('capture', 'audio context resume failed', String(error))
       )
     }
   }
 
   const track = stream.getAudioTracks()[0]
-  const micName = track?.label || 'Microphone'
+  const micName = track?.label ? track.label : 'Microphone'
   if (track) {
     track.onmute = () => log('capture', 'microphone muted by the system', { micName })
     track.onunmute = () => log('capture', 'microphone unmuted', { micName })

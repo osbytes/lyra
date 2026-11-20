@@ -22,7 +22,7 @@ type Props = {
  * never re-render React (or the editor).
  */
 function Waveform({ subscribe }: { subscribe: SubscribeLevel }) {
-  const bars = useRef<Array<HTMLSpanElement | null>>([])
+  const bars = useRef<(HTMLSpanElement | null)[]>([])
 
   useEffect(() => {
     const history = new Array<number>(BAR_COUNT).fill(0)

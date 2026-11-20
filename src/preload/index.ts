@@ -7,8 +7,12 @@ import type {
   WhisperStatus
 } from '../shared/types'
 
-function subscribe<T>(channel: string, callback: (value: T) => void): () => void {
-  const listener = (_event: Electron.IpcRendererEvent, value: T): void => callback(value)
+// IPC payloads are typed by contract with main; this is the one place we trust them.
+// eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters
+function subscribe<T = undefined>(channel: string, callback: (value: T) => void): () => void {
+  const listener = (_event: Electron.IpcRendererEvent, value: T): void => {
+    callback(value)
+  }
   ipcRenderer.on(channel, listener)
   return () => {
     ipcRenderer.removeListener(channel, listener)
@@ -21,7 +25,9 @@ const api: VoicePagesApi = {
   createPage: (options) => ipcRenderer.invoke('pages:create', options ?? {}),
   savePage: (page) => ipcRenderer.invoke('pages:save', page),
   deletePage: (id) => ipcRenderer.invoke('pages:delete', id),
-  onPagesChanged: (callback) => subscribe<void>('pages:changed', () => callback()),
+  onPagesChanged: (callback) => subscribe('pages:changed', () => {
+      callback()
+    }),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   updateSettings: (patch) => ipcRenderer.invoke('settings:update', patch),
   onSettingsChanged: (callback) => subscribe<Settings>('settings:changed', callback),

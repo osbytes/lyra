@@ -20,6 +20,8 @@ const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/
 const NOTE_NAME = /^[^\\/.][^\\/]*\.(txt|md)$/i
 /** A `.txt` first line longer than this is treated as body text, not a title. */
 const MAX_TITLE = 200
+/** Byte-order mark some editors put at the start of text files. */
+const BOM = String.fromCharCode(0xfeff)
 
 export function notesDir(): string {
   return getSettings().notesDir
@@ -65,7 +67,8 @@ function parseFrontmatter(block: string): Record<string, string> {
       (value.startsWith("'") && value.endsWith("'"))
     ) {
       try {
-        value = JSON.parse(value)
+        const parsed: unknown = JSON.parse(value)
+        value = typeof parsed === 'string' ? parsed : value.slice(1, -1)
       } catch {
         value = value.slice(1, -1)
       }
@@ -86,24 +89,24 @@ export function serializePage(page: Pick<Page, 'id' | 'title' | 'body' | 'update
 
 /** `.txt`: the first line is the title, the rest is the body. */
 function parseText(raw: string, id: string, mtime: string): Page {
-  const text = raw.replace(/^﻿/, '')
-  const match = /^([^\r\n]*)(?:\r?\n|$)/.exec(text)
-  const first = match?.[1].trim() ?? ''
+  const text = raw.startsWith(BOM) ? raw.slice(1) : raw
+  const [line = ''] = text.split(/\r?\n/, 1)
+  const first = line.trim()
   if (!first || first.length > MAX_TITLE) {
     return { id, title: 'Untitled', body: text, updatedAt: mtime }
   }
-  const body = text.slice(match![0].length).replace(/^(?:\r?\n)+/, '')
+  const body = text.slice(line.length).replace(/^(?:\r?\n)+/, '')
   return { id, title: first, body, updatedAt: mtime }
 }
 
 function parseMarkdown(raw: string, id: string, mtime: string): Page {
-  const match = raw.match(FRONTMATTER)
+  const match = FRONTMATTER.exec(raw)
   if (!match) return { id, title: 'Untitled', body: raw, updatedAt: mtime }
-  const meta = parseFrontmatter(match[1])
+  const meta = parseFrontmatter(match[1] ?? '')
   return {
     id,
-    title: meta.title || 'Untitled',
-    updatedAt: meta.updatedAt || mtime,
+    title: meta.title?.trim() ? meta.title : 'Untitled',
+    updatedAt: meta.updatedAt?.trim() ? meta.updatedAt : mtime,
     body: raw.slice(match[0].length).replace(/^\r?\n/, '')
   }
 }
@@ -274,7 +277,7 @@ async function restartWatcher(): Promise<void> {
   watcher = null
   try {
     await ensurePagesDir()
-    watcher = watch(notesDir(), (_event, filename) => onFsEvent(filename ? String(filename) : null))
+    watcher = watch(notesDir(), (_event, filename) => onFsEvent(filename))
     watcher.on('error', (error) => log('pages', 'watcher error', String(error)))
   } catch (error) {
     log('pages', 'could not watch notes folder', String(error))

@@ -6,7 +6,7 @@ const PROMPT_CHARS = 300
  */
 const STYLE_SEED = 'Okay, so here are my thoughts, written out in full sentences.'
 
-const VOICE_COMMANDS: Array<[RegExp, string]> = [
+const VOICE_COMMANDS: [RegExp, string][] = [
   [/,?\s*\b(?:new|next) paragraph\b[.,!?]*\s*/gi, '\n\n'],
   [/,?\s*\bnew line\b[.,!?]*\s*/gi, '\n']
 ]
@@ -30,7 +30,7 @@ export function appendTranscript(body: string, chunk: string): string {
   if (!body.trim()) return capitalize(text.trimStart())
 
   const trimmed = body.trimEnd()
-  const endsLine = /\n$/.test(body) || /^\n/.test(text)
+  const endsLine = body.endsWith("\n") || text.startsWith("\n")
   const endsSentence = /[.!?:]["')\]]?$/.test(trimmed)
   const next = endsLine || endsSentence ? capitalize(text) : text
   const attaches = endsLine || /\s$/.test(body) || /^[.,!?;:]/.test(text)
