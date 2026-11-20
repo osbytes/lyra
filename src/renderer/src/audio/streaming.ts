@@ -179,8 +179,10 @@ export class StreamingTranscriber {
       live: joinWords(this.tentative).trim()
     })
 
-    if (finalizeAt !== undefined) this.trimTo(finalizeAt)
-    else if (overdue && !this.committed.length) {
+    if (finalizeAt !== undefined) {
+      this.trimTo(finalizeAt)
+      this.forgetCommitted()
+    } else if (overdue && !this.committed.length) {
       // Whisper heard (almost) nothing in a long stretch: keep only the recent audio.
       log('stream', 'nothing usable in a full buffer; discarding old audio', { bufferSec: secs(end) })
       this.trimTo(this.offset + this.length - MIN_TRIM)
@@ -191,8 +193,22 @@ export class StreamingTranscriber {
     const lastWord = words.at(-1)
     if (!lastWord) return
     this.committed.push(...words)
-    this.lastCommittedEnd = lastWord.end
+    // Whisper can stretch the last word's end far past the audio (to the end of its
+    // 30 s window). Unclamped, that would hide every later word from the timestamp fallback.
+    this.lastCommittedEnd = Math.min(lastWord.end, (this.offset + this.length) / SAMPLE_RATE)
     this.events.onCommit(joinWords(words))
+  }
+
+  /**
+   * After a finalize pass the buffer is empty, so no committed word can be in the
+   * next pass's audio. Move them all into the prompt; otherwise a word whose end time
+   * Whisper stretched survives the trim, never re-aligns, and blocks all later text.
+   */
+  private forgetCommitted(): void {
+    this.context = (this.context + joinWords(this.committed)).slice(-CONTEXT_CHARS * 2)
+    this.committed = []
+    this.tentative = []
+    this.lastCommittedEnd = this.offset / SAMPLE_RATE
   }
 
   /**
