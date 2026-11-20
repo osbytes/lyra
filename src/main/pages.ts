@@ -263,6 +263,11 @@ function markOwnWrite(id: string): void {
   ownWrites.set(id, Date.now())
 }
 
+/** Tells windows to reload notes after main rewrote one (e.g. a labeled meeting transcript). */
+export function notifyPagesChanged(): void {
+  broadcastChanged()
+}
+
 function broadcastChanged(): void {
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send('pages:changed')
 }

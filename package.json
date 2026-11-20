@@ -17,6 +17,7 @@
     "postinstall": "electron-builder install-app-deps && node scripts/fix-whisper-rpath.cjs",
     "smoke": "electron scripts/smoke-native.cjs",
     "smoke:ui": "electron-vite build && node scripts/run-ui-smoke.cjs",
+    "smoke:meeting": "electron-vite build && node scripts/run-meeting-smoke.cjs",
     "screenshot": "electron-vite build && node scripts/capture-screenshot.cjs",
     "release": "node scripts/release.cjs",
     "build:unpack": "pnpm build && electron-builder --dir --publish never",
@@ -31,7 +32,8 @@
   "dependencies": {
     "@electron-toolkit/utils": "^4.0.0",
     "@kutalia/whisper-node-addon": "^1.1.0",
-    "electron-updater": "^6.8.9"
+    "electron-updater": "^6.8.9",
+    "sherpa-onnx-node": "^2.0.2"
   },
   "devDependencies": {
     "@electron-toolkit/tsconfig": "^2.0.0",

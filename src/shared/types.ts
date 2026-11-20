@@ -23,6 +23,8 @@ export type Settings = {
   captureSystemAudio: boolean
   notesEngine: 'off' | 'local' | 'claude'
   speakerMatchThreshold: number
+  /** The one-time "get consent before recording others" notice was acknowledged. */
+  meetingNoticeSeen: boolean
 }
 
 export type MoveNotesResult = { moved: number; skipped: number }
@@ -67,6 +69,37 @@ export type MeetingRecording = {
   /** null when system audio wasn't captured. */
   systemPath: string | null
   seconds: number
+}
+
+/** A saved voice (voiceprint). Embeddings stay in main. */
+export type Person = {
+  id: string
+  name: string
+  /** The person using this computer; their mic track is labeled with this name. */
+  self: boolean
+  createdAt: string
+  /** How many voice samples the voiceprint is built from. */
+  samples: number
+}
+
+/** A speaker found in a meeting, as labeled in its transcript. */
+export type MeetingSpeaker = {
+  cluster: number
+  name: string
+  personId: string | null
+}
+
+/** Relabel a meeting speaker as a saved person, or under a new name (optionally saving their voice). */
+export type SpeakerAssignment =
+  | { personId: string }
+  | { name: string; remember: boolean }
+
+export type MeetingStatus = {
+  pageId: string
+  state: 'downloading' | 'diarizing' | 'transcribing' | 'done' | 'error'
+  /** 0–1 within the current state. */
+  progress: number
+  message?: string
 }
 
 export type PageSummary = {
@@ -135,6 +168,17 @@ export type VoicePagesApi = {
   startRecording: (pageId: string, withSystem: boolean) => Promise<void>
   appendRecording: (track: AudioTrack, pcm16: Int16Array) => void
   stopRecording: () => Promise<MeetingRecording | null>
+  listPeople: () => Promise<Person[]>
+  onPeopleChanged: (callback: (people: Person[]) => void) => () => void
+  /** Saves a voiceprint from ~20 s of 16 kHz mono speech. */
+  enrollPerson: (name: string, pcm: Float32Array, self: boolean) => Promise<Person>
+  renamePerson: (id: string, name: string) => Promise<void>
+  setSelfPerson: (id: string) => Promise<void>
+  deletePerson: (id: string) => Promise<void>
+  /** Speakers of a processed meeting note, or null if it isn't one. */
+  getMeetingSpeakers: (pageId: string) => Promise<MeetingSpeaker[] | null>
+  assignSpeaker: (pageId: string, cluster: number, assignment: SpeakerAssignment) => Promise<void>
+  onMeetingStatus: (callback: (status: MeetingStatus) => void) => () => void
   copyText: (text: string) => void
   platform: string
   /** Downloads the model if needed and loads it into memory. */

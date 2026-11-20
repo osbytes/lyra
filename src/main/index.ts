@@ -10,7 +10,7 @@ import {
   shell
 } from 'electron'
 import { mkdirSync, writeFileSync } from 'node:fs'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -36,7 +36,10 @@ import {
   showMainWindow
 } from './session'
 import { getSettings, onSettingsChanged, overrideSettings, updateSettings } from './settings'
-import { registerRecorderIpc } from './recorder'
+import { assignSpeaker, processMeeting, registerMeetingPipeline } from './meeting/pipeline'
+import { listPeople } from './voices'
+import { stopSpeakerWorker } from './meeting/speakers'
+import { registerRecorderIpc, trackPath } from './recorder'
 import { createTray } from './tray'
 import { registerUpdater } from './updater'
 import { broadcastStatus, pcmFromIpc, transcribePcm, warmUp } from './whisper'
@@ -44,7 +47,9 @@ import { log, logPath } from './log'
 import type { Page, Settings } from '../shared/types'
 
 const isTestRun =
-  process.env.VOICE_PAGES_SMOKE === '1' || process.env.VOICE_PAGES_SCREENSHOT === '1'
+  process.env.VOICE_PAGES_SMOKE === '1' ||
+  process.env.VOICE_PAGES_SCREENSHOT === '1' ||
+  !!process.env.LYRA_MEETING_FIXTURE
 
 if (isTestRun) {
   app.setPath('userData', join(tmpdir(), `voice-pages-smoke-${process.pid}`))
@@ -135,6 +140,13 @@ function createWindow(): void {
   if (process.env.VOICE_PAGES_SMOKE === '1') {
     mainWindow.webContents.once('did-finish-load', () => {
       void runUiSmoke(mainWindow)
+    })
+  }
+
+  const meetingFixture = process.env.LYRA_MEETING_FIXTURE
+  if (meetingFixture) {
+    mainWindow.webContents.once('did-finish-load', () => {
+      void runMeetingFixture(meetingFixture)
     })
   }
 
@@ -266,6 +278,37 @@ function checkConsentParser(): void {
   }
 }
 
+/**
+ * Dev check: runs the real speaker pipeline (models, diarization, Whisper) on a
+ * 16 kHz mono WAV and prints the labeled note. `pnpm smoke:meeting <file.wav>`
+ */
+async function runMeetingFixture(wavPath: string): Promise<void> {
+  try {
+    const page = await createPage()
+    const micPath = trackPath(page.id, 'mic')
+    await mkdir(join(micPath, '..'), { recursive: true })
+    await copyFile(wavPath, micPath)
+    const started = Date.now()
+    await processMeeting({ pageId: page.id, micPath, systemPath: null, seconds: 0 })
+    const labeled = await getPage(page.id)
+    const took = ((Date.now() - started) / 1000).toFixed(1)
+    process.stdout.write(`meeting-fixture (${took} s):\n${labeled.body}\n`)
+
+    // Name the first speaker and save their voice, as the speakers bar does.
+    await assignSpeaker(page.id, 0, { name: 'Fixture Person', remember: true })
+    const renamed = await getPage(page.id)
+    const people = await listPeople()
+    if (!renamed.body.includes('] Fixture Person: ') || people.length !== 1) {
+      throw new Error('relabel did not update the note or save the voice')
+    }
+    process.stdout.write('meeting-fixture: relabel ok\n')
+    app.exit(0)
+  } catch (error) {
+    console.error('meeting-fixture failed', error)
+    app.exit(1)
+  }
+}
+
 async function runUiSmoke(win: BrowserWindow): Promise<void> {
   try {
     checkConsentParser()
@@ -365,6 +408,7 @@ void app.whenReady().then(() => {
   registerIpc()
   registerSessionIpc()
   registerRecorderIpc()
+  registerMeetingPipeline({ processRecordings: !isTestRun })
   registerUpdater()
   if (!isTestRun) {
     createTray()
@@ -394,6 +438,7 @@ app.on('before-quit', () => {
 
 app.on('will-quit', () => {
   unregisterHotkeys()
+  stopSpeakerWorker()
   stopMicPrompt()
 })
 

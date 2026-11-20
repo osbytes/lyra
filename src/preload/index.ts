@@ -1,8 +1,10 @@
 import { clipboard, contextBridge, ipcRenderer } from 'electron'
 import type {
   HotkeyStatus,
+  MeetingStatus,
   MicPrompt,
   OverlayFrame,
+  Person,
   Page,
   SessionCommand,
   SessionState,
@@ -66,6 +68,16 @@ const api: VoicePagesApi = {
     ipcRenderer.send('recorder:append', track, pcm16)
   },
   stopRecording: () => ipcRenderer.invoke('recorder:stop'),
+  listPeople: () => ipcRenderer.invoke('people:list'),
+  onPeopleChanged: (callback) => subscribe<Person[]>('people:changed', callback),
+  enrollPerson: (name, pcm, self) => ipcRenderer.invoke('people:enroll', name, pcm, self),
+  renamePerson: (id, name) => ipcRenderer.invoke('people:rename', id, name),
+  setSelfPerson: (id) => ipcRenderer.invoke('people:setSelf', id),
+  deletePerson: (id) => ipcRenderer.invoke('people:delete', id),
+  getMeetingSpeakers: (pageId) => ipcRenderer.invoke('meeting:speakers', pageId),
+  assignSpeaker: (pageId, cluster, assignment) =>
+    ipcRenderer.invoke('meeting:assign', pageId, cluster, assignment),
+  onMeetingStatus: (callback) => subscribe<MeetingStatus>('meeting:status', callback),
   copyText: (text) => clipboard.writeText(text),
   platform: process.platform,
   warmUp: () => ipcRenderer.invoke('whisper:warmUp'),

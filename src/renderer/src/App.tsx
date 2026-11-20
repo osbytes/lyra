@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PageSummary, SessionKind, UpdateStatus, WhisperStatus } from '../../shared/types'
 import { DictationDock } from './components/DictationDock'
 import { Editor } from './components/Editor'
+import { MeetingSpeakers } from './components/MeetingSpeakers'
 import { CheckIcon, CopyIcon, PlusIcon } from './components/Icons'
 import { SettingsDialog } from './components/Settings'
 import { Sidebar } from './components/Sidebar'
@@ -256,6 +257,7 @@ export default function App(): React.JSX.Element {
                   {words} {words === 1 ? 'word' : 'words'}
                   {words > 0 ? ` · ${readingMinutes(words)} min read` : ''}
                 </p>
+                <MeetingSpeakers pageId={current.id} body={current.body} />
                 <Editor
                   value={current.body}
                   ghost={dictation.live}
@@ -264,6 +266,18 @@ export default function App(): React.JSX.Element {
                 />
               </article>
             </div>
+            {dictation.recording && sessionKind.current === 'meeting' && settings && !settings.meetingNoticeSeen ? (
+              <div className="consent-banner" role="status">
+                Recording this meeting. Make sure everyone is OK with being recorded.
+                <button
+                  className="btn"
+                  type="button"
+                  onClick={() => void updateSettings({ meetingNoticeSeen: true })}
+                >
+                  Got it
+                </button>
+              </div>
+            ) : null}
             <DictationDock
               phase={dictation.phase}
               micName={dictation.micName}

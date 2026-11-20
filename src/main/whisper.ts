@@ -1,14 +1,14 @@
-import { app, BrowserWindow } from 'electron'
+import { BrowserWindow } from 'electron'
 import { createRequire } from 'node:module'
-import { createWriteStream } from 'node:fs'
-import { mkdir, rename, stat, unlink } from 'node:fs/promises'
+import { stat } from 'node:fs/promises'
 import { arch, platform } from 'node:os'
 import { join } from 'node:path'
-import { finished } from 'node:stream/promises'
 import type { TranscriptWord, WhisperStatus } from '../shared/types'
 import { log } from './log'
+import { ensureDownload, modelsDir } from './models'
 
 const MODEL_NAME = 'ggml-base.en.bin'
+const MIN_MODEL_BYTES = 10_000_000
 const MODEL_URL =
   'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin'
 
@@ -23,10 +23,6 @@ type TranscribeFn = (options: Record<string, unknown>) => Promise<{
 
 const require = createRequire(import.meta.url)
 let transcribeFn: TranscribeFn | null = null
-
-function modelsDir(): string {
-  return join(app.getPath('userData'), 'models')
-}
 
 export function modelPath(): string {
   return join(modelsDir(), MODEL_NAME)
@@ -68,7 +64,7 @@ function loadTranscribe(): TranscribeFn {
 export async function modelExists(): Promise<boolean> {
   try {
     const info = await stat(modelPath())
-    return info.size > 10_000_000
+    return info.size >= MIN_MODEL_BYTES
   } catch {
     return false
   }
@@ -76,41 +72,12 @@ export async function modelExists(): Promise<boolean> {
 
 export async function ensureModel(): Promise<void> {
   if (await modelExists()) return
-
-  await mkdir(modelsDir(), { recursive: true })
-  const dest = modelPath()
-  const temp = `${dest}.part`
-
   try {
-    const response = await fetch(MODEL_URL)
-    if (!response.ok || !response.body) {
-      throw new Error(`Failed to download Whisper model (${response.status})`)
-    }
-
-    const total = Number(response.headers.get('content-length') ?? 0)
-    let received = 0
-    broadcastStatus({ state: 'downloading', received, total })
-
-    const file = createWriteStream(temp)
-    const reader = response.body.getReader()
-
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      received += value.byteLength
+    await ensureDownload(MODEL_NAME, MODEL_URL, MIN_MODEL_BYTES, (received, total) => {
       broadcastStatus({ state: 'downloading', received, total })
-      if (!file.write(Buffer.from(value))) {
-        await new Promise<void>((resolve) => file.once('drain', resolve))
-      }
-    }
-
-    file.end()
-    await finished(file)
-    await rename(temp, dest)
+    })
+  } finally {
     broadcastStatus({ state: 'idle' })
-  } catch (error) {
-    await unlink(temp).catch(() => undefined)
-    throw error
   }
 }
 

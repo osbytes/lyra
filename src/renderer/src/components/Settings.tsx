@@ -3,6 +3,7 @@ import type { HotkeyAction, HotkeyStatus, Settings as SettingsValue } from '../.
 import { HotkeyInput } from './HotkeyInput'
 import { CloseIcon, FolderIcon } from './Icons'
 import { MicrophoneSelect } from './MicrophoneSelect'
+import { PeopleSettings } from './People'
 
 type Props = {
   settings: SettingsValue
@@ -189,6 +190,10 @@ function MeetingsSection({ settings, update }: Pick<Props, 'settings' | 'update'
           aria-label="Capture computer audio in meetings"
         />
       </Row>
+      <p className="settings-notice">
+        Recording other people usually requires their consent. Meeting audio, transcripts, and
+        voiceprints stay on this computer.
+      </p>
       <Row
         label="Keep meeting audio"
         hint="Otherwise the recording is deleted once the transcript is labeled."
@@ -286,6 +291,9 @@ export function SettingsDialog({ settings, update, onClose }: Props) {
           </Section>
           <ShortcutsSection settings={settings} update={update} />
           <MeetingsSection settings={settings} update={update} />
+          <Section title="People">
+            <PeopleSettings micDeviceId={settings.micDeviceId} />
+          </Section>
           <PromptsSection settings={settings} update={update} />
         </div>
       </div>

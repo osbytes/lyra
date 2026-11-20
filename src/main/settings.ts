@@ -18,7 +18,8 @@ export function defaultSettings(): Settings {
     keepMeetingAudio: false,
     captureSystemAudio: true,
     notesEngine: 'off',
-    speakerMatchThreshold: 0.6
+    speakerMatchThreshold: 0.6,
+    meetingNoticeSeen: false
   }
 }
 
@@ -51,7 +52,8 @@ const FIELD_CHECKS: { [K in FlatKey]: (value: unknown) => value is Settings[K] }
   launchAtLogin: isBool,
   keepMeetingAudio: isBool,
   captureSystemAudio: isBool,
-  notesEngine: oneOf('off', 'local', 'claude')
+  notesEngine: oneOf('off', 'local', 'claude'),
+  meetingNoticeSeen: isBool
 }
 
 /** Copies every well-formed field of `raw` onto `out`; anything else is ignored. */
