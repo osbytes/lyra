@@ -17,10 +17,11 @@ import {
   deletePerson,
   getPerson,
   listPeople,
-  matchVoice,
+  scoreVoices,
   renamePerson,
   selfPerson,
-  setSelf
+  setSelf,
+  type VoiceMatch
 } from '../voices'
 import { transcribePcm } from '../whisper'
 import type { DiarizeResult, DiarizedSegment } from './protocol'
@@ -33,6 +34,14 @@ const MERGE_GAP_SECONDS = 1
 const MAX_TURN_SECONDS = 25
 /** A speaker whose audio is mostly on the mic track is the person at this computer. */
 const SELF_MIC_SHARE = 0.67
+/**
+ * Cosine similarity needed to name a speaker from a saved voice. Different people
+ * score ~0.45 with this model; the same person across calls lands ~0.55–0.95,
+ * lower when the voiceprint is one short clip, so the bar sits just above strangers.
+ */
+const MATCH_THRESHOLD = 0.5
+/** A match this strong is added to the person's voiceprint automatically. */
+const REINFORCE_THRESHOLD = 0.75
 /** Clustering distance threshold for diarization. */
 const CLUSTER_THRESHOLD = 0.5
 const PROMPT_CHARS = 200
@@ -101,31 +110,53 @@ export function buildTurns(segments: readonly DiarizedSegment[]): Turn[] {
 
 /** Names each cluster: a saved voice, else "you" when it's mostly the mic track, else Speaker N. */
 async function nameSpeakers(result: DiarizeResult, hasSystemTrack: boolean): Promise<StoredSpeaker[]> {
-  const threshold = getSettings().speakerMatchThreshold
   const me = await selfPerson()
   const order = [...new Set([...result.segments].sort((a, b) => a.start - b.start).map((s) => s.speaker))]
 
-  const candidates = await Promise.all(
-    result.clusters.map(async (cluster) => ({ cluster, match: await matchVoice(cluster.embedding, threshold) }))
+  // Score every speaker against every saved voice, then hand out names best-first,
+  // so each person labels one speaker and each speaker gets at most one name.
+  const scored = await Promise.all(
+    result.clusters.map(async (cluster) => ({
+      speaker: cluster.speaker,
+      embedding: cluster.embedding,
+      scores: await scoreVoices(cluster.embedding)
+    }))
   )
-  // Each saved person labels at most one cluster: the best-scoring one.
-  const claimed = new Map<string, { speaker: number; score: number }>()
-  for (const { cluster, match } of candidates) {
-    if (!match) continue
-    const current = claimed.get(match.person.id)
-    if (!current || match.score > current.score) {
-      claimed.set(match.person.id, { speaker: cluster.speaker, score: match.score })
+  const assigned = new Map<number, VoiceMatch>()
+  const taken = new Set<string>()
+  const pairs = scored
+    .flatMap(({ speaker, scores }) => scores.map((match) => ({ speaker, match })))
+    .filter(({ match }) => match.score >= MATCH_THRESHOLD)
+    .sort((a, b) => b.match.score - a.match.score)
+  for (const { speaker, match } of pairs) {
+    if (assigned.has(speaker) || taken.has(match.person.id)) continue
+    assigned.set(speaker, match)
+    taken.add(match.person.id)
+  }
+  for (const { speaker, scores } of scored) {
+    const best = scores[0]
+    log('meeting', 'voice match', {
+      speaker,
+      best: best ? { name: best.person.name, score: +best.score.toFixed(3) } : null,
+      assigned: assigned.get(speaker)?.person.name ?? null
+    })
+  }
+  // Confident matches teach the voiceprint, so it keeps up with mics and rooms.
+  for (const { speaker, embedding } of scored) {
+    const match = assigned.get(speaker)
+    if (match && match.score >= REINFORCE_THRESHOLD && embedding.length) {
+      await addSample(match.person.id, embedding)
     }
   }
 
   const selfName = me?.name ?? 'Me'
   // The mic-track hint can't override a voice match that already found "me".
-  let selfAssigned = me ? claimed.has(me.id) : false
+  let selfAssigned = me ? taken.has(me.id) : false
   let unknown = 0
   const speakers: StoredSpeaker[] = []
   for (const speaker of order) {
     const cluster = result.clusters.find((entry) => entry.speaker === speaker)
-    const match = candidates.find((entry) => entry.cluster.speaker === speaker)?.match
+    const match = assigned.get(speaker)
     const own = result.segments.filter((segment) => segment.speaker === speaker)
     const duration = own.reduce((sum, s) => sum + (s.end - s.start), 0)
     const micShare = duration
@@ -134,7 +165,7 @@ async function nameSpeakers(result: DiarizeResult, hasSystemTrack: boolean): Pro
 
     let name: string
     let personId: string | null = null
-    if (match && claimed.get(match.person.id)?.speaker === speaker) {
+    if (match) {
       name = match.person.name
       personId = match.person.id
     } else if (hasSystemTrack && micShare >= SELF_MIC_SHARE && !selfAssigned) {

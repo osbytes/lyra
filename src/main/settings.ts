@@ -18,7 +18,6 @@ export function defaultSettings(): Settings {
     keepMeetingAudio: false,
     captureSystemAudio: true,
     notesEngine: 'off',
-    speakerMatchThreshold: 0.6,
     meetingNoticeSeen: false
   }
 }
@@ -40,7 +39,7 @@ const oneOf =
   (value: unknown): value is T =>
     values.includes(value as T)
 
-type FlatKey = Exclude<keyof Settings, 'micPrompt' | 'speakerMatchThreshold'>
+type FlatKey = Exclude<keyof Settings, 'micPrompt'>
 
 /** How to recognize a well-formed value for each top-level setting. */
 const FIELD_CHECKS: { [K in FlatKey]: (value: unknown) => value is Settings[K] } = {
@@ -61,11 +60,6 @@ function applyValidFields(raw: Record<string, unknown>, out: Settings): void {
   for (const key of Object.keys(FIELD_CHECKS) as FlatKey[]) {
     const value = raw[key]
     if (FIELD_CHECKS[key](value)) (out as Record<FlatKey, unknown>)[key] = value
-  }
-
-  const threshold = raw.speakerMatchThreshold
-  if (typeof threshold === 'number' && threshold > 0) {
-    out.speakerMatchThreshold = Math.min(0.99, threshold)
   }
 
   const prompt = raw.micPrompt as Record<string, unknown> | undefined

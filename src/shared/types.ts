@@ -22,7 +22,6 @@ export type Settings = {
   keepMeetingAudio: boolean
   captureSystemAudio: boolean
   notesEngine: 'off' | 'local' | 'claude'
-  speakerMatchThreshold: number
   /** The one-time "get consent before recording others" notice was acknowledged. */
   meetingNoticeSeen: boolean
 }

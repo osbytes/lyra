@@ -149,17 +149,19 @@ function mean(vectors: number[][]): number[] {
 
 export type VoiceMatch = { person: Person; score: number }
 
-/** The saved person whose voice is closest to `embedding`, if any clears `threshold`. */
-export async function matchVoice(
-  embedding: readonly number[],
-  threshold: number
-): Promise<VoiceMatch | null> {
-  let best: VoiceMatch | null = null
-  for (const person of await load()) {
-    const score = cosine(embedding, mean(person.embeddings))
-    if (score >= threshold && (!best || score > best.score)) best = { person: toPerson(person), score }
-  }
-  return best
+/**
+ * How close `embedding` is to each saved voice, best first. A person's score is the
+ * better of their averaged voiceprint and their closest single sample, so one good
+ * sample from a similar setup (same mic, same call app) still counts.
+ */
+export async function scoreVoices(embedding: readonly number[]): Promise<VoiceMatch[]> {
+  return (await load())
+    .map((person) => {
+      const samples = person.embeddings.map((sample) => cosine(embedding, sample))
+      const score = Math.max(cosine(embedding, mean(person.embeddings)), ...samples)
+      return { person: toPerson(person), score }
+    })
+    .sort((a, b) => b.score - a.score)
 }
 
 export async function selfPerson(): Promise<Person | null> {
