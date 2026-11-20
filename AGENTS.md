@@ -15,10 +15,13 @@ Roadmap: [docs/PLAN.md](docs/PLAN.md). Human contributor guide: [CONTRIBUTING.md
 | Typecheck + lint | `pnpm check` — must pass before every commit |
 | UI smoke test | `pnpm smoke:ui` (builds, launches Electron headless, exercises the IPC bridge) |
 | Native addon smoke | `pnpm smoke` (only needed when touching `src/main/whisper.ts` or native deps) |
+| Meeting pipeline smoke | `pnpm smoke:meeting <file.wav>`: real diarization, Whisper, and relabeling; `LYRA_NOTES_ENGINE=local` adds notes; `LYRA_MODELS_DIR` reuses downloads |
+| Package (Windows dir build) | `pnpm build:unpack`; runs `prepare:llama`, which ships node-llama-cpp as its own npm install |
 
 ## Layout
 
-- `src/main/` — Electron main process: files, settings, Whisper, updater. Node APIs live here only.
+- `src/main/` — Electron main process: files, settings, Whisper, tray/hotkeys/overlay, mic watcher, recorder, updater. Node APIs live here only.
+- `src/main/meeting/` — speaker pipeline (diarization worker, voiceprints) and meeting notes (local worker, Claude). Workers run in `utilityProcess`.
 - `src/preload/` — the `window.api` bridge. Thin: `ipcRenderer.invoke`/`on` wrappers, no logic.
 - `src/renderer/src/` — React UI, audio capture (`audio/`), hooks, text helpers. Browser APIs only.
 - `src/shared/types.ts` — types shared across processes, including the `VoicePagesApi` contract.

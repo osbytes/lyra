@@ -20,9 +20,6 @@ importers:
       electron-updater:
         specifier: ^6.8.9
         version: 6.8.9
-      node-llama-cpp:
-        specifier: ^3.22.3
-        version: 3.22.3(typescript@5.9.3)
       sherpa-onnx-node:
         specifier: ^2.0.2
         version: 2.0.2
@@ -63,6 +60,9 @@ importers:
       globals:
         specifier: ^17.14.0
         version: 17.14.0
+      node-llama-cpp:
+        specifier: 3.22.3
+        version: 3.22.3(typescript@5.9.3)
       react:
         specifier: ^19.2.1
         version: 19.3.0

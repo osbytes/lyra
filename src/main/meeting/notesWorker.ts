@@ -2,6 +2,9 @@
  * Local meeting-notes worker (utilityProcess): runs a small instruct model with
  * llama.cpp, constrained to the notes JSON schema so output always parses.
  */
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import type * as NodeLlamaCpp from 'node-llama-cpp'
 import type { Llama, LlamaModel } from 'node-llama-cpp'
 import { NOTES_SCHEMA, NOTES_SYSTEM_PROMPT } from './notesFormat'
 
@@ -18,12 +21,29 @@ export type NotesWorkerResponse =
 
 const CONTEXT_SIZE = 8192
 
+type LlamaModule = typeof NodeLlamaCpp
+
+/**
+ * Packaged builds ship node-llama-cpp as its own npm install in resources/llama
+ * (see scripts/prepare-llama.cjs); in development it comes from node_modules.
+ * It's ESM-only, so it's loaded with import() from this CommonJS bundle.
+ */
+let llamaModule: Promise<LlamaModule> | null = null
+function loadLlamaModule(): Promise<LlamaModule> {
+  if (!llamaModule) {
+    const packaged = join(process.resourcesPath, 'llama', 'node_modules', 'node-llama-cpp', 'dist', 'index.js')
+    llamaModule = process.env.LYRA_PACKAGED === '1'
+      ? (import(pathToFileURL(packaged).href) as Promise<LlamaModule>)
+      : import('node-llama-cpp')
+  }
+  return llamaModule
+}
+
 let llama: Llama | null = null
 let loaded: { path: string; model: LlamaModel } | null = null
 
 async function getModel(modelPath: string): Promise<{ llama: Llama; model: LlamaModel }> {
-  // node-llama-cpp is ESM-only; load it lazily from this CommonJS bundle.
-  const { getLlama } = await import('node-llama-cpp')
+  const { getLlama } = await loadLlamaModule()
   llama ??= await getLlama()
   if (loaded?.path !== modelPath) {
     await loaded?.model.dispose()
@@ -33,7 +53,7 @@ async function getModel(modelPath: string): Promise<{ llama: Llama; model: Llama
 }
 
 async function answer(request: NotesWorkerRequest): Promise<unknown[]> {
-  const { LlamaChatSession } = await import('node-llama-cpp')
+  const { LlamaChatSession } = await loadLlamaModule()
   const { llama: runtime, model } = await getModel(request.modelPath)
   const grammar = await runtime.createGrammarForJsonSchema(NOTES_SCHEMA)
   const results: unknown[] = []

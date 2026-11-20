@@ -21,12 +21,13 @@ Run these before opening a pull request:
 pnpm check      # typecheck + lint (no `any`; see .agents/rules/typescript.md)
 pnpm smoke      # native Whisper addon loads in Electron
 pnpm smoke:ui   # page create/save/list/delete through the UI bridge
+pnpm smoke:meeting <file.wav>   # real speaker pipeline on a 16 kHz mono WAV (downloads models)
 ```
 
 ## Pull requests
 
 - One change per PR. Say why, not just what.
-- Stay local-first: no cloud APIs, chat LLMs, or telemetry in v1.
+- Stay local-first: no telemetry, and nothing leaves the device by default. Cloud features must be explicit opt-ins with a clear warning (like Claude meeting notes).
 - Match the existing code style. Don’t reformat unrelated files.
 
 ## Release

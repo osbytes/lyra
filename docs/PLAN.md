@@ -2,6 +2,33 @@
 
 Source: Angel's and Dillon's notes.
 
+## Status (2026-11-20)
+
+All eight PRs are implemented as one stack (`gh stack`, stack #11):
+
+| PR | Scope | Status |
+| --- | --- | --- |
+| osbytes/lyra#8 | Settings, notes folder, .txt/.md, migration; agent docs + strict TS | Open |
+| osbytes/lyra#10 | Timestamped sessions, microphone picker | Open |
+| osbytes/lyra#12 | Tray, global hotkey, recording pill | Open |
+| osbytes/lyra#13 | "Mic in use" prompt | Open |
+| osbytes/lyra#14 | Meeting recording + system audio | Open |
+| osbytes/lyra#15 | Speaker labels + voiceprints | Open |
+| osbytes/lyra#16 | Meeting notes (local / Claude) | Open |
+| PR 8 | Docs, packaging fixes | Open |
+
+Still to validate by hand:
+- macOS end to end (menu bar, mic helper, ScreenCaptureKit loopback)
+- diarization on real meetings
+- Claude notes with a real API key
+
+Decisions made while building:
+- **File format:** `.txt` is the default and `.md` is optional; untitled `.txt` notes start with a blank line.
+- **New notes:** only hotkey and popup sessions create new files.
+- **Meeting notes:** generated locally by default, with Claude as an opt-in.
+- **Audio:** deleted after labeling unless "Keep meeting audio" is on.
+- **Speakers:** sherpa-onnx, after the diarization spike passed its gate (RTF 0.15–0.25 on synthetic audio).
+
 | Note | Feature |
 | --- | --- |
 | Save notes as `.txt` in a configurable folder, default `~/.lyra`. "Pick a location to dump files" / "top level directory that can be configured" | **1. Notes folder** |

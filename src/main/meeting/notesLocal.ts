@@ -1,4 +1,4 @@
-import { utilityProcess, type UtilityProcess } from 'electron'
+import { app, utilityProcess, type UtilityProcess } from 'electron'
 import { join } from 'node:path'
 import { log } from '../log'
 import { ensureDownload, type DownloadProgress } from '../models'
@@ -21,7 +21,8 @@ const pending = new Map<number, { resolve: (value: unknown[]) => void; reject: (
 function getWorker(): UtilityProcess {
   if (worker) return worker
   const child = utilityProcess.fork(join(__dirname, 'notesWorker.js'), [], {
-    serviceName: 'Lyra notes worker'
+    serviceName: 'Lyra notes worker',
+    env: { ...process.env, LYRA_PACKAGED: app.isPackaged ? '1' : '0' }
   })
   child.on('message', (message: NotesWorkerResponse) => {
     const entry = pending.get(message.id)
