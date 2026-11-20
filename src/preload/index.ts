@@ -1,6 +1,7 @@
 import { clipboard, contextBridge, ipcRenderer } from 'electron'
 import type {
   HotkeyStatus,
+  MicPrompt,
   OverlayFrame,
   Page,
   SessionCommand,
@@ -48,6 +49,10 @@ const api: VoicePagesApi = {
   getSessionState: () => ipcRenderer.invoke('session:get'),
   onSessionState: (callback) => subscribe<SessionState>('session:state', callback),
   onOverlayFrame: (callback) => subscribe<OverlayFrame>('overlay:frame', callback),
+  onMicPrompt: (callback) => subscribe<MicPrompt | null>('prompt:show', callback),
+  answerMicPrompt: (answer) => {
+    ipcRenderer.send('prompt:answer', answer)
+  },
   requestStop: () => {
     ipcRenderer.send('session:requestStop')
   },

@@ -132,6 +132,51 @@ function ShortcutsSection({ settings, update }: Pick<Props, 'settings' | 'update
   )
 }
 
+function PromptsSection({ settings, update }: Pick<Props, 'settings' | 'update'>) {
+  const { enabled, ignoredApps } = settings.micPrompt
+  const setPrompt = (patch: Partial<SettingsValue['micPrompt']>): void => {
+    void update({ micPrompt: { ...settings.micPrompt, ...patch } })
+  }
+  return (
+    <Section title="Prompts">
+      <Row
+        label="Offer to record when the mic turns on"
+        hint="When another app (Zoom, Teams, …) starts using your microphone, ask whether to start a note."
+      >
+        <input
+          type="checkbox"
+          className="settings-toggle"
+          checked={enabled}
+          onChange={(event) => {
+            setPrompt({ enabled: event.target.checked })
+          }}
+          aria-label="Offer to record when the mic turns on"
+        />
+      </Row>
+      {ignoredApps.length ? (
+        <Row label="Never ask for" hint="Apps you chose “Don’t ask” for.">
+          <ul className="settings-chips">
+            {ignoredApps.map((name) => (
+              <li key={name}>
+                {name}
+                <button
+                  type="button"
+                  aria-label={`Ask again for ${name}`}
+                  onClick={() => {
+                    setPrompt({ ignoredApps: ignoredApps.filter((entry) => entry !== name) })
+                  }}
+                >
+                  ×
+                </button>
+              </li>
+            ))}
+          </ul>
+        </Row>
+      ) : null}
+    </Section>
+  )
+}
+
 export function SettingsDialog({ settings, update, onClose }: Props) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
@@ -167,6 +212,7 @@ export function SettingsDialog({ settings, update, onClose }: Props) {
             </Row>
           </Section>
           <ShortcutsSection settings={settings} update={update} />
+          <PromptsSection settings={settings} update={update} />
         </div>
       </div>
     </div>

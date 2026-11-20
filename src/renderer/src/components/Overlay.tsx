@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { SessionState } from '../../../shared/types'
+import type { MicPrompt, SessionState } from '../../../shared/types'
 import { formatDuration } from '../lib/format'
 import { StopIcon } from './Icons'
 
@@ -20,8 +20,57 @@ function useNow(running: boolean): number {
   return now
 }
 
-/** The floating recording pill shown while Lyra's main window is out of view. */
+function PromptCard({ prompt }: { prompt: MicPrompt }) {
+  const who = prompt.app ? <strong>{prompt.app}</strong> : 'Another app'
+  return (
+    <div className="overlay-prompt" role="alertdialog" aria-label="Start a Lyra session?">
+      <p>
+        {who} is using your microphone. Start a Lyra note?
+      </p>
+      <div className="overlay-prompt-actions">
+        <button
+          type="button"
+          className="btn primary"
+          onClick={() => {
+            window.api.answerMicPrompt('start')
+          }}
+        >
+          Start dictation
+        </button>
+        <button
+          type="button"
+          className="btn"
+          onClick={() => {
+            window.api.answerMicPrompt('dismiss')
+          }}
+        >
+          Not now
+        </button>
+        {prompt.app ? (
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={() => {
+              window.api.answerMicPrompt('ignore')
+            }}
+          >
+            Don’t ask for {prompt.app}
+          </button>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+/** The floating window: the recording pill, or the "mic in use" prompt. */
 export function Overlay() {
+  const [prompt, setPrompt] = useState<MicPrompt | null>(null)
+  useEffect(() => window.api.onMicPrompt(setPrompt), [])
+  return prompt ? <PromptCard prompt={prompt} /> : <RecordingPill />
+}
+
+/** The floating recording pill shown while Lyra's main window is out of view. */
+function RecordingPill() {
   const [state, setState] = useState<SessionState | null>(null)
   const [live, setLive] = useState('')
   const bars = useRef<(HTMLSpanElement | null)[]>([])

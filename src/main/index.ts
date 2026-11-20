@@ -25,6 +25,8 @@ import {
   startWatchingNotes
 } from './pages'
 import { registerHotkeys, unregisterHotkeys } from './hotkey'
+import { registerMicPrompt, stopMicPrompt } from './micprompt'
+import { parseConsentStore } from './micwatch'
 import { registerOverlay, watchMainWindow } from './overlay'
 import {
   getMainWindow,
@@ -242,8 +244,29 @@ async function captureScreenshot(win: BrowserWindow): Promise<void> {
   }
 }
 
+/** Checks the Windows mic-usage parser against a captured `reg query` sample. */
+function checkConsentParser(): void {
+  const root =
+    'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\microphone'
+  const sample = [
+    `${root}\\MSTeams_8wekyb3d8bbwe`,
+    '    LastUsedTimeStop    REG_QWORD    0x0',
+    `${root}\\NonPackaged\\C:#Program Files#Zoom#bin#Zoom.exe`,
+    '    LastUsedTimeStop    REG_QWORD    0x0',
+    `${root}\\NonPackaged\\C:#Apps#Discord.exe`,
+    '    LastUsedTimeStop    REG_QWORD    0x1dd78ae61213e7e',
+    `${root}\\NonPackaged\\C:#Apps#Lyra#Lyra.exe`,
+    '    LastUsedTimeStop    REG_QWORD    0x0'
+  ].join('\r\n')
+  const users = [...parseConsentStore(sample, 'C:\\Apps\\Lyra\\Lyra.exe')].sort()
+  if (users.join(',') !== 'MSTeams,Zoom') {
+    throw new Error(`consent parser returned ${users.join(',')}`)
+  }
+}
+
 async function runUiSmoke(win: BrowserWindow): Promise<void> {
   try {
+    checkConsentParser()
     const result: unknown = await win.webContents.executeJavaScript(`
       (async () => {
         const fail = (message) => { throw new Error(message) }
@@ -318,6 +341,7 @@ void app.whenReady().then(() => {
     createTray()
     registerHotkeys()
     registerOverlay()
+    registerMicPrompt()
     applyLoginItem(getSettings().launchAtLogin)
     onSettingsChanged((next, prev) => {
       if (next.launchAtLogin !== prev.launchAtLogin) applyLoginItem(next.launchAtLogin)
@@ -341,6 +365,7 @@ app.on('before-quit', () => {
 
 app.on('will-quit', () => {
   unregisterHotkeys()
+  stopMicPrompt()
 })
 
 app.on('window-all-closed', () => {

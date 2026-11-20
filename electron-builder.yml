@@ -29,6 +29,9 @@ nsis:
   createDesktopShortcut: always
 mac:
   icon: build/icon.png
+  extraResources:
+    - from: build/helpers/micwatch
+      to: micwatch
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
     NSMicrophoneUsageDescription: Lyra records audio so it can transcribe your pages on this device.

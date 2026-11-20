@@ -45,6 +45,10 @@ export type OverlayFrame = { level: number; live: string }
 /** Sent from main to the main window's recorder. */
 export type SessionCommand = { type: 'toggle'; kind: SessionKind } | { type: 'stop' }
 
+/** "Another app started using the mic" prompt. `app` is '' when the app is unknown (macOS). */
+export type MicPrompt = { app: string }
+export type PromptAnswer = 'start' | 'dismiss' | 'ignore'
+
 export type HotkeyStatus = { accelerator: string; registered: boolean; error: string | null }
 
 export type PageSummary = {
@@ -100,6 +104,9 @@ export type VoicePagesApi = {
   getSessionState: () => Promise<SessionState>
   onSessionState: (callback: (state: SessionState) => void) => () => void
   onOverlayFrame: (callback: (frame: OverlayFrame) => void) => () => void
+  /** Overlay: the "mic in use" prompt to show, or null to hide it. */
+  onMicPrompt: (callback: (prompt: MicPrompt | null) => void) => () => void
+  answerMicPrompt: (answer: PromptAnswer) => void
   /** Overlay: ask the recorder to stop. */
   requestStop: () => void
   /** Brings the main window to the front. */
