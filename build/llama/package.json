@@ -1,7 +1,0 @@
-{
-  "name": "lyra-llama",
-  "private": true,
-  "dependencies": {
-    "node-llama-cpp": "3.22.3"
-  }
-}
