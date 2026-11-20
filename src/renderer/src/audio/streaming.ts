@@ -64,8 +64,12 @@ const wordKey = (word: TranscriptWord): string => word.text.toLowerCase().replac
 
 function agreedPrefix(a: TranscriptWord[], b: TranscriptWord[]): number {
   let n = 0
-  while (n < a.length && n < b.length && wordKey(a[n]) === wordKey(b[n])) n++
-  return n
+  for (;;) {
+    const left = a[n]
+    const right = b[n]
+    if (!left || !right || wordKey(left) !== wordKey(right)) return n
+    n++
+  }
 }
 
 export class StreamingTranscriber {
@@ -175,8 +179,10 @@ export class StreamingTranscriber {
       live: joinWords(this.tentative).trim()
     })
 
-    if (finalizeAt !== undefined) this.trimTo(finalizeAt)
-    else if (overdue && !this.committed.length) {
+    if (finalizeAt !== undefined) {
+      this.trimTo(finalizeAt)
+      this.forgetCommitted()
+    } else if (overdue && !this.committed.length) {
       // Whisper heard (almost) nothing in a long stretch: keep only the recent audio.
       log('stream', 'nothing usable in a full buffer; discarding old audio', { bufferSec: secs(end) })
       this.trimTo(this.offset + this.length - MIN_TRIM)
@@ -184,10 +190,25 @@ export class StreamingTranscriber {
   }
 
   private commit(words: TranscriptWord[]): void {
-    if (!words.length) return
+    const lastWord = words.at(-1)
+    if (!lastWord) return
     this.committed.push(...words)
-    this.lastCommittedEnd = words.at(-1)!.end
+    // Whisper can stretch the last word's end far past the audio (to the end of its
+    // 30 s window). Unclamped, that would hide every later word from the timestamp fallback.
+    this.lastCommittedEnd = Math.min(lastWord.end, (this.offset + this.length) / SAMPLE_RATE)
     this.events.onCommit(joinWords(words))
+  }
+
+  /**
+   * After a finalize pass the buffer is empty, so no committed word can be in the
+   * next pass's audio. Move them all into the prompt; otherwise a word whose end time
+   * Whisper stretched survives the trim, never re-aligns, and blocks all later text.
+   */
+  private forgetCommitted(): void {
+    this.context = (this.context + joinWords(this.committed)).slice(-CONTEXT_CHARS * 2)
+    this.committed = []
+    this.tentative = []
+    this.lastCommittedEnd = this.offset / SAMPLE_RATE
   }
 
   /**
@@ -207,7 +228,8 @@ export class StreamingTranscriber {
         for (const end of shift ? [done + shift, done - shift] : [done]) {
           if (end < n || end > words.length) continue
           if (words.slice(end - n, end).map(wordKey).join(' ') !== tail) continue
-          this.recoverPunctuation(words[end - 1])
+          const matched = words[end - 1]
+          if (matched) this.recoverPunctuation(matched)
           return words.slice(end)
         }
       }
@@ -225,10 +247,10 @@ export class StreamingTranscriber {
    * ("again" → later "again."). Commit the late punctuation on its own.
    */
   private recoverPunctuation(retranscribed: TranscriptWord): void {
-    const last = this.committed.at(-1)!
+    const last = this.committed.at(-1)
     // Only sentence ends: a late comma is usually Whisper hedging, not structure.
     const added = /[.!?]+$/.exec(retranscribed.text)?.[0]
-    if (!added || /[.,!?;:]$/.test(last.text)) return
+    if (!last || !added || /[.,!?;:]$/.test(last.text)) return
     last.text += added
     this.events.onCommit(added)
   }
@@ -245,10 +267,11 @@ export class StreamingTranscriber {
     const last = this.committed.findLastIndex((word) => SENTENCE_END.test(word.text))
     const boundary =
       last >= 0 ? last : this.length >= MAX_BUFFER ? this.committed.length - 1 : -1
+    const at = words[boundary]
     const next = words[boundary + 1]
-    if (boundary < 0 || !next) return
+    if (boundary < 0 || !at || !next) return
 
-    const cut = Math.min(words[boundary].end, next.start)
+    const cut = Math.min(at.end, next.start)
     const before = this.length
     this.trimTo(Math.round(cut * SAMPLE_RATE))
     log('stream', last >= 0 ? 'trimmed at sentence' : 'trimmed at word (buffer full)', {
@@ -264,6 +287,7 @@ export class StreamingTranscriber {
     this.length -= drop
     while (drop > 0) {
       const head = this.chunks[0]
+      if (!head) break
       if (head.length <= drop) {
         this.chunks.shift()
         drop -= head.length

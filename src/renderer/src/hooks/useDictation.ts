@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { openMicrophone, startCapture } from '../audio/capture'
+import { openMicrophone, openSystemAudio, startCapture } from '../audio/capture'
+import { MeetingRecorder } from '../audio/meetingRecorder'
 import { StreamingTranscriber } from '../audio/streaming'
 import { VoiceDetector } from '../audio/vad'
 import { log } from '../lib/log'
@@ -17,7 +18,12 @@ type Options = {
   getContext: () => string
   /** Called with each piece of confirmed text, in order. */
   onCommit: (text: string) => void
+  /** Microphone to open, read when recording starts; `null` = system default. */
+  getDeviceId: () => string | null
 }
+
+/** Extra work for a meeting: record the audio to disk, optionally with system audio. */
+export type MeetingOptions = { pageId: string; systemAudio: boolean }
 
 type Session = {
   stop: () => Promise<void>
@@ -37,16 +43,18 @@ function transcribe(pcm: Float32Array, prompt: string) {
  * Confirmed words are handed to `onCommit` as soon as Whisper is sure of them;
  * `live` holds the words it is still deciding on, for display as ghost text.
  */
-export function useDictation({ getContext, onCommit }: Options) {
+export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
   const [phase, setPhase] = useState<DictationPhase>('idle')
   const [live, setLive] = useState('')
   const [micName, setMicName] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
 
   const session = useRef<Session | null>(null)
+  const starting = useRef<{ cancelled: boolean } | null>(null)
   const levelListeners = useRef(new Set<LevelListener>())
-  const options = useRef({ getContext, onCommit })
-  options.current = { getContext, onCommit }
+  const options = useRef({ getContext, onCommit, getDeviceId })
+  options.current = { getContext, onCommit, getDeviceId }
 
   const subscribeLevel = useCallback((listener: LevelListener) => {
     levelListeners.current.add(listener)
@@ -55,9 +63,15 @@ export function useDictation({ getContext, onCommit }: Options) {
     }
   }, [])
 
-  const start = useCallback(async (): Promise<void> => {
-    if (session.current) return
+  const start = useCallback(async (meeting?: MeetingOptions): Promise<void> => {
+    if (session.current || starting.current) return
+    // Stop can arrive while the model warms up; this lets it cancel the start.
+    const attempt = { cancelled: false }
+    starting.current = attempt
+    // A function, so TypeScript doesn't assume the flag is unchanged across awaits.
+    const cancelled = (): boolean => attempt.cancelled
     setError(null)
+    setNotice(null)
     setLive('')
     setPhase('starting')
 
@@ -82,7 +96,44 @@ export function useDictation({ getContext, onCommit }: Options) {
     }
 
     try {
-      const [stream] = await Promise.all([openMicrophone(), window.api.warmUp()])
+      // Open the mic and warm the model in parallel, but check for a cancel after each.
+      const warm = window.api.warmUp()
+      const { stream, usedFallback } = await openMicrophone(options.current.getDeviceId())
+      const releaseMic = (): void => {
+        stream.getTracks().forEach((track) => {
+          track.stop()
+        })
+        log('dictation', 'start cancelled')
+      }
+      if (cancelled()) {
+        releaseMic()
+        void warm.catch(() => undefined)
+        return
+      }
+      await warm
+      if (cancelled()) {
+        releaseMic()
+        return
+      }
+      if (usedFallback) setNotice('Your chosen microphone isn’t available — using the default.')
+
+      let system: MediaStream | null = null
+      let recorder: MeetingRecorder | null = null
+      if (meeting) {
+        system = meeting.systemAudio ? await openSystemAudio() : null
+        if (cancelled()) {
+          system?.getTracks().forEach((track) => {
+            track.stop()
+          })
+          releaseMic()
+          return
+        }
+        if (meeting.systemAudio && !system) {
+          setNotice('Couldn’t capture computer audio — recording your microphone only.')
+        }
+        recorder = await MeetingRecorder.start(meeting.pageId, system !== null)
+      }
+      const activeRecorder = recorder
       const streamer = new StreamingTranscriber(
         transcribe,
         {
@@ -123,6 +174,16 @@ export function useDictation({ getContext, onCommit }: Options) {
         (reason) => {
           setError(reason)
           void stopRef.current()
+        },
+        {
+          ...(system ? { system } : {}),
+          ...(activeRecorder
+            ? {
+                onTracks: (mic: Float32Array, other: Float32Array | null) => {
+                  activeRecorder.push(mic, other)
+                }
+              }
+            : {})
         }
       )
 
@@ -148,6 +209,7 @@ export function useDictation({ getContext, onCommit }: Options) {
         stop: async () => {
           clearInterval(heartbeat)
           capture.stop()
+          await activeRecorder?.stop()
           voice.flush()
           levelListeners.current.forEach((listener) => listener(0))
           await streamer.idle()
@@ -157,16 +219,28 @@ export function useDictation({ getContext, onCommit }: Options) {
       setMicName(capture.micName)
       setPhase('listening')
       log('dictation', 'listening')
+      // A stop that arrived while the audio graph was starting.
+      if (cancelled()) void stopRef.current()
     } catch (caught) {
       log('dictation', 'failed to start', String(caught))
       fail(caught)
       setPhase('idle')
+    } finally {
+      if (starting.current === attempt) starting.current = null
     }
   }, [])
 
   const stop = useCallback(async (): Promise<void> => {
     const current = session.current
-    if (!current) return
+    if (!current) {
+      if (starting.current) {
+        // Still warming up: give up on this start now rather than after the model loads.
+        starting.current.cancelled = true
+        starting.current = null
+        setPhase('idle')
+      }
+      return
+    }
     session.current = null
     log('dictation', 'stopping')
     setPhase('finishing')
@@ -187,6 +261,7 @@ export function useDictation({ getContext, onCommit }: Options) {
     live,
     micName,
     error,
+    notice,
     start,
     stop,
     subscribeLevel

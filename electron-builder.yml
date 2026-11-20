@@ -10,6 +10,8 @@ files:
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,package-lock.json}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - '!native/**'
+  - '!docs/**'
 asarUnpack:
   - '**/*.node'
   - '**/*.dylib'
@@ -17,6 +19,11 @@ asarUnpack:
   - '**/*.so'
   - '**/*.so.*'
   - node_modules/@kutalia/whisper-node-addon/**
+  - node_modules/sherpa-onnx-*/**
+# node-llama-cpp ships as its own npm install (see scripts/prepare-llama.cjs).
+extraResources:
+  - from: build/llama/node_modules
+    to: llama/node_modules
 win:
   icon: build/icon.png
   executableName: Lyra
@@ -29,10 +36,14 @@ nsis:
   createDesktopShortcut: always
 mac:
   icon: build/icon.png
+  extraResources:
+    - from: build/helpers/micwatch
+      to: micwatch
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
     NSMicrophoneUsageDescription: Lyra records audio so it can transcribe your pages on this device.
-    NSDocumentsFolderUsageDescription: Lyra stores your markdown pages on disk.
+    NSDocumentsFolderUsageDescription: Lyra saves your notes as files in the folder you choose.
+    NSAudioCaptureUsageDescription: Lyra records the other side of your calls when you start a meeting.
   notarize: false
   target:
     - dmg

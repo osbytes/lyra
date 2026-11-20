@@ -43,7 +43,7 @@ export type VoiceEvents = {
 
 export function rms(samples: Float32Array): number {
   let sum = 0
-  for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i]
+  for (const sample of samples) sum += sample * sample
   return samples.length ? Math.sqrt(sum / samples.length) : 0
 }
 
@@ -111,8 +111,11 @@ export class VoiceDetector {
   private whileWaiting(frame: Float32Array, energy: number): void {
     this.preRoll.push(frame)
     this.preRollLength += frame.length
-    while (this.preRollLength - this.preRoll[0].length >= PRE_ROLL) {
-      this.preRollLength -= this.preRoll.shift()!.length
+    let oldest = this.preRoll[0]
+    while (oldest && this.preRollLength - oldest.length >= PRE_ROLL) {
+      this.preRoll.shift()
+      this.preRollLength -= oldest.length
+      oldest = this.preRoll[0]
     }
 
     if (energy >= this.onsetThreshold()) {

@@ -1,15 +1,14 @@
-import { app, BrowserWindow } from 'electron'
+import { BrowserWindow } from 'electron'
 import { createRequire } from 'node:module'
-import { createWriteStream } from 'node:fs'
-import { mkdir, rename, stat, unlink } from 'node:fs/promises'
+import { stat } from 'node:fs/promises'
 import { arch, platform } from 'node:os'
 import { join } from 'node:path'
-import { promisify } from 'node:util'
-import { finished } from 'node:stream/promises'
 import type { TranscriptWord, WhisperStatus } from '../shared/types'
 import { log } from './log'
+import { ensureDownload, modelsDir } from './models'
 
 const MODEL_NAME = 'ggml-base.en.bin'
+const MIN_MODEL_BYTES = 10_000_000
 const MODEL_URL =
   'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin'
 
@@ -24,10 +23,6 @@ type TranscribeFn = (options: Record<string, unknown>) => Promise<{
 
 const require = createRequire(import.meta.url)
 let transcribeFn: TranscribeFn | null = null
-
-function modelsDir(): string {
-  return join(app.getPath('userData'), 'models')
-}
 
 export function modelPath(): string {
   return join(modelsDir(), MODEL_NAME)
@@ -55,14 +50,21 @@ function loadTranscribe(): TranscribeFn {
   const pkgRoot = join(require.resolve('@kutalia/whisper-node-addon/package.json'), '..')
   const addonPath = join(pkgRoot, 'dist', addonFolder(), 'whisper.node')
   const native = require(addonPath) as { whisper: NativeWhisper }
-  transcribeFn = promisify(native.whisper) as TranscribeFn
-  return transcribeFn
+  const run: TranscribeFn = (options) =>
+    new Promise((resolve, reject) => {
+      native.whisper(options, (error, result) => {
+        if (error) reject(error)
+        else resolve(result)
+      })
+    })
+  transcribeFn = run
+  return run
 }
 
 export async function modelExists(): Promise<boolean> {
   try {
     const info = await stat(modelPath())
-    return info.size > 10_000_000
+    return info.size >= MIN_MODEL_BYTES
   } catch {
     return false
   }
@@ -70,41 +72,12 @@ export async function modelExists(): Promise<boolean> {
 
 export async function ensureModel(): Promise<void> {
   if (await modelExists()) return
-
-  await mkdir(modelsDir(), { recursive: true })
-  const dest = modelPath()
-  const temp = `${dest}.part`
-
   try {
-    const response = await fetch(MODEL_URL)
-    if (!response.ok || !response.body) {
-      throw new Error(`Failed to download Whisper model (${response.status})`)
-    }
-
-    const total = Number(response.headers.get('content-length') || 0)
-    let received = 0
-    broadcastStatus({ state: 'downloading', received, total })
-
-    const file = createWriteStream(temp)
-    const reader = response.body.getReader()
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      received += value.byteLength
+    await ensureDownload(MODEL_NAME, MODEL_URL, MIN_MODEL_BYTES, (received, total) => {
       broadcastStatus({ state: 'downloading', received, total })
-      if (!file.write(Buffer.from(value))) {
-        await new Promise<void>((resolve) => file.once('drain', resolve))
-      }
-    }
-
-    file.end()
-    await finished(file)
-    await rename(temp, dest)
+    })
+  } finally {
     broadcastStatus({ state: 'idle' })
-  } catch (error) {
-    await unlink(temp).catch(() => undefined)
-    throw error
   }
 }
 
@@ -113,7 +86,7 @@ export function pcmFromIpc(payload: unknown): Float32Array {
   if (payload instanceof ArrayBuffer) {
     bytes = new Uint8Array(payload)
   } else if (ArrayBuffer.isView(payload)) {
-    const view = payload as ArrayBufferView
+    const view = payload
     bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength)
   } else {
     throw new Error('Invalid audio payload from renderer')
@@ -133,7 +106,7 @@ const HALLUCINATIONS = new Set(['you', 'thank you', 'thanks for watching', 'bye'
 function seconds(stamp: unknown): number {
   const match = /^(\d+):(\d+):(\d+)[,.](\d+)$/.exec(String(stamp))
   if (!match) return 0
-  const [, h, m, s, ms] = match.map(Number)
+  const [, h = 0, m = 0, s = 0, ms = 0] = match.map(Number)
   return h * 3600 + m * 60 + s + ms / 1000
 }
 
@@ -144,7 +117,7 @@ function seconds(stamp: unknown): number {
  * [BLANK_AUDIO] or (music) are dropped.
  */
 function wordsFromTokens(result: { transcription?: unknown }): TranscriptWord[] {
-  const rows = Array.isArray(result?.transcription) ? result.transcription : []
+  const rows: unknown[] = Array.isArray(result.transcription) ? result.transcription : []
   const words: TranscriptWord[] = []
   let bracketDepth = 0
 
@@ -223,7 +196,7 @@ export function warmUp(): Promise<void> {
   warmed ??= ensureModel()
     .then(() => runSerial(() => runWhisper(new Float32Array(16000), '')))
     .then(() => undefined)
-    .catch((error) => {
+    .catch((error: unknown) => {
       warmed = null
       throw error
     })

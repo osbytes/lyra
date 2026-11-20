@@ -15,6 +15,9 @@ export function usePages() {
   const currentRef = useRef<Page | null>(null)
   const pendingSave = useRef<{ page: Page; timer: ReturnType<typeof setTimeout> } | null>(null)
 
+  // A function, not a property read: the ref can change across an `await`.
+  const hasPendingSave = (): boolean => pendingSave.current !== null
+
   const show = (page: Page | null): void => {
     currentRef.current = page
     setCurrent(page)
@@ -72,9 +75,9 @@ export function usePages() {
     [flush]
   )
 
-  const create = useCallback(async () => {
+  const create = useCallback(async (options?: { startedAt?: string }) => {
     await flush()
-    const page = await window.api.createPage()
+    const page = await window.api.createPage(options)
     show(page)
     await refreshList()
     return page
@@ -103,6 +106,24 @@ export function usePages() {
       void flush()
     }
   }, [refreshList, flush])
+
+  // Files added, edited, or removed outside Lyra (or the notes folder changed).
+  useEffect(
+    () =>
+      window.api.onPagesChanged(() => {
+        void refreshList().then(async (list) => {
+          const open = currentRef.current
+          if (hasPendingSave()) return
+          if (open && list.some((page) => page.id === open.id)) {
+            const fresh = await window.api.getPage(open.id).catch(() => null)
+            if (fresh && currentRef.current?.id === fresh.id && !hasPendingSave()) show(fresh)
+            return
+          }
+          show(list[0] ? await window.api.getPage(list[0].id) : null)
+        })
+      }),
+    [refreshList]
+  )
 
   return { pages, current, currentRef, saveState, edit, open, create, remove, flush }
 }
