@@ -16,7 +16,7 @@ if (!version) {
 }
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const lines = readFileSync(join(root, 'CHANGELOG.md'), 'utf8').split(/\r?\n/)
+const lines = readFileSync(join(root, 'apps', 'lyra', 'CHANGELOG.md'), 'utf8').split(/\r?\n/)
 const start = lines.findIndex((l) => l.trim() === `## ${version}`)
 if (start === -1) {
   console.error(`no "## ${version}" section in CHANGELOG.md`)
