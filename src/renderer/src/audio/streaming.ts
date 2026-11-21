@@ -203,9 +203,9 @@ export class StreamingTranscriber {
    */
   private agreed(words: TranscriptWord[]): number {
     const n = agreedPrefix(this.tentative, words)
-    if (n === 0 || n < words.length) return n
     const last = words[n - 1]
-    const sameEnd = SENTENCE_END.test(last.text) && this.tentative[n - 1].text === last.text
+    if (!last || n < words.length) return n
+    const sameEnd = SENTENCE_END.test(last.text) && this.tentative[n - 1]?.text === last.text
     return sameEnd ? n : n - 1
   }
 
