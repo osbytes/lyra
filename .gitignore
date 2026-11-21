@@ -13,3 +13,5 @@ models
 *.gguf
 *.bin
 !build/**
+build/helpers/
+build/llama/

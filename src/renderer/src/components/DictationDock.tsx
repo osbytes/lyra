@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import type { WhisperStatus } from '../../../shared/types'
+import type { SessionKind, WhisperStatus } from '../../../shared/types'
 import type { DictationPhase } from '../hooks/useDictation'
 import { formatDuration, shortcutLabel } from '../lib/format'
 import { MicIcon, StopIcon } from './Icons'
+import { MicrophoneSelect } from './MicrophoneSelect'
 
 const BAR_COUNT = 28
 
@@ -13,8 +14,12 @@ type Props = {
   micName: string
   status: WhisperStatus
   error: string | null
+  notice: string | null
+  kind: SessionKind
   subscribeLevel: SubscribeLevel
   onToggle: () => void
+  micDeviceId: string | null
+  onMicChange: (deviceId: string | null) => void
 }
 
 /**
@@ -22,7 +27,7 @@ type Props = {
  * never re-render React (or the editor).
  */
 function Waveform({ subscribe }: { subscribe: SubscribeLevel }) {
-  const bars = useRef<Array<HTMLSpanElement | null>>([])
+  const bars = useRef<(HTMLSpanElement | null)[]>([])
 
   useEffect(() => {
     const history = new Array<number>(BAR_COUNT).fill(0)
@@ -57,19 +62,25 @@ function useElapsed(running: boolean): number {
   return elapsed
 }
 
-function statusText(phase: DictationPhase, status: WhisperStatus, micName: string): string {
+function statusText(
+  phase: DictationPhase,
+  status: WhisperStatus,
+  micName: string,
+  kind: SessionKind
+): string {
   if (status.state === 'downloading') {
     const pct = status.total ? Math.round((status.received / status.total) * 100) : 0
     return `Downloading speech model… ${pct}%`
   }
   if (phase === 'starting') return 'Warming up…'
   if (phase === 'finishing') return 'Finishing up…'
+  if (phase === 'listening' && kind === 'meeting') return 'Recording meeting'
   if (phase === 'listening') return micName ? `Listening · ${micName}` : 'Listening'
   return 'Start dictating'
 }
 
 export function DictationDock(props: Props) {
-  const { phase, micName, status, error, subscribeLevel, onToggle } = props
+  const { phase, micName, status, error, notice, subscribeLevel, onToggle } = props
   const listening = phase === 'listening'
   const busy = phase === 'starting' || phase === 'finishing'
   const elapsed = useElapsed(listening)
@@ -87,6 +98,10 @@ export function DictationDock(props: Props) {
         <p className="dock-error" role="alert">
           {error}
         </p>
+      ) : notice ? (
+        <p className="dock-notice" role="status">
+          {notice}
+        </p>
       ) : null}
 
       <div className={`dock${listening ? ' is-listening' : ''}`}>
@@ -103,7 +118,7 @@ export function DictationDock(props: Props) {
         </button>
 
         <div className="dock-body">
-          <span className="dock-status">{statusText(phase, status, micName)}</span>
+          <span className="dock-status">{statusText(phase, status, micName, props.kind)}</span>
           {listening ? (
             <span className="dock-hint">Say “new paragraph” to break</span>
           ) : (
@@ -118,7 +133,14 @@ export function DictationDock(props: Props) {
             <Waveform subscribe={subscribeLevel} />
             <span className="dock-timer">{formatDuration(elapsed)}</span>
           </>
-        ) : null}
+        ) : (
+          <MicrophoneSelect
+            className="dock-mic"
+            value={props.micDeviceId}
+            onChange={props.onMicChange}
+            disabled={busy}
+          />
+        )}
       </div>
     </div>
   )
