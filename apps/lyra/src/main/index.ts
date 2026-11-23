@@ -466,6 +466,17 @@ async function runMeetingFixture(wavPath: string): Promise<void> {
       segment.confidence === null ? '-' : segment.confidence.toFixed(2)
     )
     process.stdout.write(`meeting-fixture line confidence: ${confidence.join(' ')}\n`)
+    // Evals (scripts/run-eval.cjs) score this pass, before the rename below changes any labels.
+    const output = process.env.LYRA_MEETING_OUTPUT
+    if (output) {
+      const segments = labeled.transcript.map(({ start, end, cluster, text }) => ({
+        speaker: cluster ?? 'unknown',
+        start,
+        end,
+        text
+      }))
+      await writeFile(output, JSON.stringify({ seconds: +took, segments }, null, 2), 'utf8')
+    }
 
     // Name the first speaker and save their voice, as the speaker picker does.
     const first = labeled.speakers[0]

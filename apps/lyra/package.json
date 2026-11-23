@@ -18,6 +18,8 @@
     "smoke": "electron scripts/smoke-native.cjs",
     "smoke:ui": "electron-vite build && node scripts/run-ui-smoke.cjs",
     "smoke:meeting": "electron-vite build && node scripts/run-meeting-smoke.cjs",
+    "eval:calls": "node scripts/run-eval.cjs --dataset calls",
+    "eval:ami": "node scripts/run-eval.cjs --dataset ami",
     "screenshot": "electron-vite build && node scripts/capture-screenshot.cjs",
     "build:unpack": "pnpm build && pnpm prepare:llama && electron-builder --dir --publish never",
     "build:win": "pnpm build && pnpm prepare:llama && electron-builder --win --publish never",

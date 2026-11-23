@@ -16,4 +16,5 @@ models
 build/helpers/
 build/llama/
 test-audio/
+eval-data/
 .turbo
