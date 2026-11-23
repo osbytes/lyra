@@ -1,6 +1,6 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import { existsSync } from 'node:fs'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type {
   MeetingRecording,
@@ -20,7 +20,7 @@ import {
 } from '../../shared/sessionDoc'
 import { log } from '../log'
 import { resolveInNotes } from '../pages'
-import { deleteSessionAudio, onRecordingFinished, trackPath } from '../recorder'
+import { deleteSessionAudio, trackPath } from '../recorder'
 import {
   editSession,
   readManifestOf,
@@ -45,23 +45,16 @@ import {
 } from '../voices'
 import { transcribePcm } from '../whisper'
 import type { DiarizeResult, DiarizedSegment, SpeakerModels } from './protocol'
+import { notifyLabeled } from './events'
+import { sessionVoiceprints } from './live'
 import { diarize, embedVoice, ensureSpeakerModels } from './speakers'
+import { MATCH_THRESHOLD, REINFORCE_THRESHOLD, SELF_MIC_SHARE } from './thresholds'
 import { mixTracks, readWav } from './wav'
 
 /** Merge a speaker's segments separated by less than this into one turn. */
 const MERGE_GAP_SECONDS = 1
 /** Whisper works on ≤30 s windows; keep turns comfortably under that. */
 const MAX_TURN_SECONDS = 25
-/** A speaker whose audio is mostly on the mic track is the person at this computer. */
-const SELF_MIC_SHARE = 0.67
-/**
- * Cosine similarity needed to name a speaker from a saved voice. Different people
- * score ~0.45 with this model; the same person across calls lands ~0.55–0.95,
- * lower when the voiceprint is one short clip, so the bar sits just above strangers.
- */
-const MATCH_THRESHOLD = 0.5
-/** A match this strong is added to the person's voiceprint automatically. */
-const REINFORCE_THRESHOLD = 0.75
 /** Below this much total speech, a "speaker" is folded into the closest real one. */
 const MIN_SPEAKER_SECONDS = 2
 /** Clustering distance threshold for diarization. */
@@ -89,14 +82,6 @@ type NamedSpeaker = {
 }
 
 const speakerId = (cluster: number): string => `c${String(cluster)}`
-
-const completedListeners = new Set<(pageId: string) => void>()
-
-/** Fires after a meeting's transcript has been labeled (meeting notes hook in here). */
-export function onMeetingLabeled(listener: (pageId: string) => void): () => void {
-  completedListeners.add(listener)
-  return () => completedListeners.delete(listener)
-}
 
 function broadcast(status: MeetingStatus): void {
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send('meeting:status', status)
@@ -421,43 +406,12 @@ export async function processMeeting(recording: MeetingRecording): Promise<void>
 
   status('done', 1)
   log('meeting', 'labeled', { pageId, lines: segments.length, pass: passId })
-  for (const listener of completedListeners) listener(pageId)
+  notifyLabeled(pageId)
 }
 
-let queue: Promise<void> = Promise.resolve()
-
-function enqueue(recording: MeetingRecording): void {
-  queue = queue.then(
-    () => processMeeting(recording),
-    () => processMeeting(recording)
-  ).catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error)
-    log('meeting', 'processing failed', { pageId: recording.pageId, error: message })
-    broadcast({ pageId: recording.pageId, state: 'error', progress: 0, message })
-  })
-}
-
-/** The voiceprint of a speaker from the latest pass that has one. */
+/** The voiceprint of a speaker from the latest pass that has one (live or labeled). */
 async function speakerEmbedding(pageId: string, id: string): Promise<number[]> {
-  const manifest = await readManifestOf(pageId)
-  for (const pass of [...manifest.passes].reverse()) {
-    if (pass.kind !== 'diarized') continue
-    try {
-      const parsed: unknown = JSON.parse(await readFile(join(sessionRawDir(pageId), `${pass.id}.json`), 'utf8'))
-      const clusters = (parsed as { clusters?: unknown }).clusters
-      if (!Array.isArray(clusters)) continue
-      for (const cluster of clusters as unknown[]) {
-        if (!cluster || typeof cluster !== 'object') continue
-        const entry = cluster as Record<string, unknown>
-        if (entry.id === id && Array.isArray(entry.embedding)) {
-          return entry.embedding.filter((n): n is number => typeof n === 'number')
-        }
-      }
-    } catch {
-      // A missing or unreadable pass: try the one before.
-    }
-  }
-  return []
+  return (await sessionVoiceprints(pageId)).get(id) ?? []
 }
 
 export async function assignSpeaker(
@@ -550,10 +504,11 @@ export async function sessionAudio(pageId: string, start: number, end: number): 
   return out
 }
 
-/** `processRecordings: false` (test runs) keeps the IPC but doesn't label recordings. */
-export function registerMeetingPipeline({ processRecordings }: { processRecordings: boolean }): void {
-  if (processRecordings) onRecordingFinished(enqueue)
-
+/**
+ * Speakers are identified live while recording (`live.ts`). `processMeeting` labels a whole
+ * recording at once with offline diarization, for the meeting smoke test and eval.
+ */
+export function registerMeetingPipeline(): void {
   ipcMain.handle('people:list', () => listPeople())
   ipcMain.handle('people:enroll', async (_event, name: unknown, pcm: unknown, self: unknown) => {
     if (typeof name !== 'string') throw new Error('Invalid name')

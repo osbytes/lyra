@@ -267,13 +267,21 @@ from the plan above:
   transcript times always point into one file. `startRecording` returns where the new recording
   starts.
 - **One kind of session.** There is no dictation/meeting switch: every session records the
-  mic, plus the computer's audio when that setting is on, and labeling runs on every recording.
-  When diarization hears one voice it stops there (no re-transcription), and the session stays
-  plain notes.
-- **Live text goes to the notes**, and each recording remembers the range it inserted (a Yjs
-  relative position plus the exact text, in `meta.liveRanges`). When labeling finds two or more
-  speakers it fills the transcript and removes those ranges from the notes, but only where the
-  text is still exactly as transcribed, so anything the user edited stays.
+  mic, plus the computer's audio when that setting is on.
+- **Speakers are identified live** (`src/main/meeting/live.ts`); there is no labeling step after
+  a recording stops. Each phrase the streaming transcriber commits is split at sentence ends,
+  voiceprinted from its own audio and clustered online against the voices heard so far (cosine
+  ≥ 0.5 joins a voice). Short phrases ("Yes.") are voiceprinted together with their neighbours
+  or take the speaker of the phrase after them, since they often open a turn. Two voices whose
+  running voiceprints converge (≥ 0.68) are merged back into one. Each phrase becomes a
+  transcript line for its speaker; lines only grow at the end, so nothing on the page moves.
+  With one voice the window shows the lines as plain paragraphs, with no speaker labels.
+  `processMeeting` (offline diarization of a whole recording) remains for `pnpm smoke:meeting`
+  and the eval.
+- **Notes are only what the user types.** Earlier versions wrote live text into the notes and
+  replaced it with the labeled transcript afterwards (`meta.liveRanges`, `removeLiveNotes`); that
+  path remains for documents made that way. A live range now also counts the phrases placed so
+  far, so the window can draw words that haven't been placed yet as unconfirmed text.
 - **Generated notes live in `summary`**, a separate `Y.Text`, so "Rewrite notes" never touches
   the user's notes. The export renders summary, notes, then transcript.
 - **Per-line confidence** is the cosine similarity between a line's own voiceprint and its

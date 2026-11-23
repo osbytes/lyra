@@ -6,38 +6,6 @@ const PROMPT_CHARS = 300
  */
 const STYLE_SEED = 'Okay, so here are my thoughts, written out in full sentences.'
 
-const VOICE_COMMANDS: [RegExp, string][] = [
-  [/,?\s*\b(?:new|next) paragraph\b[.,!?]*\s*/gi, '\n\n'],
-  [/,?\s*\bnew line\b[.,!?]*\s*/gi, '\n']
-]
-
-function capitalize(text: string): string {
-  return text.replace(/^[a-z]/, (ch) => ch.toUpperCase())
-}
-
-/** Turns spoken formatting commands ("new paragraph") into whitespace. */
-export function applyVoiceCommands(text: string): string {
-  let out = text
-  for (const [pattern, replacement] of VOICE_COMMANDS) out = out.replace(pattern, replacement)
-  return out.replace(/\n([a-z])/g, (_match, ch: string) => `\n${ch.toUpperCase()}`)
-}
-
-/** Appends a dictated chunk to the page body with sensible spacing and capitalization. */
-export function appendTranscript(body: string, chunk: string): string {
-  const text = applyVoiceCommands(chunk.trim())
-  // A bare "new paragraph" leaves only line breaks; never start a page with them.
-  if (!text.trim()) return body.trim() ? body.trimEnd() + text : body
-  if (!body.trim()) return capitalize(text.trimStart())
-
-  const trimmed = body.trimEnd()
-  const endsLine = body.endsWith("\n") || text.startsWith("\n")
-  const endsSentence = /[.!?:]["')\]]?$/.test(trimmed)
-  const next = endsLine || endsSentence ? capitalize(text) : text
-  const attaches = endsLine || /\s$/.test(body) || /^[.,!?;:]/.test(text)
-  const separator = attaches ? '' : ' '
-  return `${body}${separator}${next}`
-}
-
 /**
  * Builds the context prompt for Whisper: the page title plus the tail of what
  * has been written. This keeps punctuation, casing, and vocabulary consistent

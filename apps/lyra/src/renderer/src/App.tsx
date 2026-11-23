@@ -44,6 +44,8 @@ function toMarkdown(page: OpenPage): string {
 }
 
 export default function App(): React.JSX.Element {
+  /** This recording's committed phrases, in the order they were sent to main. */
+  const [sent, setSent] = useState<string[]>([])
   const {
     pages,
     current,
@@ -53,8 +55,6 @@ export default function App(): React.JSX.Element {
     editSummary,
     editSegment,
     assignLines,
-    appendDictation,
-    beginTranscription,
     tag,
     untag,
     undo,
@@ -86,7 +86,7 @@ export default function App(): React.JSX.Element {
   }, [])
 
   const onCommit = useCallback(
-    (text: string) => {
+    (text: string, at: { start: number; end: number }) => {
       if (!currentRef.current) return
       const view = scroller.current
       // Keep new words in view, unless the writer has scrolled up to reread, or is typing:
@@ -94,18 +94,24 @@ export default function App(): React.JSX.Element {
       const typing = document.activeElement instanceof HTMLTextAreaElement
       const follow =
         !typing && (!view || view.scrollHeight - view.scrollTop - view.clientHeight < 160)
-      appendDictation(text)
+      // Main voiceprints the phrase and writes it to its speaker's line; until then it's drawn
+      // as unconfirmed text, so words never blink out.
+      setSent((list) => [...list, text])
+      window.api.appendRecordingText(text, at.start, at.end)
       if (follow) {
         requestAnimationFrame(() => view?.scrollTo({ top: view.scrollHeight, behavior: 'smooth' }))
       }
     },
-    [currentRef, appendDictation]
+    [currentRef]
   )
 
   // Whisper's prompt is the text just before where its words will land.
   const getContext = useCallback(() => {
     const page = currentRef.current
     if (!page) return ''
+    if (page.liveMode === 'transcript') {
+      return promptFor(page.title, page.transcript.map((line) => line.text).join(' '))
+    }
     return promptFor(page.title, page.body.slice(0, page.transcriberAt ?? page.body.length))
   }, [currentRef])
 
@@ -123,10 +129,10 @@ export default function App(): React.JSX.Element {
   /** Records into a session: the mic, plus the computer's audio when that setting is on. */
   const record = useCallback(
     async (pageId: string) => {
-      beginTranscription()
+      setSent([])
       await start({ pageId, systemAudio: settingsRef.current?.captureSystemAudio ?? true })
     },
-    [start, beginTranscription]
+    [start]
   )
 
   /** A new session, named for this moment, recording straight away. */
@@ -294,6 +300,10 @@ export default function App(): React.JSX.Element {
   const summary = current ? pages.find((page) => page.id === current.id) : undefined
   const editedAt = summary?.updatedAt
   const systemAudio = settings?.captureSystemAudio ?? true
+  const toTranscript = current?.liveMode === 'transcript'
+  const listening = dictation.phase === 'listening'
+  const unplaced = sent.slice(current?.livePlaced ?? 0).join(' ')
+  const liveText = toTranscript && listening ? `${unplaced}${dictation.live}`.trim() : null
 
   return (
     <div className={`app platform-${window.api.platform}`}>
@@ -386,12 +396,14 @@ export default function App(): React.JSX.Element {
                 ) : null}
                 <Editor
                   value={current.body}
-                  ghost={dictation.live}
-                  listening={dictation.phase === 'listening'}
+                  ghost={toTranscript ? '' : dictation.live}
+                  listening={!toTranscript && listening}
                   transcriberAt={current.transcriberAt}
+                  placeholder={current.transcript.length || liveText !== null ? 'Add notes…' : undefined}
+                  compact={current.transcript.length > 0 || liveText !== null}
                   onChange={(body) => edit({ body })}
                 />
-                {current.transcript.length ? (
+                {current.transcript.length || liveText !== null ? (
                   <Transcript
                     pageId={current.id}
                     transcript={current.transcript}
@@ -403,6 +415,7 @@ export default function App(): React.JSX.Element {
                     onUndo={() => void undo()}
                     showSpeakersBar={!panel}
                     pickerRequest={pickerRequest}
+                    live={liveText}
                   />
                 ) : null}
               </article>

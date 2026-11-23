@@ -78,6 +78,9 @@ const api: VoicePagesApi = {
   appendRecordingWords: (words) => {
     ipcRenderer.send('recorder:words', words)
   },
+  appendRecordingText: (text, start, end) => {
+    ipcRenderer.send('recorder:text', text, start, end)
+  },
   stopRecording: () => ipcRenderer.invoke('recorder:stop'),
   sessionAudio: (pageId, start, end) => ipcRenderer.invoke('sessions:audio', pageId, start, end),
   listPeople: () => ipcRenderer.invoke('people:list'),
