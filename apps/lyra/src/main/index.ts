@@ -88,6 +88,15 @@ function appIcon(): Electron.NativeImage {
   return nativeImage.createFromPath(join(__dirname, '../../build/icon.png'))
 }
 
+function isWebUrl(raw: string): boolean {
+  try {
+    const { protocol } = new URL(raw)
+    return protocol === 'https:' || protocol === 'http:'
+  } catch {
+    return false
+  }
+}
+
 function createWindow(): void {
   const icon = appIcon()
   const mainWindow = new BrowserWindow({
@@ -128,9 +137,14 @@ function createWindow(): void {
     })
   }
 
+  // Only hand web links to the OS; file:, smb:, custom-protocol URLs etc. can launch local code.
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    void shell.openExternal(details.url)
+    if (isWebUrl(details.url)) void shell.openExternal(details.url)
     return { action: 'deny' }
+  })
+  // The renderer is a single local page; never let it navigate to anything else.
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (url !== mainWindow.webContents.getURL()) event.preventDefault()
   })
 
   if (is.dev && process.env.ELECTRON_RENDERER_URL) {

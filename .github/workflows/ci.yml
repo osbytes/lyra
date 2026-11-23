@@ -1,0 +1,84 @@
+# CI: typecheck and package the installers on all three platforms, and refuse a PR without a
+# changeset (.changeset/README.md). Releases are built by release.yml from a version tag.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  changeset:
+    name: changeset
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The PR adds a changeset
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD_REF: ${{ github.head_ref }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          # the Release PR consumes changesets; it never adds one
+          case "$HEAD_REF" in changeset-release/*) echo "release PR"; exit 0 ;; esac
+          added=$(git diff --name-only --diff-filter=A "$BASE"...HEAD -- .changeset)
+          if printf '%s\n' "$added" | grep -E '^\.changeset/.+\.md$' | grep -vqx '.changeset/README.md'; then
+            echo "changeset found"; exit 0
+          fi
+          if [ "$AUTHOR" = "dependabot[bot]" ]; then
+            echo "::error::no changeset yet; dependabot-changeset.yml adds one, re-run once it has"
+          else
+            echo "::error::this PR has no changeset. Run 'pnpm changeset' (or 'pnpm changeset --empty' for docs-only or internal changes). See docs/RELEASING.md."
+          fi
+          exit 1
+
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-latest
+            script: build:mac
+          - name: Windows
+            os: windows-latest
+            script: build:win
+          - name: Linux
+            os: ubuntu-22.04
+            script: build:linux
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install patchelf
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y patchelf
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck and package
+        env:
+          SCRIPT: ${{ matrix.script }}
+        run: pnpm --filter lyra run "$SCRIPT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.name }}-dist
+          path: apps/lyra/dist
+          if-no-files-found: warn
