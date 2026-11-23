@@ -8,7 +8,7 @@ import { getSettings } from '../settings'
 import { claudeNotes } from './notesClaude'
 import { renderNotes } from './notesFormat'
 import { localNotes } from './notesLocal'
-import { onMeetingLabeled } from './pipeline'
+import { onMeetingLabeled } from './events'
 
 function broadcast(status: MeetingStatus): void {
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send('meeting:status', status)

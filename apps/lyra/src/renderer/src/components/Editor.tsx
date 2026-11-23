@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, type Ref } from 'react'
-import { appendTranscript } from '../text/transcript'
+import { appendTranscript } from '../../../shared/transcriptText'
 
 type Props = {
   value: string
@@ -11,6 +11,10 @@ type Props = {
   onChange: (value: string) => void
   /** Accessible name; also turns off the "start talking" placeholder for secondary fields. */
   label?: string
+  /** Replaces the empty-page prompt (e.g. above a transcript, where notes are optional). */
+  placeholder?: string
+  /** Sized to its text only: above a transcript, empty notes shouldn't push it down the page. */
+  compact?: boolean
   ref?: Ref<HTMLTextAreaElement>
 }
 
@@ -39,7 +43,17 @@ export function mapPosition(before: string, after: string, position: number): nu
  * and draws the transcriber's cursor (and its unconfirmed words) where it writes, like a second
  * author in the document. The user's caret stays where they left it when text arrives.
  */
-export function Editor({ value, ghost, listening, transcriberAt, onChange, label, ref }: Props) {
+export function Editor({
+  value,
+  ghost,
+  listening,
+  transcriberAt,
+  onChange,
+  label,
+  placeholder,
+  compact = false,
+  ref
+}: Props) {
   const area = useRef<HTMLTextAreaElement | null>(null)
   // What the textarea last showed, and the user's selection in it.
   const shown = useRef({ value, start: value.length, end: value.length })
@@ -64,7 +78,7 @@ export function Editor({ value, ghost, listening, transcriberAt, onChange, label
   const preview = merged.startsWith(before) ? merged.slice(before.length) : ''
 
   return (
-    <div className="editor-field">
+    <div className={compact ? 'editor-field compact' : 'editor-field'}>
       <div className="editor-mirror" aria-hidden="true">
         {before}
         <span className="ghost">{preview}</span>
@@ -92,7 +106,7 @@ export function Editor({ value, ghost, listening, transcriberAt, onChange, label
         placeholder={
           preview || listening || label
             ? ''
-            : 'Start talking — or typing. Your words land here and save automatically.'
+            : (placeholder ?? 'Start talking — or typing. Your words land here and save automatically.')
         }
         aria-label={label ?? 'Page body'}
       />

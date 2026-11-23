@@ -648,7 +648,12 @@ async function writeExport(entry: Entry): Promise<void> {
     ...entry.manifest,
     updatedAt,
     title: snapshot.title.trim() || 'Untitled',
-    preview: previewOf(snapshot.notes.trim() || snapshot.summary.trim() || body),
+    // The words people said, not the export's transcript heading.
+    preview: previewOf(
+      snapshot.notes.trim() ||
+        snapshot.summary.trim() ||
+        snapshot.transcript.map((line) => line.text).join(' ')
+    ),
     tags: snapshot.tags,
     speakers: new Set(snapshot.transcript.flatMap((line) => (line.cluster ? [line.cluster] : []))).size,
     exportHash: sha256(text),
@@ -857,6 +862,19 @@ export async function editSession<T>(id: string, change: (doc: Y.Doc) => T): Pro
     const result = change(entry.doc)
     await flushExport(entry)
     return result
+  } finally {
+    release(entry)
+  }
+}
+
+/**
+ * Like `editSession`, but leaves the export to its usual debounce: for frequent writers (the
+ * live transcriber) that shouldn't rewrite the text file on every change.
+ */
+export async function changeSession<T>(id: string, change: (doc: Y.Doc) => T): Promise<T> {
+  const entry = await acquire(id)
+  try {
+    return change(entry.doc)
   } finally {
     release(entry)
   }

@@ -37,6 +37,8 @@ type Props = {
   showSpeakersBar: boolean
   /** Opens the picker from outside (the side panel); a new object each time. */
   pickerRequest: { speaker: string; anchor: DOMRect } | null
+  /** While recording into the transcript: the words not yet confirmed (null when not). */
+  live: string | null
 }
 
 type Picker = { speaker: string; line: string | null; anchor: DOMRect }
@@ -590,7 +592,8 @@ export function Transcript({
   onAssign,
   onUndo,
   showSpeakersBar,
-  pickerRequest
+  pickerRequest,
+  live
 }: Props) {
   const people = usePeople()
   const nowPlaying = usePlayback()
@@ -606,7 +609,9 @@ export function Transcript({
   const present = speakers.filter((speaker) =>
     transcript.some((line) => line.cluster === speaker.id)
   )
-  const pending = present.filter((speaker) => stateOf(speaker) !== 'sure')
+  // One voice is a dictation: no speaker labels, no bar, just paragraphs.
+  const solo = present.length < 2
+  const pending = solo ? [] : present.filter((speaker) => stateOf(speaker) !== 'sure')
   const unsure = transcript.filter((line) => tier(line.confidence) === 1)
 
   useEffect(() => {
@@ -630,10 +635,10 @@ export function Transcript({
   const splitSpeaker = split ? byId.get(split.speaker) : undefined
 
   return (
-    <section className="transcript" aria-label="Transcript">
-      <div className={showSpeakersBar ? 'speakers-bar' : 'speakers-bar status-only'}>
-        <span className="speakers-label">{labeled ? 'Speakers' : 'Transcript'}</span>
-        {present.map((speaker) => (
+    <section className={solo ? 'transcript solo' : 'transcript'} aria-label="Transcript">
+      <div className={showSpeakersBar && !solo ? 'speakers-bar' : 'speakers-bar status-only'}>
+        <span className="speakers-label">{labeled && !solo ? 'Speakers' : 'Transcript'}</span>
+        {(solo ? [] : present).map((speaker) => (
           <button
             key={speaker.id}
             type="button"
@@ -689,7 +694,7 @@ export function Transcript({
               {unsure.length} unsure {unsure.length === 1 ? 'line' : 'lines'}
             </button>
           ) : null}
-          {notesEngine !== 'off' && labeled ? (
+          {notesEngine !== 'off' && labeled && !solo ? (
             <button
               type="button"
               className="btn ghost"
@@ -787,6 +792,19 @@ export function Transcript({
             </div>
           )
         })}
+        {live !== null ? (
+          <div className="line live-line" aria-live="polite">
+            <div className="gutter">
+              <span className="who unknown">Listening</span>
+            </div>
+            <div className="line-body">
+              <p className="line-text live-text">
+                <span className="ghost">{live}</span>
+                <span className="transcriber-caret" />
+              </p>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {picker && pickedSpeaker ? (

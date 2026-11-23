@@ -43,6 +43,14 @@ import {
   readSegment,
   removeLiveNotes,
   replaceTranscript,
+  appendLiveSegment,
+  liveModeOf,
+  livePlaced,
+  markPlaced,
+  joinSplitLines,
+  initDoc,
+  mergeSpeakers,
+  renumberSpeakers,
   addTag,
   setSegmentText,
   snapshotOf,
@@ -675,6 +683,36 @@ async function checkTranscriptModel(): Promise<void> {
   }
   doc.destroy()
 
+  // Live speakers: phrases become lines for their speaker, one line per turn, and each placed
+  // phrase is counted so the window knows which unconfirmed words it still has to draw.
+  const live = new Y.Doc()
+  initDoc(live, { title: 'Live', notes: '' }, ORIGIN_USER)
+  startTranscriber(live, ORIGIN_TRANSCRIBER, 'transcript')
+  if (liveModeOf(live) !== 'transcript') fail('a new take should write the transcript')
+  markPlaced(live, ORIGIN_TRANSCRIBER)
+  if (livePlaced(live) !== 1) fail('placed phrases are not counted')
+  const gaps = { joinGap: 2, maxLine: 30 }
+  appendLiveSegment(live, { id: 'l1', rawId: null, start: 0, end: 1, cluster: 'c0', confidence: 0.9, text: 'morning all' }, gaps, ORIGIN_TRANSCRIBER)
+  appendLiveSegment(live, { id: 'l2', rawId: null, start: 1.5, end: 3, cluster: 'c0', confidence: 0.7, text: 'shall we start?' }, gaps, ORIGIN_TRANSCRIBER)
+  appendLiveSegment(live, { id: 'l3', rawId: null, start: 3.5, end: 5, cluster: 'c1', confidence: null, text: 'yes' }, gaps, ORIGIN_TRANSCRIBER)
+  const liveLines = snapshotOf(live).transcript.map((line) => `${line.cluster ?? '?'}:${line.text}:${String(line.confidence)}`)
+  if (liveLines.join('|') !== 'c0:Morning all shall we start?:0.7|c1:Yes:null') {
+    fail(`live lines: ${JSON.stringify(liveLines)}`)
+  }
+  // A phantom voice merged back: its split lines rejoin and placeholder names close the gap.
+  upsertSpeaker(live, 'c0', { name: 'Speaker 1' }, ORIGIN_TRANSCRIBER)
+  upsertSpeaker(live, 'c1', { name: 'Speaker 2' }, ORIGIN_TRANSCRIBER)
+  upsertSpeaker(live, 'c2', { name: 'Speaker 3' }, ORIGIN_TRANSCRIBER)
+  appendLiveSegment(live, { id: 'l4', rawId: null, start: 5.5, end: 7, cluster: 'c2', confidence: null, text: 'then the plan' }, gaps, ORIGIN_TRANSCRIBER)
+  mergeSpeakers(live, 'c1', 'c0', ORIGIN_TRANSCRIBER)
+  joinSplitLines(live, 30, ORIGIN_TRANSCRIBER)
+  renumberSpeakers(live, ORIGIN_TRANSCRIBER)
+  const rejoined = snapshotOf(live)
+  const mergedLines = rejoined.transcript.map((line) => `${line.cluster ?? '?'}:${line.text}`).join('|')
+  if (mergedLines !== 'c0:Morning all shall we start? Yes|c2:Then the plan') fail(`rejoined lines: ${mergedLines}`)
+  if (rejoined.speakers.find((speaker) => speaker.id === 'c2')?.name !== 'Speaker 2') fail('placeholders not renumbered')
+  live.destroy()
+
   // A Lyra 0.2 meeting: labeled lines in the note, speakers in .meta, audio in .audio.
   const id = 'legacy-meeting-smoke.txt'
   await mkdir(join(notesDir(), '.meta'), { recursive: true })
@@ -845,8 +883,8 @@ void app.whenReady().then(() => {
 
   registerIpc()
   registerSessionIpc()
-  registerRecorderIpc()
-  registerMeetingPipeline({ processRecordings: !isTestRun })
+  registerRecorderIpc({ identifySpeakers: !isTestRun })
+  registerMeetingPipeline()
   registerMeetingNotes()
   registerUpdater()
   if (!isTestRun) {
