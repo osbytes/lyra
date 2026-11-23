@@ -41,11 +41,11 @@ jobs:
           fi
           path=".changeset/dependabot-$NUMBER.md"
           # the title is data: written through printf into the file body, never evaluated. The
-          # website (apps/web) is not released, so a bump that only touches it gets an empty one.
+          # website (apps/website) is not released, so a bump that only touches it gets an empty one.
           app=false
           if grep -qE '^(package\.json|apps/lyra/package\.json)$' <<<"$changed"; then
             app=true
-          elif grep -qx 'pnpm-lock.yaml' <<<"$changed" && ! grep -qx 'apps/web/package.json' <<<"$changed"; then
+          elif grep -qx 'pnpm-lock.yaml' <<<"$changed" && ! grep -qx 'apps/website/package.json' <<<"$changed"; then
             app=true
           fi
           if [ "$app" = true ]; then

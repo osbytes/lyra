@@ -27,8 +27,8 @@ Turborepo + pnpm workspace. The app is `apps/lyra/`; every path below (and in `.
 unless it says otherwise. Run `pnpm` scripts from the repo root (they go through `turbo`) or inside `apps/lyra`.
 Repo-level files (`.changeset/`, `.github/`, `docs/`, `scripts/release-*`, `turbo.json`) stay at the root.
 
-The website is `apps/web/` (Next.js, deployed to Vercel, never released or versioned). Its live demo draws
-with the app's real stylesheet, scoped under `.lyra-ui` by `apps/web/scripts/sync-app-styles.mjs` on every
+The website is `apps/website/` (Next.js, deployed to Vercel, never released or versioned). Its live demo draws
+with the app's real stylesheet, scoped under `.lyra-ui` by `apps/website/scripts/sync-app-styles.mjs` on every
 dev and build, and ports a few pure helpers and components. The same TypeScript rules apply. The site has
 no telemetry and makes no third-party requests at runtime (fonts are self-hosted; GitHub is called from
 the server only).
