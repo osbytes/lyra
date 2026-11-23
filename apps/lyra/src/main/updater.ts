@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { autoUpdater } from 'electron-updater'
 import type { UpdateStatus } from '../shared/types'
 
-const RELEASES_URL = 'https://github.com/adavila0703/Lyra/releases'
+const RELEASES_URL = 'https://github.com/osbytes/lyra/releases'
 const CHECK_EVERY_MS = 4 * 60 * 60 * 1000
 
 let current: UpdateStatus = { state: 'idle' }

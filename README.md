@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="build/icon.png" width="128" alt="Lyra" />
+  <img src="apps/lyra/build/icon.png" width="128" alt="Lyra" />
 </p>
 
 <h1 align="center">Lyra</h1>
@@ -34,8 +34,8 @@
 **Requirements:** Node.js 20+, pnpm
 
 ```bash
-git clone https://github.com/adavila0703/Lyra.git
-cd Lyra
+git clone https://github.com/osbytes/lyra.git
+cd lyra
 pnpm install
 pnpm dev
 ```

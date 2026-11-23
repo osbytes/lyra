@@ -62,6 +62,6 @@ appImage:
   artifactName: ${name}-${version}.${ext}
 publish:
   provider: github
-  owner: adavila0703
-  repo: Lyra
+  owner: osbytes
+  repo: lyra
 npmRebuild: true

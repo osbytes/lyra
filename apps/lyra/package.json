@@ -6,7 +6,7 @@
   "main": "./out/main/index.js",
   "author": "Lyra contributors",
   "license": "MIT",
-  "homepage": "https://github.com/adavila0703/Lyra",
+  "homepage": "https://github.com/osbytes/lyra",
   "scripts": {
     "dev": "electron-vite dev",
     "start": "electron-vite preview",

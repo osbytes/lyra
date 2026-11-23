@@ -6,7 +6,7 @@ Lyra is a local desktop app. Audio, transcripts, and pages stay on the device. T
 
 **Do not open a public GitHub issue for security bugs.**
 
-Report privately through [GitHub Security Advisories](https://github.com/adavila0703/Lyra/security/advisories/new). Enable **Private vulnerability reporting** in the repository settings if that page is not available yet.
+Report privately through [GitHub Security Advisories](https://github.com/osbytes/lyra/security/advisories/new). Enable **Private vulnerability reporting** in the repository settings if that page is not available yet.
 
 Please include:
 

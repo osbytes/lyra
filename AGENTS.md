@@ -19,12 +19,19 @@ Roadmap: [docs/PLAN.md](docs/PLAN.md). Human contributor guide: [CONTRIBUTING.md
 | Meeting pipeline smoke | `pnpm smoke:meeting <file.wav>`: real diarization, Whisper, and relabeling; `LYRA_NOTES_ENGINE=local` adds notes; `LYRA_MODELS_DIR` reuses downloads |
 | Speaker evals | `pnpm eval:calls` (in `apps/lyra`): synthetic call/room scenarios with exact ground truth (speaker bleed, clipping, quick turns, crosstalk, similar voices); `pnpm eval:ami` scores real AMI meetings (`--meetings`, `--minutes`, `--mic`). WER, cpWER, DER; data and results go to `eval-data/` |
 | Package (Windows dir build) | `pnpm build:unpack`; runs `prepare:llama`, which ships node-llama-cpp as its own npm install |
+| Run the website | `pnpm dev:web` (http://localhost:3100); check with `pnpm --filter web check` and `pnpm --filter web build` |
 
 ## Layout
 
 Turborepo + pnpm workspace. The app is `apps/lyra/`; every path below (and in `.agents/`) is relative to it
 unless it says otherwise. Run `pnpm` scripts from the repo root (they go through `turbo`) or inside `apps/lyra`.
 Repo-level files (`.changeset/`, `.github/`, `docs/`, `scripts/release-*`, `turbo.json`) stay at the root.
+
+The website is `apps/website/` (Next.js, deployed to Vercel, never released or versioned). Its live demo draws
+with the app's real stylesheet, scoped under `.lyra-ui` by `apps/website/scripts/sync-app-styles.mjs` on every
+dev and build, and ports a few pure helpers and components. The same TypeScript rules apply. The site has
+no telemetry and makes no third-party requests at runtime (fonts are self-hosted; GitHub is called from
+the server only).
 
 - `src/main/` — Electron main process: files, settings, Whisper, tray/hotkeys/overlay, mic watcher, recorder, updater. Node APIs live here only.
 - `src/main/meeting/` — speaker pipeline (diarization worker, voiceprints) and meeting notes (local worker, Claude). Workers run in `utilityProcess`.

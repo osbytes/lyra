@@ -1,0 +1,131 @@
+/*
+ * Site tokens. The live demo uses the desktop app's own tokens instead, scoped to `.lyra-ui`
+ * (components/demo/app-styles.generated.css). Light and dark follow the OS, like the app.
+ */
+:root {
+  --paper: #f7f7fa;
+  --paper-2: #f0f0f4;
+  --card: #ffffff;
+  --ink: #18181f;
+  --ink-2: #45454f;
+  --muted: #5d5d6b;
+  --faint: #8b8b99;
+  --line: #e5e5eb;
+  --rule: rgba(80, 70, 229, 0.07);
+  --accent: #5046e5;
+  --accent-hover: #4338ca;
+  --accent-ink: #4338ca;
+  --accent-soft: #eef0ff;
+  --on-accent: #ffffff;
+  --record: #dc2626;
+  --record-soft: #fde8e8;
+  --spk-1: #5046e5;
+  --spk-2: #0d8f7f;
+  --spk-3: #b4407a;
+  --shadow-win: 0 1px 2px rgba(20, 20, 40, 0.05), 0 32px 64px -24px rgba(20, 20, 60, 0.28);
+
+  --f-display: var(--nf-serif), 'Charter', 'Iowan Old Style', Georgia, serif;
+  --f-ui: var(--nf-inter), -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --f-mono: var(--nf-mono), ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, monospace;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #0f0f13;
+    --paper-2: #141418;
+    --card: #1b1b21;
+    --ink: #ececf1;
+    --ink-2: #b6b6c3;
+    --muted: #a3a3b2;
+    --faint: #6e6e7c;
+    --line: #2a2a32;
+    --rule: rgba(124, 117, 255, 0.06);
+    --accent: #6158f0;
+    --accent-hover: #7069f5;
+    --accent-ink: #b4b0ff;
+    --accent-soft: rgba(124, 117, 255, 0.16);
+    --record: #ef4444;
+    --record-soft: rgba(239, 68, 68, 0.16);
+    --spk-1: #8f88ff;
+    --spk-2: #2cc4ad;
+    --spk-3: #e36fa8;
+    --shadow-win: 0 1px 2px rgba(0, 0, 0, 0.4), 0 40px 80px -24px rgba(0, 0, 0, 0.75);
+    color-scheme: dark;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  overflow-x: hidden;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--f-ui);
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: inherit;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+img,
+svg {
+  display: block;
+  max-width: 100%;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.9em;
+  height: 1.9em;
+  padding: 0 0.45em;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--ink-2);
+  font: 500 0.78em/1 var(--f-ui);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

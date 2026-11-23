@@ -18,3 +18,8 @@ build/llama/
 test-audio/
 eval-data/
 .turbo
+.next
+next-env.d.ts
+.vercel
+apps/website/components/demo/app-styles.generated.css
+*.tsbuildinfo
