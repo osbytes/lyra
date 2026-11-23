@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import type { SessionKind, WhisperStatus } from '../../../shared/types'
+import type { WhisperStatus } from '../../../shared/types'
 import type { DictationPhase } from '../hooks/useDictation'
+import { useMicrophones } from '../hooks/useMicrophones'
 import { formatDuration, shortcutLabel } from '../lib/format'
-import { ChevronDownIcon, MicIcon, MicSmallIcon, RecordIcon, StopIcon } from './Icons'
+import { Floating, Switch } from './Controls'
+import { ChevronDownIcon, MicIcon, MicSmallIcon, SpeakerIcon, StopIcon } from './Icons'
 import { MicrophoneSelect } from './MicrophoneSelect'
 
 const BAR_COUNT = 28
@@ -15,12 +17,15 @@ type Props = {
   status: WhisperStatus
   error: string | null
   notice: string | null
-  kind: SessionKind
   subscribeLevel: SubscribeLevel
+  /** Starts or stops recording into the open session. */
   onToggle: () => void
-  onMeeting: () => void
   micDeviceId: string | null
   onMicChange: (deviceId: string | null) => void
+  systemAudio: boolean
+  onSystemAudioChange: (on: boolean) => void
+  /** Narrow column (side panel open): sources show as icons only. */
+  compact: boolean
   /** Banners and toasts that float above the dock. */
   children?: ReactNode
 }
@@ -65,24 +70,116 @@ function useElapsed(running: boolean): number {
   return elapsed
 }
 
-function statusText(
-  phase: DictationPhase,
-  status: WhisperStatus,
-  kind: SessionKind
-): string {
+function statusText(phase: DictationPhase, status: WhisperStatus): string {
   if (status.state === 'downloading') {
     const pct = status.total ? Math.round((status.received / status.total) * 100) : 0
-    return `Downloading speech model… ${pct}%`
+    return `Downloading speech model… ${String(pct)}%`
   }
   if (phase === 'starting') return 'Warming up…'
   if (phase === 'finishing') return 'Finishing up…'
-  if (phase === 'listening' && kind === 'meeting') return 'Recording meeting'
   if (phase === 'listening') return 'Listening'
-  return 'Dictate'
+  return 'Continue session'
+}
+
+/** What the session records, and a popover to change it (microphone, computer audio). */
+function Sources({
+  micDeviceId,
+  onMicChange,
+  systemAudio,
+  onSystemAudioChange,
+  compact,
+  disabled
+}: Pick<
+  Props,
+  'micDeviceId' | 'onMicChange' | 'systemAudio' | 'onSystemAudioChange' | 'compact'
+> & {
+  disabled: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const anchor = useRef<HTMLButtonElement>(null)
+  const { microphones } = useMicrophones()
+  const mic = micDeviceId
+    ? microphones.find((entry) => entry.deviceId === micDeviceId)?.label
+    : undefined
+  const micLabel = mic ?? 'System mic'
+  const summary = `${micLabel}${systemAudio ? ' and computer audio' : ''}`
+  const rect = open ? anchor.current?.getBoundingClientRect() : undefined
+
+  return (
+    <>
+      <button
+        ref={anchor}
+        type="button"
+        className="dock-sources"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={`Recording: ${summary}. Change`}
+        title={`Recording: ${summary}`}
+        disabled={disabled}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <MicSmallIcon />
+        {compact ? null : <span className="dock-source-name">{micLabel}</span>}
+        {systemAudio ? (
+          <>
+            <span className="dock-plus" aria-hidden="true">
+              +
+            </span>
+            <SpeakerIcon />
+            {compact ? null : <span>Computer</span>}
+          </>
+        ) : null}
+        <ChevronDownIcon />
+      </button>
+      {open && rect ? (
+        <Floating>
+          <div className="picker-layer" onMouseDown={() => setOpen(false)}>
+            <div
+              className="picker sources"
+              role="dialog"
+              aria-label="What to record"
+              style={{
+                bottom: window.innerHeight - rect.top + 8,
+                left: Math.max(8, rect.right - 320)
+              }}
+              onMouseDown={(event) => {
+                event.stopPropagation()
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  setOpen(false)
+                  anchor.current?.focus()
+                }
+              }}
+            >
+              <strong>What to record</strong>
+              <div className="sources-row">
+                <span>Microphone</span>
+                <MicrophoneSelect value={micDeviceId} onChange={onMicChange} />
+              </div>
+              <div className="sources-row">
+                <span className="sources-label">
+                  Computer audio
+                  <small>
+                    The other side of calls. Speakers are labeled when there’s more than one.
+                  </small>
+                </span>
+                <Switch
+                  label="Record computer audio"
+                  checked={systemAudio}
+                  onChange={onSystemAudioChange}
+                />
+              </div>
+            </div>
+          </div>
+        </Floating>
+      ) : null}
+    </>
+  )
 }
 
 export function DictationDock(props: Props) {
-  const { phase, micName, status, error, notice, subscribeLevel, onToggle } = props
+  const { phase, status, error, notice, subscribeLevel, onToggle } = props
   const listening = phase === 'listening'
   const busy = phase === 'starting' || phase === 'finishing'
   const elapsed = useElapsed(listening)
@@ -114,21 +211,19 @@ export function DictationDock(props: Props) {
           className="mic-btn"
           onClick={onToggle}
           disabled={busy}
-          aria-label={listening ? 'Stop dictation' : 'Start dictation'}
-          title={`${listening ? 'Stop' : 'Start'} dictation (${shortcutLabel('D', true)})`}
+          aria-label={listening ? 'Stop recording' : 'Continue recording this session'}
+          title={`${listening ? 'Stop' : 'Continue session'} (${shortcutLabel('D', true)})`}
         >
           {listening ? <StopIcon /> : <MicIcon />}
         </button>
 
         <div className="dock-body">
-          <span className="dock-status">{statusText(phase, status, props.kind)}</span>
+          <span className="dock-status">{statusText(phase, status)}</span>
           {listening ? (
-            <span className="dock-hint">
-              {props.kind === 'meeting' ? micName || 'Microphone' : 'Say “new paragraph” to break'}
-            </span>
+            <span className="dock-hint">Say “new paragraph” to break</span>
           ) : (
             <span className="dock-hint">
-              <kbd>{shortcutLabel('D', true)}</kbd>
+              Adds to the end · <kbd>{shortcutLabel('D', true)}</kbd>
             </span>
           )}
         </div>
@@ -141,26 +236,14 @@ export function DictationDock(props: Props) {
         ) : (
           <>
             <span className="dock-divider" aria-hidden="true" />
-            <button
-              type="button"
-              className="dock-action"
-              onClick={props.onMeeting}
+            <Sources
+              micDeviceId={props.micDeviceId}
+              onMicChange={props.onMicChange}
+              systemAudio={props.systemAudio}
+              onSystemAudioChange={props.onSystemAudioChange}
+              compact={props.compact}
               disabled={busy}
-              title="Record a meeting: your mic and the computer’s audio, labeled by speaker"
-            >
-              <RecordIcon />
-              Meeting
-            </button>
-            <label className="dock-mic" title="Microphone">
-              <MicSmallIcon />
-              <MicrophoneSelect
-                className="dock-mic-select"
-                value={props.micDeviceId}
-                onChange={props.onMicChange}
-                disabled={busy}
-              />
-              <ChevronDownIcon />
-            </label>
+            />
           </>
         )}
       </div>

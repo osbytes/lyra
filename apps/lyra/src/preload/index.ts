@@ -33,6 +33,7 @@ const api: VoicePagesApi = {
   createPage: (options) => ipcRenderer.invoke('pages:create', options ?? {}),
   savePage: (page) => ipcRenderer.invoke('pages:save', page),
   deletePage: (id) => ipcRenderer.invoke('pages:delete', id),
+  revealPage: (id) => ipcRenderer.invoke('pages:reveal', id),
   onPagesChanged: (callback) => subscribe('pages:changed', () => {
       callback()
     }),
@@ -70,8 +71,7 @@ const api: VoicePagesApi = {
   },
   getHotkeyStatus: () => ipcRenderer.invoke('hotkey:status'),
   onHotkeyStatus: (callback) => subscribe<HotkeyStatus[]>('hotkey:status', callback),
-  startRecording: (pageId, withSystem, kind) =>
-    ipcRenderer.invoke('recorder:start', pageId, withSystem, kind),
+  startRecording: (pageId, withSystem) => ipcRenderer.invoke('recorder:start', pageId, withSystem),
   appendRecording: (track, pcm16) => {
     ipcRenderer.send('recorder:append', track, pcm16)
   },

@@ -104,6 +104,27 @@ export const ChevronDownIcon = () => (
   </Icon>
 )
 
+export const SpeakerIcon = () => (
+  <Icon width="15" height="15">
+    <path d="M4 9v6h4l5 4V5L8 9z" />
+    <path d="M17 8.5a5 5 0 0 1 0 7" />
+  </Icon>
+)
+
+export const PanelIcon = () => (
+  <Icon>
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="M15 4v16" />
+  </Icon>
+)
+
+export const TagIcon = () => (
+  <Icon width="14" height="14">
+    <path d="M3 12V4h8l10 10-8 8z" />
+    <circle cx="7.5" cy="8.5" r="1.2" fill="currentColor" />
+  </Icon>
+)
+
 export const PlayIcon = () => (
   <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
     <path d="M7 4.5v15l12.5-7.5z" fill="currentColor" />

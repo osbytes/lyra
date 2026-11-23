@@ -14,7 +14,7 @@ import { copyFile, mkdir, readdir, readFile, utimes, writeFile } from 'node:fs/p
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import { migrateLegacyPages, moveNotes, notesDir, startWatchingNotes } from './pages'
+import { migrateLegacyPages, moveNotes, notesDir, resolveInNotes, startWatchingNotes } from './pages'
 import {
   applySessionUpdate,
   closeSessionFor,
@@ -35,11 +35,13 @@ import {
 } from './sessionStore'
 import * as Y from 'yjs'
 import {
-  appendLiveText,
+  appendLiveNotes,
   editDoc,
   ORIGIN_USER,
   readSegment,
+  removeLiveNotes,
   replaceTranscript,
+  addTag,
   setSegmentText,
   snapshotOf,
   upsertSpeaker
@@ -226,6 +228,9 @@ function registerIpc(): void {
     savePage(page)
   )
   ipcMain.handle('pages:delete', (_event, id: string) => deletePage(id))
+  ipcMain.handle('pages:reveal', (_event, id: unknown) => {
+    shell.showItemInFolder(resolveInNotes(id))
+  })
   ipcMain.handle('sessions:open', (event, id: unknown) => {
     if (typeof id !== 'string') throw new Error('Invalid session id')
     return openSessionFor(id, event.sender.id)
@@ -253,6 +258,8 @@ async function seedScreenshotMeeting(): Promise<void> {
   const alex = await addPerson('Alex', [0.3, 0.2, 0.1], false)
   await editSession(meeting.id, (doc) => {
     doc.transact(() => {
+      addTag(doc, 'design', 'seed')
+      addTag(doc, 'team', 'seed')
       editDoc(doc, {
         title: 'Design review',
         summary:
@@ -382,7 +389,22 @@ async function captureScreenshot(win: BrowserWindow): Promise<void> {
         await click('.speaker-chip.likely')
         await settle()
         await save(reviewDir, `picker-${theme}.png`)
+        // The same session in the side-panel layout.
+        await pressShortcut('.')
+        await settle()
+        await save(reviewDir, `panel-${theme}.png`)
+        await pressShortcut('.')
+        await settle()
       }
+      // What the session records, and an open themed select.
+      nativeTheme.themeSource = 'light'
+      await reload()
+      await click('.dock-sources')
+      await settle()
+      await save(reviewDir, 'sources-light.png')
+      await click('.picker.sources .select')
+      await settle()
+      await save(reviewDir, 'select-light.png')
       // Deleting shows the Undo toast; the page comes back on reload since the file stays.
       nativeTheme.themeSource = 'light'
       await reload()
@@ -432,7 +454,7 @@ async function runMeetingFixture(wavPath: string): Promise<void> {
     const systemPath = systemFixture ? trackPath(page.id, 'system') : null
     if (systemFixture && systemPath) await copyFile(systemFixture, systemPath)
     const started = Date.now()
-    await processMeeting({ pageId: page.id, kind: 'meeting', micPath, systemPath, seconds: 0 })
+    await processMeeting({ pageId: page.id, micPath, systemPath, seconds: 0 })
     await flushAllSessions()
     const exported = await readFile(join(notesDir(), page.id), 'utf8')
     const took = ((Date.now() - started) / 1000).toFixed(1)
@@ -442,10 +464,26 @@ async function runMeetingFixture(wavPath: string): Promise<void> {
       segment.confidence === null ? '-' : segment.confidence.toFixed(2)
     )
     process.stdout.write(`meeting-fixture line confidence: ${confidence.join(' ')}\n`)
+    // Evals (scripts/run-eval.cjs) score this pass, before the rename below changes any labels.
+    const output = process.env.LYRA_MEETING_OUTPUT
+    if (output) {
+      const segments = labeled.transcript.map(({ start, end, cluster, text }) => ({
+        speaker: cluster ?? 'unknown',
+        start,
+        end,
+        text
+      }))
+      await writeFile(output, JSON.stringify({ seconds: +took, segments }, null, 2), 'utf8')
+    }
 
     // Name the first speaker and save their voice, as the speaker picker does.
     const first = labeled.speakers[0]
-    if (!first) throw new Error('no speakers were found')
+    if (!first) {
+      // One voice: the session stays notes, so there's nothing to name.
+      process.stdout.write('meeting-fixture: one voice, kept as notes\n')
+      app.exit(0)
+      return
+    }
     await assignSpeaker(page.id, first.id, { name: 'Fixture Person', remember: true })
     await flushAllSessions()
     const renamed = await readFile(join(notesDir(), page.id), 'utf8')
@@ -597,12 +635,17 @@ async function checkTranscriptModel(): Promise<void> {
     throw new Error(`transcript: ${message}`)
   }
   const doc = new Y.Doc()
-  appendLiveText(doc, 'Hello', { start: 0, end: 1 }, 'live')
-  appendLiveText(doc, ' there.', { start: 1, end: 2 }, 'live')
-  const live = snapshotOf(doc).transcript
-  if (live.length !== 1 || live[0]?.text !== 'Hello there.' || live[0].cluster !== null) {
-    fail(`live text: ${JSON.stringify(live)}`)
-  }
+  // Live text lands in the notes; once labeled, untouched live text comes back out.
+  editDoc(doc, { notes: 'Agenda' }, ORIGIN_USER)
+  appendLiveNotes(doc, 'Agenda\n\nHello', true, ORIGIN_USER)
+  appendLiveNotes(doc, 'Agenda\n\nHello there.', false, ORIGIN_USER)
+  editDoc(doc, { notes: `My notes: ${snapshotOf(doc).notes}` }, ORIGIN_USER)
+  removeLiveNotes(doc, 'pipeline')
+  if (snapshotOf(doc).notes !== 'My notes: Agenda') fail(`live notes: ${JSON.stringify(snapshotOf(doc).notes)}`)
+  appendLiveNotes(doc, 'My notes: Agenda kept', true, ORIGIN_USER)
+  editDoc(doc, { notes: 'My notes: Agenda KEPT' }, ORIGIN_USER)
+  removeLiveNotes(doc, 'pipeline')
+  if (snapshotOf(doc).notes !== 'My notes: Agenda KEPT') fail('edited live text was removed')
   replaceTranscript(doc, [
     { id: 'a', rawId: 'a', start: 0, end: 4, cluster: 'c0', confidence: 0.9, text: 'Hello there.' },
     { id: 'b', rawId: 'b', start: 4, end: 8, cluster: 'c1', confidence: 0.4, text: 'Hi.' }
@@ -705,19 +748,19 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         await window.api.deletePage(session.id)
 
         const meetingPage = await window.api.createPage()
-        await window.api.startRecording(meetingPage.id, false, 'dictation')
+        await window.api.startRecording(meetingPage.id, false)
         window.api.appendRecording('mic', new Int16Array(16000).fill(1000))
         window.api.appendRecordingWords([{ text: ' Hello', start: 0.2, end: 0.6 }])
         const recording = await window.api.stopRecording()
-        if (!recording || Math.abs(recording.seconds - 1) > 0.01 || recording.systemPath !== null || recording.kind !== 'dictation') {
+        if (!recording || Math.abs(recording.seconds - 1) > 0.01 || recording.systemPath !== null) {
           fail('recording was wrong: ' + JSON.stringify(recording))
         }
         // Recording again continues the same timeline, with the computer's audio padded in.
-        await window.api.startRecording(meetingPage.id, true, 'meeting')
+        await window.api.startRecording(meetingPage.id, true)
         window.api.appendRecording('mic', new Int16Array(8000).fill(500))
         window.api.appendRecording('system', new Int16Array(8000).fill(500))
         const second = await window.api.stopRecording()
-        if (!second || Math.abs(second.seconds - 1.5) > 0.01 || !second.systemPath || second.kind !== 'meeting') {
+        if (!second || Math.abs(second.seconds - 1.5) > 0.01 || !second.systemPath) {
           fail('continued recording was wrong: ' + JSON.stringify(second))
         }
         const heard = await window.api.sessionAudio(meetingPage.id, 0.5, 1.0)
@@ -727,6 +770,8 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         for (const bad of ['../escape.txt', '..\\\\escape.txt', '.hidden.txt', 'x/y.txt', 'note.exe']) {
           const rejected = await window.api.getPage(bad).then(() => false, () => true)
           if (!rejected) fail('path guard let through ' + bad)
+          const revealRejected = await window.api.revealPage(bad).then(() => false, () => true)
+          if (!revealRejected) fail('reveal let through ' + bad)
         }
         return 'ok'
       })()

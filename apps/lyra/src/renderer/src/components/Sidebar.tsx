@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import type { PageSummary, UpdateStatus } from '../../../shared/types'
 import lyraIcon from '../assets/lyra-icon.png'
 import { dayGroup, shortcutLabel } from '../lib/format'
-import { GearIcon, PlusIcon, SearchIcon, TrashIcon } from './Icons'
+import { GearIcon, PeopleIcon, PlusIcon, SearchIcon, TrashIcon } from './Icons'
 
 type Props = {
   pages: PageSummary[]
@@ -12,6 +12,10 @@ type Props = {
   onCreate: () => void
   onDelete: (page: PageSummary) => void
   onSettings: () => void
+  /** Every tag in use, with counts, most used first. */
+  tags: readonly (readonly [string, number])[]
+  tagFilter: string | null
+  onTagFilter: (tag: string | null) => void
 }
 
 function updateLabel(status: UpdateStatus): string | null {
@@ -51,17 +55,22 @@ export function Sidebar({
   onOpen,
   onCreate,
   onDelete,
-  onSettings
+  onSettings,
+  tags,
+  tagFilter,
+  onTagFilter
 }: Props) {
   const [query, setQuery] = useState('')
 
   const groups = useMemo(() => {
     const needle = query.trim().toLowerCase()
-    const visible = needle
-      ? pages.filter((page) => `${page.title} ${page.preview}`.toLowerCase().includes(needle))
-      : pages
+    const visible = pages.filter(
+      (page) =>
+        (!needle || `${page.title} ${page.preview} ${page.tags.join(' ')}`.toLowerCase().includes(needle)) &&
+        (!tagFilter || page.tags.includes(tagFilter))
+    )
     return groupByDay(visible)
-  }, [pages, query])
+  }, [pages, query, tagFilter])
 
   const label = updateLabel(update)
   const onUpdate = (): void => {
@@ -87,26 +96,60 @@ export function Sidebar({
             onChange={(event) => {
               setQuery(event.target.value)
             }}
-            placeholder="Search pages"
-            aria-label="Search pages"
+            placeholder="Search sessions"
+            aria-label="Search sessions"
           />
         </label>
         <button
           className="new-page-btn"
           type="button"
           onClick={onCreate}
-          title={`New page (${shortcutLabel('N')})`}
-          aria-label="New page"
+          title={`New session (${shortcutLabel('N')})`}
+          aria-label="New session"
         >
           <PlusIcon />
         </button>
       </div>
 
-      <nav className="page-list" aria-label="Pages">
+      {tags.length ? (
+        <div className="tag-filters">
+          <div className="tag-filters-scroll" role="group" aria-label="Filter by tag">
+            <button
+              type="button"
+              className="filter-chip"
+              aria-pressed={tagFilter === null}
+              onClick={() => onTagFilter(null)}
+            >
+              All
+            </button>
+            {tags.map(([tag, count]) => (
+              <button
+                key={tag}
+                type="button"
+                className="filter-chip"
+                aria-pressed={tagFilter === tag}
+                onClick={() => onTagFilter(tagFilter === tag ? null : tag)}
+              >
+                #{tag}
+                <span className="filter-count">{count}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      <nav className="page-list" aria-label="Sessions">
         {groups.length === 0 ? (
-          query ? (
+          tagFilter && !query ? (
             <div className="page-list-empty">
-              <p>No pages match “{query.trim()}”.</p>
+              <p>No sessions tagged #{tagFilter}.</p>
+              <button className="btn" type="button" onClick={() => onTagFilter(null)}>
+                Show all sessions
+              </button>
+            </div>
+          ) : query ? (
+            <div className="page-list-empty">
+              <p>No sessions match “{query.trim()}”.</p>
               <button
                 className="btn"
                 type="button"
@@ -118,7 +161,7 @@ export function Sidebar({
               </button>
             </div>
           ) : (
-            <p className="page-list-empty">Your pages will appear here.</p>
+            <p className="page-list-empty">Your sessions will appear here.</p>
           )
         ) : (
           groups.map((group) => (
@@ -135,13 +178,21 @@ export function Sidebar({
                     }}
                   >
                     <span className="page-title">{page.title || 'Untitled'}</span>
-                    <span className="page-preview">{page.preview || 'Empty page'}</span>
+                    <span className="page-preview">
+                      {page.speakers > 1 ? (
+                        <span className="page-speakers">
+                          <PeopleIcon />
+                          {page.speakers} speakers ·{' '}
+                        </span>
+                      ) : null}
+                      {page.preview || 'Empty session'}
+                    </span>
                   </button>
                   <button
                     type="button"
                     className="page-delete"
                     aria-label={`Delete ${page.title || 'Untitled'}`}
-                    title="Delete page"
+                    title="Delete session"
                     onClick={() => {
                       onDelete(page)
                     }}

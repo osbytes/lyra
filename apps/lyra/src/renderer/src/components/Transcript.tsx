@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent
+} from 'react'
 import type { MeetingStatus, Person, Settings } from '../../../shared/types'
 import {
   LOW_CONFIDENCE,
@@ -8,7 +14,7 @@ import {
 } from '../../../shared/sessionDoc'
 import type { NewSpeaker } from '../hooks/usePages'
 import { log } from '../lib/log'
-import { Switch } from './Controls'
+import { Floating, Switch } from './Controls'
 import { CloseIcon, PlayIcon, PlusIcon } from './Icons'
 import { usePeople } from './People'
 
@@ -27,6 +33,10 @@ type Props = {
   onEditLine: (id: string, text: string) => void
   onAssign: (ids: readonly string[], speaker: string | NewSpeaker) => string | null
   onUndo: () => void
+  /** False in the side-panel layout, where speakers are listed in the panel instead. */
+  showSpeakersBar: boolean
+  /** Opens the picker from outside (the side panel); a new object each time. */
+  pickerRequest: { speaker: string; anchor: DOMRect } | null
 }
 
 type Picker = { speaker: string; line: string | null; anchor: DOMRect }
@@ -37,7 +47,9 @@ function clock(seconds: number): string {
   const total = Math.max(0, Math.floor(seconds))
   const m = Math.floor(total / 60)
   const s = String(total % 60).padStart(2, '0')
-  return total >= 3600 ? `${String(Math.floor(m / 60))}:${String(m % 60).padStart(2, '0')}:${s}` : `${String(m)}:${s}`
+  return total >= 3600
+    ? `${String(Math.floor(m / 60))}:${String(m % 60).padStart(2, '0')}:${s}`
+    : `${String(m)}:${s}`
 }
 
 type SpeakerState = 'sure' | 'likely' | 'unknown'
@@ -128,7 +140,9 @@ function SpeakerPicker({
   const own = lines.filter((line) => line.cluster === speaker.id)
   const line = picker.line ? lines.find((entry) => entry.id === picker.line) : undefined
   const odd = own.filter((entry) => entry.confidence !== null && entry.confidence < LOW_CONFIDENCE)
-  const matched = speaker.personId ? people.find((person) => person.id === speaker.personId) : undefined
+  const matched = speaker.personId
+    ? people.find((person) => person.id === speaker.personId)
+    : undefined
 
   useEffect(() => {
     input.current?.focus()
@@ -141,7 +155,9 @@ function SpeakerPicker({
     const ranked = people
       .filter((person) => person.name.toLowerCase().includes(needle))
       .map((person) => ({ kind: 'person' as const, person, score: score(person) }))
-      .sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || a.person.name.localeCompare(b.person.name))
+      .sort(
+        (a, b) => (b.score ?? -1) - (a.score ?? -1) || a.person.name.localeCompare(b.person.name)
+      )
     const out: Option[] = ranked
     const exact = people.some((person) => person.name.toLowerCase() === needle)
     if (needle && !exact) out.push({ kind: 'new', name: query.trim() })
@@ -232,9 +248,11 @@ function SpeakerPicker({
               type="button"
               className="chip-btn"
               onClick={() => {
-                void listen(pageId, sample.start, Math.min(sample.end, sample.start + 8)).then((ok) => {
-                  if (!ok) setError('This session’s audio is no longer kept.')
-                })
+                void listen(pageId, sample.start, Math.min(sample.end, sample.start + 8)).then(
+                  (ok) => {
+                    if (!ok) setError('This session’s audio is no longer kept.')
+                  }
+                )
               }}
             >
               <PlayIcon />
@@ -248,10 +266,20 @@ function SpeakerPicker({
 
         {line && own.length > 1 ? (
           <div className="segmented picker-scope" role="radiogroup" aria-label="Change">
-            <button type="button" role="radio" aria-checked={scope === 'line'} onClick={() => setScope('line')}>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={scope === 'line'}
+              onClick={() => setScope('line')}
+            >
               Just this line
             </button>
-            <button type="button" role="radio" aria-checked={scope === 'all'} onClick={() => setScope('all')}>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={scope === 'all'}
+              onClick={() => setScope('all')}
+            >
               All {own.length} lines
             </button>
           </div>
@@ -260,7 +288,10 @@ function SpeakerPicker({
         {scope === 'all' && odd.length > 0 && odd.length < own.length ? (
           <div className="picker-hint" role="note">
             <span>
-              <b>{odd.length} of {own.length} lines</b> sound like someone else.
+              <b>
+                {odd.length} of {own.length} lines
+              </b>{' '}
+              sound like someone else.
             </span>
             <button type="button" className="btn" onClick={onSplit}>
               Split…
@@ -273,7 +304,9 @@ function SpeakerPicker({
             <button
               type="button"
               className="btn primary"
-              onClick={() => void run({ kind: 'person', person: matched, score: speaker.confidence })}
+              onClick={() =>
+                void run({ kind: 'person', person: matched, score: speaker.confidence })
+              }
             >
               Yes, it’s {matched.name}
             </button>
@@ -319,7 +352,9 @@ function SpeakerPicker({
                   <span className="meter" aria-hidden="true">
                     <i style={{ width: percent(option.score ?? 0) }} />
                   </span>
-                  <span className="picker-score">{option.score === null ? '—' : percent(option.score)}</span>
+                  <span className="picker-score">
+                    {option.score === null ? '—' : percent(option.score)}
+                  </span>
                 </>
               ) : option.kind === 'new' ? (
                 <span className="picker-name">
@@ -332,7 +367,11 @@ function SpeakerPicker({
           ))}
         </ul>
 
-        {error ? <p className="picker-error" role="alert">{error}</p> : null}
+        {error ? (
+          <p className="picker-error" role="alert">
+            {error}
+          </p>
+        ) : null}
 
         <div className="picker-foot">
           {scope === 'all' ? (
@@ -370,11 +409,19 @@ function SplitDialog({
   onSplit: (ids: string[]) => void
 }) {
   const own = useMemo(
-    () => lines.filter((line) => line.cluster === speaker.id).sort((a, b) => (a.confidence ?? 1) - (b.confidence ?? 1)),
+    () =>
+      lines
+        .filter((line) => line.cluster === speaker.id)
+        .sort((a, b) => (a.confidence ?? 1) - (b.confidence ?? 1)),
     [lines, speaker.id]
   )
   const [picked, setPicked] = useState(
-    () => new Set(own.filter((line) => line.confidence !== null && line.confidence < LOW_CONFIDENCE).map((line) => line.id))
+    () =>
+      new Set(
+        own
+          .filter((line) => line.confidence !== null && line.confidence < LOW_CONFIDENCE)
+          .map((line) => line.id)
+      )
   )
   const valid = picked.size > 0 && picked.size < own.length
   const top = Math.min(anchor.bottom + 8, window.innerHeight - 440)
@@ -395,7 +442,10 @@ function SplitDialog({
         }}
       >
         <strong>Split {speaker.name} into two speakers</strong>
-        <p>Tick the lines someone else said. Lyra ticked the ones whose voice is furthest from the rest.</p>
+        <p>
+          Tick the lines someone else said. Lyra ticked the ones whose voice is furthest from the
+          rest.
+        </p>
         <ul className="split-list">
           {own.map((line) => (
             <li key={line.id}>
@@ -414,7 +464,9 @@ function SplitDialog({
                 />
                 <span className="split-time">{clock(line.start)}</span>
                 <span className="split-text">{line.text}</span>
-                <span className="split-score">{line.confidence === null ? '—' : percent(line.confidence)}</span>
+                <span className="split-score">
+                  {line.confidence === null ? '—' : percent(line.confidence)}
+                </span>
               </label>
             </li>
           ))}
@@ -428,7 +480,12 @@ function SplitDialog({
           <button type="button" className="btn" onClick={onCancel}>
             Cancel
           </button>
-          <button type="button" className="btn primary" disabled={!valid} onClick={() => onSplit([...picked])}>
+          <button
+            type="button"
+            className="btn primary"
+            disabled={!valid}
+            onClick={() => onSplit([...picked])}
+          >
             Split
           </button>
         </div>
@@ -488,7 +545,9 @@ export function Transcript({
   notesEngine,
   onEditLine,
   onAssign,
-  onUndo
+  onUndo,
+  showSpeakersBar,
+  pickerRequest
 }: Props) {
   const people = usePeople()
   const status = useMeetingStatus(pageId)
@@ -498,7 +557,9 @@ export function Transcript({
   const byId = useMemo(() => new Map(speakers.map((speaker) => [speaker.id, speaker])), [speakers])
   const busy = !!status && status.state !== 'done' && status.state !== 'error'
   const labeled = transcript.some((line) => line.cluster !== null)
-  const present = speakers.filter((speaker) => transcript.some((line) => line.cluster === speaker.id))
+  const present = speakers.filter((speaker) =>
+    transcript.some((line) => line.cluster === speaker.id)
+  )
   const pending = present.filter((speaker) => stateOf(speaker) !== 'sure')
   const unsure = transcript.filter((line) => tier(line.confidence) === 1)
 
@@ -507,6 +568,12 @@ export function Transcript({
     const timer = setTimeout(() => setToast(null), 6000)
     return () => clearTimeout(timer)
   }, [toast])
+
+  useEffect(() => {
+    if (!pickerRequest) return
+    setSplit(null)
+    setPicker({ speaker: pickerRequest.speaker, line: null, anchor: pickerRequest.anchor })
+  }, [pickerRequest])
 
   const openPicker = (speaker: string, line: string | null, target: Element): void => {
     setSplit(null)
@@ -518,7 +585,7 @@ export function Transcript({
 
   return (
     <section className="transcript" aria-label="Transcript">
-      <div className="speakers-bar">
+      <div className={showSpeakersBar ? 'speakers-bar' : 'speakers-bar status-only'}>
         <span className="speakers-label">{labeled ? 'Speakers' : 'Transcript'}</span>
         {present.map((speaker) => (
           <button
@@ -545,7 +612,9 @@ export function Transcript({
         ))}
         <span className="speakers-tools">
           {status && status.state !== 'done' ? (
-            <span className={status.state === 'error' ? 'meeting-status is-error' : 'meeting-status'}>
+            <span
+              className={status.state === 'error' ? 'meeting-status is-error' : 'meeting-status'}
+            >
               {statusLabel(status)}
             </span>
           ) : null}
@@ -636,7 +705,9 @@ export function Transcript({
                   </button>
                   {line.cluster ? <Signal confidence={line.confidence} /> : null}
                   {level < 3 && line.confidence !== null ? (
-                    <span className={level === 1 ? 'line-pct low' : 'line-pct'}>{percent(line.confidence)}</span>
+                    <span className={level === 1 ? 'line-pct low' : 'line-pct'}>
+                      {percent(line.confidence)}
+                    </span>
                   ) : null}
                 </span>
               </div>
@@ -666,52 +737,60 @@ export function Transcript({
       </div>
 
       {picker && pickedSpeaker ? (
-        <SpeakerPicker
-          key={`${picker.speaker}:${picker.line ?? ''}`}
-          pageId={pageId}
-          picker={picker}
-          speaker={pickedSpeaker}
-          allSpeakers={speakers}
-          lines={transcript}
-          people={people}
-          onClose={() => setPicker(null)}
-          onAssign={onAssign}
-          onSplit={() => {
-            setSplit({ speaker: picker.speaker, anchor: picker.anchor })
-            setPicker(null)
-          }}
-        />
+        <Floating>
+          <SpeakerPicker
+            key={`${picker.speaker}:${picker.line ?? ''}`}
+            pageId={pageId}
+            picker={picker}
+            speaker={pickedSpeaker}
+            allSpeakers={speakers}
+            lines={transcript}
+            people={people}
+            onClose={() => setPicker(null)}
+            onAssign={onAssign}
+            onSplit={() => {
+              setSplit({ speaker: picker.speaker, anchor: picker.anchor })
+              setPicker(null)
+            }}
+          />
+        </Floating>
       ) : null}
 
       {split && splitSpeaker ? (
-        <SplitDialog
-          speaker={splitSpeaker}
-          lines={transcript}
-          anchor={split.anchor}
-          onCancel={() => setSplit(null)}
-          onSplit={(ids) => {
-            const blank = `Speaker ${String(speakers.length + 1)}`
-            const created = onAssign(ids, { name: blank, personId: null, confirmed: false })
-            setToast(`Split ${splitSpeaker.name} · ${String(ids.length)} ${ids.length === 1 ? 'line' : 'lines'} moved to ${blank}`)
-            setSplit(null)
-            if (created) setPicker({ speaker: created, line: null, anchor: split.anchor })
-          }}
-        />
+        <Floating>
+          <SplitDialog
+            speaker={splitSpeaker}
+            lines={transcript}
+            anchor={split.anchor}
+            onCancel={() => setSplit(null)}
+            onSplit={(ids) => {
+              const blank = `Speaker ${String(speakers.length + 1)}`
+              const created = onAssign(ids, { name: blank, personId: null, confirmed: false })
+              setToast(
+                `Split ${splitSpeaker.name} · ${String(ids.length)} ${ids.length === 1 ? 'line' : 'lines'} moved to ${blank}`
+              )
+              setSplit(null)
+              if (created) setPicker({ speaker: created, line: null, anchor: split.anchor })
+            }}
+          />
+        </Floating>
       ) : null}
 
       {toast ? (
-        <div className="transcript-toast toast" role="status">
-          <span>{toast}</span>
-          <button
-            type="button"
-            onClick={() => {
-              onUndo()
-              setToast(null)
-            }}
-          >
-            Undo
-          </button>
-        </div>
+        <Floating>
+          <div className="transcript-toast toast" role="status">
+            <span>{toast}</span>
+            <button
+              type="button"
+              onClick={() => {
+                onUndo()
+                setToast(null)
+              }}
+            >
+              Undo
+            </button>
+          </div>
+        </Floating>
       ) : null}
     </section>
   )

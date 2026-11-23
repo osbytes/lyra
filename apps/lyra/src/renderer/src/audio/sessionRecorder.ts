@@ -1,4 +1,4 @@
-import type { AudioTrack, RecordingKind } from '../../../shared/types'
+import type { AudioTrack } from '../../../shared/types'
 import { SAMPLE_RATE } from './vad'
 
 /** Send audio to main about once a second instead of 31 tiny messages. */
@@ -48,8 +48,8 @@ export class SessionRecorder {
     this.system = withSystem ? new TrackBuffer('system') : null
   }
 
-  static async start(pageId: string, withSystem: boolean, kind: RecordingKind): Promise<SessionRecorder> {
-    const offset = await window.api.startRecording(pageId, withSystem, kind)
+  static async start(pageId: string, withSystem: boolean): Promise<SessionRecorder> {
+    const offset = await window.api.startRecording(pageId, withSystem)
     return new SessionRecorder(withSystem, offset)
   }
 

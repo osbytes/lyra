@@ -4,10 +4,9 @@ import { log } from './log'
 import { toggleSession } from './session'
 import { getSettings, onSettingsChanged } from './settings'
 
-const ACTIONS: readonly HotkeyAction[] = ['dictation', 'meeting']
-const SETTING: Record<HotkeyAction, 'hotkey' | 'meetingHotkey'> = {
-  dictation: 'hotkey',
-  meeting: 'meetingHotkey'
+const ACTIONS: readonly HotkeyAction[] = ['session']
+const SETTING: Record<HotkeyAction, 'hotkey'> = {
+  session: 'hotkey'
 }
 
 const statuses = new Map<HotkeyAction, HotkeyStatus>()
@@ -29,17 +28,12 @@ function register(action: HotkeyAction, accelerator: string): void {
   if (previous?.registered) globalShortcut.unregister(previous.accelerator)
 
   let status: HotkeyStatus = { action, accelerator, registered: false, error: null }
-  const clash = ACTIONS.some(
-    (other) => other !== action && statuses.get(other)?.accelerator === accelerator
-  )
   if (!accelerator.trim()) {
     // Empty means "no shortcut".
-  } else if (clash) {
-    status = { ...status, error: 'Already used by another Lyra shortcut.' }
   } else {
     try {
       const ok = globalShortcut.register(accelerator, () => {
-        toggleSession(action)
+        toggleSession()
       })
       status = ok
         ? { ...status, registered: true }
@@ -59,7 +53,7 @@ function registerAll(settings: Settings): void {
   broadcast()
 }
 
-/** Registers the global dictation and meeting shortcuts and keeps them in sync with settings. */
+/** Registers the global session shortcut and keeps it in sync with settings. */
 export function registerHotkeys(): void {
   ipcMain.handle('hotkey:status', () => list())
   registerAll(getSettings())

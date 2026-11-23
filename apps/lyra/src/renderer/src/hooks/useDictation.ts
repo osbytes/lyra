@@ -3,7 +3,7 @@ import { openMicrophone, openSystemAudio, startCapture } from '../audio/capture'
 import { SessionRecorder } from '../audio/sessionRecorder'
 import { StreamingTranscriber } from '../audio/streaming'
 import { SAMPLE_RATE, VoiceDetector } from '../audio/vad'
-import type { RecordingKind, TranscriptWord } from '../../../shared/types'
+import type { TranscriptWord } from '../../../shared/types'
 import { log } from '../lib/log'
 import { holdBackCommand } from '../text/transcript'
 
@@ -26,8 +26,8 @@ type Options = {
   getDeviceId: () => string | null
 }
 
-/** What to record: every session's audio is kept; a meeting can add the computer's audio. */
-export type RecordOptions = { pageId: string; kind: RecordingKind; systemAudio: boolean }
+/** What to record: the session's mic, and the computer's audio when that setting is on. */
+export type RecordOptions = { pageId: string; systemAudio: boolean }
 
 export type Span = { start: number; end: number }
 
@@ -176,7 +176,7 @@ export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
       if (record.systemAudio && !system) {
         setNotice('Couldn’t capture computer audio — recording your microphone only.')
       }
-      const activeRecorder = await SessionRecorder.start(record.pageId, system !== null, record.kind)
+      const activeRecorder = await SessionRecorder.start(record.pageId, system !== null)
       timeline.offset = activeRecorder.offset
       const streamer = new StreamingTranscriber(
         transcribe,

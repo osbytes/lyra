@@ -266,8 +266,14 @@ from the plan above:
   `audio/mic.wav` (and `system.wav`, padded with silence so the tracks stay aligned), so
   transcript times always point into one file. `startRecording` returns where the new recording
   starts.
-- **Live meeting text goes to the transcript**, as unlabeled segments, not into the notes.
-  Labeling replaces them; dictation still writes into the notes.
+- **One kind of session.** There is no dictation/meeting switch: every session records the
+  mic, plus the computer's audio when that setting is on, and labeling runs on every recording.
+  When diarization hears one voice it stops there (no re-transcription), and the session stays
+  plain notes.
+- **Live text goes to the notes**, and each recording remembers the range it inserted (a Yjs
+  relative position plus the exact text, in `meta.liveRanges`). When labeling finds two or more
+  speakers it fills the transcript and removes those ranges from the notes, but only where the
+  text is still exactly as transcribed, so anything the user edited stays.
 - **Generated notes live in `summary`**, a separate `Y.Text`, so "Rewrite notes" never touches
   the user's notes. The export renders summary, notes, then transcript.
 - **Per-line confidence** is the cosine similarity between a line's own voiceprint and its

@@ -32,19 +32,10 @@ function PromptCard({ prompt }: { prompt: MicPrompt }) {
           type="button"
           className="btn primary"
           onClick={() => {
-            window.api.answerMicPrompt('meeting')
+            window.api.answerMicPrompt('start')
           }}
         >
-          Record meeting
-        </button>
-        <button
-          type="button"
-          className="btn"
-          onClick={() => {
-            window.api.answerMicPrompt('dictation')
-          }}
-        >
-          Dictate
+          Start session
         </button>
         <button
           type="button"
@@ -116,7 +107,7 @@ function RecordingPill() {
       ? 'Warming up…'
       : state?.phase === 'finishing'
         ? 'Saving…'
-        : tail || (state?.kind === 'meeting' ? 'Recording meeting' : 'Listening')
+        : tail || 'Listening'
 
   return (
     <div className="overlay-pill" role="status">

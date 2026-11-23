@@ -3,7 +3,7 @@ import { createWriteStream, existsSync, type WriteStream } from 'node:fs'
 import { mkdir, open, readFile, stat, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { finished } from 'node:stream/promises'
-import type { AudioTrack, MeetingRecording, RecordingKind, TranscriptWord } from '../shared/types'
+import type { AudioTrack, MeetingRecording, TranscriptWord } from '../shared/types'
 import { log } from './log'
 import { resolveInNotes } from './pages'
 import {
@@ -13,7 +13,6 @@ import {
   type RawPass,
   type TrackInfo
 } from './sessionStore'
-import { getSettings } from './settings'
 
 /**
  * Records every session's audio as it is captured: one 16 kHz mono 16-bit WAV per track
@@ -32,7 +31,6 @@ type TrackFile = { path: string; stream: WriteStream; bytes: number }
 type LiveSegment = RawPass['segments'][number]
 type Recording = {
   pageId: string
-  kind: RecordingKind
   /** Where this take starts on the session timeline, in seconds. */
   offset: number
   tracks: Map<AudioTrack, TrackFile>
@@ -99,15 +97,15 @@ async function openTrack(pageId: string, track: AudioTrack, pad: number): Promis
   return file
 }
 
-async function start(pageId: string, withSystem: boolean, kind: RecordingKind): Promise<number> {
+async function start(pageId: string, withSystem: boolean): Promise<number> {
   resolveInNotes(pageId)
   if (active) await stop()
   await mkdir(sessionAudioDir(pageId), { recursive: true })
   const micBytes = await dataBytes(trackPath(pageId, 'mic'))
   const tracks = new Map<AudioTrack, TrackFile>([['mic', await openTrack(pageId, 'mic', 0)]])
   if (withSystem) tracks.set('system', await openTrack(pageId, 'system', micBytes))
-  active = { pageId, kind, offset: micBytes / BYTES_PER_SECOND, tracks, live: [] }
-  log('recorder', 'started', { pageId, kind, tracks: [...tracks.keys()], offset: active.offset })
+  active = { pageId, offset: micBytes / BYTES_PER_SECOND, tracks, live: [] }
+  log('recorder', 'started', { pageId, tracks: [...tracks.keys()], offset: active.offset })
   return active.offset
 }
 
@@ -222,16 +220,11 @@ async function stop(): Promise<MeetingRecording | null> {
 
   const result: MeetingRecording = {
     pageId: recording.pageId,
-    kind: recording.kind,
     micPath: mic?.path ?? '',
     systemPath: system?.path ?? null,
     seconds
   }
-  log('recorder', 'stopped', { pageId: result.pageId, kind: result.kind, seconds: +seconds.toFixed(1) })
-  // Dictation has nothing left to transcribe once it stops.
-  if (recording.kind === 'dictation' && getSettings().audioRetentionDays === 0) {
-    await deleteSessionAudio(recording.pageId)
-  }
+  log('recorder', 'stopped', { pageId: result.pageId, seconds: +seconds.toFixed(1) })
   for (const listener of listeners) listener(result)
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send('recorder:finished', result)
   return result
@@ -259,9 +252,9 @@ export function onRecordingFinished(listener: (recording: MeetingRecording) => v
 }
 
 export function registerRecorderIpc(): void {
-  ipcMain.handle('recorder:start', (_event, pageId: unknown, withSystem: unknown, kind: unknown) => {
+  ipcMain.handle('recorder:start', (_event, pageId: unknown, withSystem: unknown) => {
     if (typeof pageId !== 'string') throw new Error('Invalid page id')
-    return start(pageId, withSystem === true, kind === 'meeting' ? 'meeting' : 'dictation')
+    return start(pageId, withSystem === true)
   })
   ipcMain.on('recorder:append', (_event, track: unknown, payload: unknown) => {
     const name = TRACKS.find((entry) => entry === track)

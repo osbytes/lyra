@@ -251,36 +251,82 @@ export function replaceTranscript(doc: Y.Doc, segments: NewSegment[], origin: un
   }, origin)
 }
 
-/** Live words during a meeting: extend the last unlabeled segment, or start one. */
-export function appendLiveText(
-  doc: Y.Doc,
-  text: string,
-  at: { start: number; end: number },
-  origin: unknown
-): void {
-  if (!text) return
+// --- Live text ranges ---------------------------------------------------------------
+
+/**
+ * Live transcription writes into the notes. Each recording remembers where its text starts
+ * (a position that moves with edits around it) and exactly what it inserted, so labeling can
+ * take that text back out once it has produced a speaker-labeled transcript of the same audio.
+ */
+function liveRanges(doc: Y.Doc): Y.Array<Y.Map<unknown>> {
+  const meta = docMeta(doc)
+  let ranges = meta.get('liveRanges')
+  if (!(ranges instanceof Y.Array)) {
+    ranges = new Y.Array<Y.Map<unknown>>()
+    meta.set('liveRanges', ranges)
+  }
+  return ranges as Y.Array<Y.Map<unknown>>
+}
+
+/** Appends text to the notes as live transcription, starting a new range when `fresh`. */
+export function appendLiveNotes(doc: Y.Doc, next: string, fresh: boolean, origin: unknown): void {
+  const notes = docNotes(doc)
+  const current = notes.toJSON()
   doc.transact(() => {
-    const transcript = docTranscript(doc)
-    const last = transcript.length ? transcript.get(transcript.length - 1) : null
-    const lastText = last?.get('text')
-    if (last?.get('cluster') === null && last.get('edited') !== true && lastText instanceof Y.Text) {
-      lastText.insert(lastText.length, text)
-      last.set('original', lastText.toJSON())
-      last.set('end', at.end)
+    const ranges = liveRanges(doc)
+    if (!next.startsWith(current)) {
+      // Not a pure append (the user edited the end meanwhile): apply it, track nothing.
+      applyTextChange(notes, next)
       return
     }
-    transcript.push([
-      segmentMap({
-        id: `live-${String(transcript.length)}`,
-        rawId: null,
-        start: at.start,
-        end: at.end,
-        cluster: null,
-        confidence: null,
-        text: text.trimStart()
-      })
-    ])
+    const inserted = next.slice(current.length)
+    if (!inserted) return
+    let range = fresh ? null : ranges.length ? ranges.get(ranges.length - 1) : null
+    if (!range) {
+      range = new Y.Map<unknown>()
+      // Bound to the character before the insertion, so text added later doesn't move it.
+      const anchor = Y.createRelativePositionFromTypeIndex(notes, current.length, -1)
+      range.set('start', Y.relativePositionToJSON(anchor))
+      range.set('text', '')
+      ranges.push([range])
+    }
+    notes.insert(current.length, inserted)
+    range.set('text', str(range.get('text')) + inserted)
   }, origin)
+}
+
+/**
+ * Removes live text from the notes where it is still exactly as transcribed (an edited range
+ * is left alone), then forgets all ranges. Returns how many ranges were removed.
+ */
+export function removeLiveNotes(doc: Y.Doc, origin: unknown): number {
+  const ranges = docMeta(doc).get('liveRanges')
+  if (!(ranges instanceof Y.Array) || ranges.length === 0) return 0
+  const notes = docNotes(doc)
+  let removed = 0
+  doc.transact(() => {
+    const found = (ranges as Y.Array<Y.Map<unknown>>).toArray().flatMap((range) => {
+      const text = str(range.get('text'))
+      const json: unknown = range.get('start')
+      if (!text || !json || typeof json !== 'object') return []
+      const position = Y.createAbsolutePositionFromRelativePosition(
+        Y.createRelativePositionFromJSON(json),
+        doc
+      )
+      return position ? [{ index: position.index, text }] : []
+    })
+    // Back to front, so earlier indexes stay valid.
+    for (const { index, text } of found.sort((a, b) => b.index - a.index)) {
+      if (notes.toJSON().slice(index, index + text.length) !== text) continue
+      notes.delete(index, text.length)
+      removed++
+    }
+    // Tidy the blank lines a removal leaves at the end of the notes.
+    const trimmed = notes.toJSON().replace(/\s+$/, '')
+    if (trimmed.length < notes.length) notes.delete(trimmed.length, notes.length - trimmed.length)
+    ;(ranges as Y.Array<Y.Map<unknown>>).delete(0, ranges.length)
+  }, origin)
+  return removed
 }
 
 function findSegment(doc: Y.Doc, id: string): Y.Map<unknown> | null {
@@ -332,6 +378,34 @@ export function upsertSpeaker(
     for (const [key, value] of Object.entries(fields)) {
       entry.set(key, key === 'matches' ? [...(value as SpeakerMatch[])] : value)
     }
+  }, origin)
+}
+
+/** Lower-case, no leading `#`, spaces as hyphens: `#Design Review` → `design-review`. */
+export function normalizeTag(tag: string): string {
+  return tag.trim().replace(/^#+/, '').trim().toLowerCase().replace(/\s+/g, '-')
+}
+
+export function addTag(doc: Y.Doc, tag: string, origin: unknown): void {
+  const clean = normalizeTag(tag)
+  const meta = docMeta(doc)
+  if (!clean) return
+  doc.transact(() => {
+    let tags = tagsOf(doc)
+    if (!tags) {
+      tags = new Y.Array<string>()
+      meta.set('tags', tags)
+    }
+    if (!tags.toArray().includes(clean)) tags.push([clean])
+  }, origin)
+}
+
+export function removeTag(doc: Y.Doc, tag: string, origin: unknown): void {
+  const tags = tagsOf(doc)
+  if (!tags) return
+  doc.transact(() => {
+    const index = tags.toArray().indexOf(tag)
+    if (index >= 0) tags.delete(index, 1)
   }, origin)
 }
 

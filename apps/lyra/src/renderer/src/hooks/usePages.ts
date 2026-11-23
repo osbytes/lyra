@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import * as Y from 'yjs'
 import type { PageSummary } from '../../../shared/types'
 import {
-  appendLiveText,
+  addTag,
+  appendLiveNotes,
   docNotes,
   docSummary,
   docTitle,
@@ -12,6 +13,7 @@ import {
   newSpeakerId,
   ORIGIN_REMOTE,
   ORIGIN_USER,
+  removeTag,
   setSegmentsCluster,
   setSegmentText,
   snapshotOf,
@@ -31,6 +33,7 @@ export type OpenPage = {
   body: string
   /** Generated meeting notes, above the user's notes. */
   summary: string
+  tags: string[]
   transcript: TranscriptSegment[]
   speakers: SpeakerEntry[]
 }
@@ -38,8 +41,6 @@ export type OpenPage = {
 /** A speaker made from the transcript: named by the user, or a blank one to name after a split. */
 export type NewSpeaker = { name: string; personId: string | null; confirmed: boolean }
 
-/** Live meeting text isn't the user's typing, so undo leaves it alone. */
-const ORIGIN_LIVE = 'live'
 
 type Edit = { title?: string; body?: string }
 
@@ -103,6 +104,7 @@ export function usePages() {
           title: snapshot.title,
           body: snapshot.notes,
           summary: snapshot.summary,
+          tags: snapshot.tags,
           transcript: snapshot.transcript,
           speakers: snapshot.speakers
         })
@@ -189,9 +191,21 @@ export function usePages() {
     },
     []
   )
-  const appendLive = useCallback(
-    (text: string, at: { start: number; end: number }) =>
-      change((doc) => appendLiveText(doc, text, at, ORIGIN_LIVE)),
+  /**
+   * Live dictation into the notes. `fresh` starts a new range (a new recording), so labeling
+   * can later swap untouched live text for the speaker-labeled transcript.
+   */
+  const appendDictation = useCallback(
+    (next: string, fresh: boolean) =>
+      change((doc) => appendLiveNotes(doc, next, fresh, ORIGIN_USER)),
+    [change]
+  )
+  const tag = useCallback(
+    (name: string) => change((doc) => addTag(doc, name, ORIGIN_USER)),
+    [change]
+  )
+  const untag = useCallback(
+    (name: string) => change((doc) => removeTag(doc, name, ORIGIN_USER)),
     [change]
   )
 
@@ -267,7 +281,9 @@ export function usePages() {
     editSummary,
     editSegment,
     assignLines,
-    appendLive,
+    appendDictation,
+    tag,
+    untag,
     undo,
     redo,
     open,

@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import type { PageSummary, SessionKind, UpdateStatus, WhisperStatus } from '../../shared/types'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { PageSummary, UpdateStatus, WhisperStatus } from '../../shared/types'
+import { DetailsPanel } from './components/DetailsPanel'
 import { DictationDock } from './components/DictationDock'
 import { Editor } from './components/Editor'
+import { TagRow } from './components/TagRow'
 import { Transcript } from './components/Transcript'
-import { CheckIcon, CopyIcon, FolderIcon, MicIcon, PlusIcon } from './components/Icons'
+import { CheckIcon, CopyIcon, FolderIcon, MicIcon, PanelIcon } from './components/Icons'
 import { SettingsDialog } from './components/Settings'
 import { Sidebar } from './components/Sidebar'
-import { useDictation, type Span } from './hooks/useDictation'
+import { useDictation } from './hooks/useDictation'
 import { usePages, type OpenPage } from './hooks/usePages'
 import { useSettings } from './hooks/useSettings'
 import { homePath, readingMinutes, relativeTime, shortcutLabel, wordCount } from './lib/format'
@@ -17,13 +19,6 @@ const OVERLAY_FRAME_MS = 80
 
 /** How long a deleted page can be brought back before its file is removed. */
 const UNDO_DELETE_MS = 6000
-
-const MEETING_TITLE_FORMAT: Intl.DateTimeFormatOptions = {
-  month: 'short',
-  day: 'numeric',
-  hour: 'numeric',
-  minute: '2-digit'
-}
 
 /** The title field and the editor: where undo/redo means "undo my edit to this page". */
 function isPageField(target: EventTarget | null): boolean {
@@ -57,7 +52,9 @@ export default function App(): React.JSX.Element {
     editSummary,
     editSegment,
     assignLines,
-    appendLive,
+    appendDictation,
+    tag,
+    untag,
     undo,
     redo,
     open,
@@ -86,24 +83,23 @@ export default function App(): React.JSX.Element {
     }
   }, [])
 
-  const sessionKind = useRef<SessionKind>('dictation')
+  /** The next live text starts a new range (a new recording), see `appendDictation`. */
+  const freshTake = useRef(true)
 
   const onCommit = useCallback(
-    (text: string, at: Span) => {
+    (text: string) => {
       const page = currentRef.current
       if (!page) return
       const view = scroller.current
       // Keep new words in view, unless the writer has scrolled up to reread.
       const follow = !view || view.scrollHeight - view.scrollTop - view.clientHeight < 160
-      // A meeting's live words are a rough transcript, replaced once speakers are labeled;
-      // dictation is the user's own writing.
-      if (sessionKind.current === 'meeting') appendLive(text, at)
-      else edit({ body: appendTranscript(page.body, text) })
+      appendDictation(appendTranscript(page.body, text), freshTake.current)
+      freshTake.current = false
       if (follow) {
         requestAnimationFrame(() => view?.scrollTo({ top: view.scrollHeight, behavior: 'smooth' }))
       }
     },
-    [currentRef, edit, appendLive]
+    [currentRef, appendDictation]
   )
 
   const getContext = useCallback(() => {
@@ -122,26 +118,21 @@ export default function App(): React.JSX.Element {
     await flush()
   }, [stopDictation, flush])
 
-  /** Starts dictating into a new note named for this moment. */
-  const startSession = useCallback(
-    async (kind: SessionKind = 'dictation') => {
-      await stop()
-      sessionKind.current = kind
-      const startedAt = new Date()
-      const page = await create({ startedAt: startedAt.toISOString() })
-      if (kind === 'meeting') {
-        edit({ title: `Meeting · ${startedAt.toLocaleString(undefined, MEETING_TITLE_FORMAT)}` })
-        await start({
-          pageId: page.id,
-          kind: 'meeting',
-          systemAudio: settingsRef.current?.captureSystemAudio ?? true
-        })
-      } else {
-        await start({ pageId: page.id, kind: 'dictation', systemAudio: false })
-      }
+  /** Records into a session: the mic, plus the computer's audio when that setting is on. */
+  const record = useCallback(
+    async (pageId: string) => {
+      freshTake.current = true
+      await start({ pageId, systemAudio: settingsRef.current?.captureSystemAudio ?? true })
     },
-    [stop, create, start, edit]
+    [start]
   )
+
+  /** A new session, named for this moment, recording straight away. */
+  const startSession = useCallback(async () => {
+    await stop()
+    const page = await create({ startedAt: new Date().toISOString() })
+    await record(page.id)
+  }, [stop, create, record])
 
   // Commands from the tray, the global hotkey, and the overlay pill.
   const recordingRef = useRef(recording)
@@ -150,7 +141,7 @@ export default function App(): React.JSX.Element {
     () =>
       window.api.onSessionCommand((command) => {
         if (command.type === 'stop' || recordingRef.current) void stop()
-        else void startSession(command.kind)
+        else void startSession()
       }),
     [stop, startSession]
   )
@@ -163,7 +154,6 @@ export default function App(): React.JSX.Element {
     if (phase === 'idle') listeningSince.current = null
     window.api.reportSession({
       phase,
-      kind: sessionKind.current,
       startedAt: listeningSince.current,
       micName
     })
@@ -181,24 +171,16 @@ export default function App(): React.JSX.Element {
     })
   }, [subscribeLevel])
 
+  /** The dock: continue recording the open session, or stop. */
   const toggleDictation = useCallback(() => {
     if (recording) void stop()
-    else if (currentRef.current) {
-      sessionKind.current = 'dictation'
-      void start({ pageId: currentRef.current.id, kind: 'dictation', systemAudio: false })
-    }
-  }, [recording, stop, start, currentRef])
+    else if (currentRef.current) void record(currentRef.current.id)
+  }, [recording, stop, record, currentRef])
 
   const openPage = async (id: string): Promise<void> => {
     await stop()
     await open(id)
   }
-
-  const newPage = useCallback(async () => {
-    await stop()
-    await create()
-    requestAnimationFrame(() => titleInput.current?.select())
-  }, [stop, create])
 
   // Deleting hides the page at once and removes its file after a few seconds, so the user can
   // undo instead of answering a confirm dialog. If Lyra quits first, the note simply survives.
@@ -238,7 +220,7 @@ export default function App(): React.JSX.Element {
 
   const undoToast = trashed ? (
     <div className="toast" role="status">
-      <span>Deleted “{trashed.title || 'Untitled'}”</span>
+      <span>Deleted session “{trashed.title || 'Untitled'}”</span>
       <button type="button" onClick={undoDelete}>
         Undo
       </button>
@@ -257,6 +239,23 @@ export default function App(): React.JSX.Element {
     return () => clearTimeout(timer)
   }, [copied])
 
+  const panel = settings?.detailsPanel ?? false
+  const toggleLayout = useCallback(() => {
+    void updateSettings({ detailsPanel: !(settingsRef.current?.detailsPanel ?? false) })
+  }, [updateSettings])
+
+  // Tags across every session, most used first, for the sidebar filter and the tag picker.
+  const knownTags = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const page of pages) for (const tag of page.tags) counts.set(tag, (counts.get(tag) ?? 0) + 1)
+    return [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+  }, [pages])
+  const [tagFilter, setTagFilter] = useState<string | null>(null)
+  useEffect(() => {
+    if (tagFilter && !knownTags.some(([tag]) => tag === tagFilter)) setTagFilter(null)
+  }, [knownTags, tagFilter])
+  const [pickerRequest, setPickerRequest] = useState<{ speaker: string; anchor: DOMRect } | null>(null)
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       if (!(event.metaKey || event.ctrlKey)) return
@@ -272,12 +271,12 @@ export default function App(): React.JSX.Element {
       if (key === 'd' && event.shiftKey) {
         event.preventDefault()
         toggleDictation()
-      } else if (key === 'n' && event.shiftKey) {
-        event.preventDefault()
-        void startSession('dictation')
       } else if (key === 'n') {
         event.preventDefault()
-        void newPage()
+        void startSession()
+      } else if (key === '.') {
+        event.preventDefault()
+        toggleLayout()
       } else if (key === ',') {
         event.preventDefault()
         setShowSettings(true)
@@ -285,13 +284,14 @@ export default function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [toggleDictation, newPage, startSession, undo, redo])
+  }, [toggleDictation, startSession, toggleLayout, undo, redo])
 
   const words = current
     ? wordCount([current.summary, current.body, ...current.transcript.map((line) => line.text)].join(' '))
     : 0
-  const meetingLive = dictation.recording && sessionKind.current === 'meeting'
-  const editedAt = current ? pages.find((page) => page.id === current.id)?.updatedAt : undefined
+  const summary = current ? pages.find((page) => page.id === current.id) : undefined
+  const editedAt = summary?.updatedAt
+  const systemAudio = settings?.captureSystemAudio ?? true
 
   return (
     <div className={`app platform-${window.api.platform}`}>
@@ -300,12 +300,15 @@ export default function App(): React.JSX.Element {
         activeId={current?.id}
         update={update}
         onOpen={(id) => void openPage(id)}
-        onCreate={() => void newPage()}
+        onCreate={() => void startSession()}
         onDelete={(page) => void deletePage(page)}
         onSettings={() => setShowSettings(true)}
+        tags={knownTags}
+        tagFilter={tagFilter}
+        onTagFilter={setTagFilter}
       />
 
-      <main className="workspace">
+      <main className={panel ? 'workspace with-panel' : 'workspace'}>
         <header className="topbar drag">
           {current ? (
             <>
@@ -322,6 +325,16 @@ export default function App(): React.JSX.Element {
                 {copied ? <CheckIcon /> : <CopyIcon />}
                 {copied ? 'Copied' : 'Copy'}
               </button>
+              <button
+                className="icon-btn no-drag panel-toggle"
+                type="button"
+                aria-pressed={panel}
+                aria-label="Details panel"
+                title={`Details panel (${shortcutLabel('.')})`}
+                onClick={toggleLayout}
+              >
+                <PanelIcon />
+              </button>
             </>
           ) : null}
         </header>
@@ -333,7 +346,8 @@ export default function App(): React.JSX.Element {
         ) : null}
 
         {current ? (
-          <>
+          <div className="workspace-body">
+          <div className="workspace-column">
             <div className="scroller" ref={scroller}>
               <article className="page">
                 <input
@@ -342,15 +356,20 @@ export default function App(): React.JSX.Element {
                   value={current.title}
                   onChange={(event) => edit({ title: event.target.value })}
                   placeholder="Untitled"
-                  aria-label="Page title"
+                  aria-label="Session title"
                 />
-                <p className="page-stats">
-                  <span>
-                    {words} {words === 1 ? 'word' : 'words'}
-                  </span>
-                  {words > 0 ? <span>{readingMinutes(words)} min read</span> : null}
-                  {editedAt ? <span>Edited {relativeTime(editedAt).toLowerCase()}</span> : null}
-                </p>
+                {panel ? null : (
+                  <>
+                    <p className="page-stats">
+                      <span>
+                        {words} {words === 1 ? 'word' : 'words'}
+                      </span>
+                      {words > 0 ? <span>{readingMinutes(words)} min read</span> : null}
+                      {editedAt ? <span>Edited {relativeTime(editedAt).toLowerCase()}</span> : null}
+                    </p>
+                    <TagRow tags={current.tags} known={knownTags} onAdd={tag} onRemove={untag} />
+                  </>
+                )}
                 {current.summary.trim() ? (
                   <section className="summary" aria-label="Meeting notes">
                     <h2 className="section-label">Meeting notes</h2>
@@ -365,8 +384,8 @@ export default function App(): React.JSX.Element {
                 ) : null}
                 <Editor
                   value={current.body}
-                  ghost={meetingLive ? '' : dictation.live}
-                  listening={dictation.phase === 'listening' && !meetingLive}
+                  ghost={dictation.live}
+                  listening={dictation.phase === 'listening'}
                   onChange={(body) => edit({ body })}
                 />
                 {current.transcript.length ? (
@@ -379,6 +398,8 @@ export default function App(): React.JSX.Element {
                     onEditLine={editSegment}
                     onAssign={assignLines}
                     onUndo={() => void undo()}
+                    showSpeakersBar={!panel}
+                    pickerRequest={pickerRequest}
                   />
                 ) : null}
               </article>
@@ -389,20 +410,18 @@ export default function App(): React.JSX.Element {
               status={status}
               error={dictation.error}
               notice={dictation.notice}
-              kind={sessionKind.current}
               micDeviceId={settings?.micDeviceId ?? null}
               onMicChange={(micDeviceId) => void updateSettings({ micDeviceId })}
+              systemAudio={systemAudio}
+              onSystemAudioChange={(captureSystemAudio) => void updateSettings({ captureSystemAudio })}
+              compact={panel}
               subscribeLevel={dictation.subscribeLevel}
               onToggle={toggleDictation}
-              onMeeting={() => void startSession('meeting')}
             >
-              {dictation.recording &&
-              sessionKind.current === 'meeting' &&
-              settings &&
-              !settings.meetingNoticeSeen ? (
+              {dictation.recording && systemAudio && settings && !settings.meetingNoticeSeen ? (
                 <div className="banner" role="status">
                   <span className="banner-dot" aria-hidden="true" />
-                  Recording this meeting. Make sure everyone is OK with being recorded.
+                  Recording the computer’s audio too. Make sure everyone on the call is OK with it.
                   <button
                     className="btn"
                     type="button"
@@ -414,18 +433,37 @@ export default function App(): React.JSX.Element {
               ) : null}
               {undoToast}
             </DictationDock>
-          </>
+          </div>
+          {panel ? (
+            <DetailsPanel
+              page={current}
+              summary={summary}
+              words={words}
+              knownTags={knownTags}
+              notesEngine={settings?.notesEngine ?? 'off'}
+              onAddTag={tag}
+              onRemoveTag={untag}
+              onSpeaker={(speaker, target) => {
+                setPickerRequest({ speaker, anchor: target.getBoundingClientRect() })
+              }}
+              onCopy={copy}
+            />
+          ) : null}
+          </div>
         ) : (
           <div className="empty">
             <div className="empty-inner">
               <span className="empty-icon" aria-hidden="true">
                 <MicIcon />
               </span>
-              <h2>Start your first note</h2>
-              <p>Talk or type. Lyra transcribes on this computer and saves plain files you own.</p>
-              <button className="btn primary" type="button" onClick={() => void newPage()}>
-                <PlusIcon />
-                New page
+              <h2>Start your first session</h2>
+              <p>
+                Start a session and talk, alone or on a call. Lyra transcribes on this computer,
+                names speakers when there’s more than one, and saves a plain text file you own.
+              </p>
+              <button className="btn primary" type="button" onClick={() => void startSession()}>
+                <MicIcon />
+                Start session
                 <kbd>{shortcutLabel('N')}</kbd>
               </button>
               {settings ? (

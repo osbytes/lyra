@@ -71,6 +71,9 @@ type Manifest = {
   /** Cached for the list view, so it never has to load documents. */
   title: string
   preview: string
+  tags: string[]
+  /** Distinct speakers in the transcript; 0 without one. */
+  speakers: number
   /** sha256 of the export as last written, to spot edits made outside Lyra. */
   exportHash: string | null
   /** The document changed since the last export (e.g. Lyra quit mid-debounce). */
@@ -160,6 +163,8 @@ function readManifest(id: string): Manifest | null {
       audio: m.audio === 'kept' || m.audio === 'deleted' ? m.audio : 'none',
       title: isString(m.title) ? m.title : 'Untitled',
       preview: isString(m.preview) ? m.preview : '',
+      tags: Array.isArray(m.tags) ? m.tags.filter(isString) : [],
+      speakers: typeof m.speakers === 'number' ? m.speakers : 0,
       exportHash: isString(m.exportHash) ? m.exportHash : null,
       dirty: m.dirty === true
     }
@@ -214,7 +219,7 @@ const sha256 = (text: string): string => createHash('sha256').update(text).diges
 
 function previewOf(text: string): string {
   const line = text.replace(/\s+/g, ' ').trim()
-  if (!line) return 'Empty page'
+  if (!line) return ''
   return line.length > PREVIEW_CHARS ? `${line.slice(0, PREVIEW_CHARS)}…` : line
 }
 
@@ -370,6 +375,8 @@ async function migrateNote(id: string): Promise<Entry> {
     audio: meeting?.tracks.length ? 'kept' : 'none',
     title: page.title,
     preview: previewOf(page.body),
+    tags: [],
+    speakers: 0,
     // The file is already what the document says; leave it byte-for-byte as it is.
     exportHash: sha256(raw),
     // A migrated meeting's export gains the metadata file; plain notes stay untouched.
@@ -641,7 +648,9 @@ async function writeExport(entry: Entry): Promise<void> {
     ...entry.manifest,
     updatedAt,
     title: snapshot.title.trim() || 'Untitled',
-    preview: previewOf(body),
+    preview: previewOf(snapshot.notes.trim() || snapshot.summary.trim() || body),
+    tags: snapshot.tags,
+    speakers: new Set(snapshot.transcript.flatMap((line) => (line.cluster ? [line.cluster] : []))).size,
     exportHash: sha256(text),
     dirty: false
   }
@@ -687,7 +696,11 @@ export async function listSessions(): Promise<PageSummary[]> {
         id: file.name,
         title: manifest.title,
         updatedAt: manifest.updatedAt,
-        preview: manifest.preview
+        preview: manifest.preview,
+        tags: manifest.tags,
+        speakers: manifest.speakers,
+        startedAt: manifest.startedAt,
+        seconds: manifest.tracks.find((track) => track.name === 'mic')?.seconds ?? null
       })
     } catch (error) {
       log('sessions', 'skipped unreadable note', { name: file.name, error: String(error) })
@@ -768,6 +781,8 @@ export async function createSession(options: CreateSessionOptions = {}): Promise
         audio: 'none',
         title: 'Untitled',
         preview: previewOf(''),
+        tags: [],
+        speakers: 0,
         exportHash: sha256(text),
         dirty: false
       }

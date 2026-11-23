@@ -9,6 +9,7 @@ import type {
   TranscriptWord
 } from '../../shared/types'
 import {
+  removeLiveNotes,
   replaceTranscript,
   SURE_MATCH,
   upsertSpeaker,
@@ -343,6 +344,13 @@ export async function processMeeting(recording: MeetingRecording): Promise<void>
   })
 
   const merged = mergeTinySpeakers(result)
+  // One voice: a dictation, not a conversation. It stays as notes; no transcript, no notes.
+  if (merged.clusters.length < 2 && !(await readSession(pageId)).transcript.length) {
+    if (getSettings().audioRetentionDays === 0) await deleteSessionAudio(pageId)
+    status('done', 1)
+    log('meeting', 'one voice; kept as notes', { pageId })
+    return
+  }
   const speakers = await nameSpeakers(merged, recording.systemPath !== null)
   const turns = buildTurns(merged.segments)
   status('transcribing', 0)
@@ -398,6 +406,8 @@ export async function processMeeting(recording: MeetingRecording): Promise<void>
           }, ORIGIN_PIPELINE)
         }
         replaceTranscript(doc, segments, ORIGIN_PIPELINE)
+        // The labeled transcript supersedes the rough live text of the same audio.
+        removeLiveNotes(doc, ORIGIN_PIPELINE)
       }, ORIGIN_PIPELINE)
     })
   }
@@ -415,7 +425,6 @@ export async function processMeeting(recording: MeetingRecording): Promise<void>
 let queue: Promise<void> = Promise.resolve()
 
 function enqueue(recording: MeetingRecording): void {
-  if (recording.kind !== 'meeting') return
   queue = queue.then(
     () => processMeeting(recording),
     () => processMeeting(recording)
@@ -506,7 +515,7 @@ export async function sessionAudio(pageId: string, start: number, end: number): 
   if (!existsSync(micPath) || span <= 0) return new Int16Array(0)
   const systemPath = trackPath(pageId, 'system')
   const mixed = await turnAudio(
-    { pageId, kind: 'meeting', micPath, systemPath: existsSync(systemPath) ? systemPath : null, seconds: 0 },
+    { pageId, micPath, systemPath: existsSync(systemPath) ? systemPath : null, seconds: 0 },
     { start, end: start + span }
   )
   const out = new Int16Array(mixed.length)
