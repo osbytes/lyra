@@ -77,6 +77,33 @@ export const FolderIcon = () => (
   </Icon>
 )
 
+export const MicSmallIcon = () => (
+  <Icon width="15" height="15">
+    <rect x="9" y="3" width="6" height="11" rx="3" />
+    <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
+  </Icon>
+)
+
+export const RecordIcon = () => (
+  <Icon width="15" height="15">
+    <circle cx="12" cy="12" r="8" />
+    <circle cx="12" cy="12" r="3" fill="currentColor" />
+  </Icon>
+)
+
+export const PeopleIcon = () => (
+  <Icon width="15" height="15">
+    <circle cx="9" cy="8" r="3.5" />
+    <path d="M2.5 20c.8-3.3 3.3-5 6.5-5s5.7 1.7 6.5 5M15.5 4.5a3.5 3.5 0 0 1 0 7M18 15.2c1.8.6 3 2.2 3.5 4.8" />
+  </Icon>
+)
+
+export const ChevronDownIcon = () => (
+  <Icon width="14" height="14">
+    <path d="m6 9 6 6 6-6" />
+  </Icon>
+)
+
 export const StopIcon = () => (
   <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
     <rect x="6" y="6" width="12" height="12" rx="3" fill="currentColor" />

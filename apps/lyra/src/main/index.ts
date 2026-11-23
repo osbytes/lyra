@@ -107,7 +107,7 @@ function createWindow(): void {
     show: false,
     autoHideMenuBar: true,
     title: 'Lyra',
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#18181b' : '#fafafa',
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#16161b' : '#ffffff',
     ...(process.platform === 'darwin'
       ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 16, y: 18 } }
       : {}),
@@ -250,23 +250,67 @@ async function seedScreenshotPages(): Promise<void> {
 }
 
 async function captureScreenshot(win: BrowserWindow): Promise<void> {
-  try {
-    await seedScreenshotPages()
+  const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 600))
+  const reload = async (): Promise<void> => {
     const reloaded = new Promise<void>((resolve) => {
-      win.webContents.once('did-finish-load', () => {
-        resolve()
-      })
+      win.webContents.once('did-finish-load', () => resolve())
     })
     win.webContents.reload()
     await reloaded
-    await new Promise((resolve) => setTimeout(resolve, 600))
+    await settle()
+  }
+  const save = async (dir: string, name: string): Promise<void> => {
     const image = await win.webContents.capturePage()
-    const outDir = join(__dirname, '../../docs')
-    const outPath = join(outDir, 'screenshot.png')
-    await mkdir(outDir, { recursive: true })
-    await writeFile(outPath, image.toPNG())
-    process.stdout.write(`screenshot: ${outPath}
-`)
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, name), image.toPNG())
+    process.stdout.write(`screenshot: ${join(dir, name)}\n`)
+  }
+  const pressShortcut = (key: string): Promise<unknown> =>
+    win.webContents.executeJavaScript(
+      `window.dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify(key)}, ctrlKey: true, metaKey: true }))`
+    )
+  const click = (selector: string): Promise<unknown> =>
+    win.webContents.executeJavaScript(
+      `document.querySelector(${JSON.stringify(selector)})?.click()`
+    )
+
+  try {
+    // LYRA_SCREENSHOT_DIR captures every state in both themes for UI review; without it,
+    // only the README shot is written.
+    const reviewDir = process.env.LYRA_SCREENSHOT_DIR
+    if (reviewDir) {
+      for (const theme of ['light', 'dark'] as const) {
+        nativeTheme.themeSource = theme
+        await reload()
+        await save(reviewDir, `empty-${theme}.png`)
+      }
+    }
+    await seedScreenshotPages()
+    nativeTheme.themeSource = 'light'
+    await reload()
+    await save(join(__dirname, '../../docs'), 'screenshot.png')
+    if (reviewDir) {
+      for (const theme of ['light', 'dark'] as const) {
+        nativeTheme.themeSource = theme
+        await reload()
+        await save(reviewDir, `page-${theme}.png`)
+        await pressShortcut(',')
+        await settle()
+        await save(reviewDir, `settings-${theme}.png`)
+        // The tabs after General, in nav order.
+        for (const [index, tab] of ['recording', 'meetings', 'people'].entries()) {
+          await click(`.settings-nav button:nth-of-type(${String(index + 2)})`)
+          await settle()
+          await save(reviewDir, `settings-${tab}-${theme}.png`)
+        }
+      }
+      // Deleting shows the Undo toast; the page comes back on reload since the file stays.
+      nativeTheme.themeSource = 'light'
+      await reload()
+      await click('.page-row:last-child .page-delete')
+      await settle()
+      await save(reviewDir, 'undo-delete-light.png')
+    }
     app.exit(0)
   } catch (error) {
     console.error('screenshot failed', error)
