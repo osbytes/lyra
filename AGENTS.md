@@ -15,16 +15,27 @@ Roadmap: [docs/PLAN.md](docs/PLAN.md). Human contributor guide: [CONTRIBUTING.md
 | Typecheck + lint | `pnpm check` — must pass before every commit |
 | UI smoke test | `pnpm smoke:ui` (builds, launches Electron headless, exercises the IPC bridge) |
 | Native addon smoke | `pnpm smoke` (only needed when touching `src/main/whisper.ts` or native deps) |
+| QA with real audio | `powershell -File scripts/make-demo-audio.ps1` makes `test-audio/meeting.wav` (two synthetic voices); see the `qa-test` skill |
 | Meeting pipeline smoke | `pnpm smoke:meeting <file.wav>`: real diarization, Whisper, and relabeling; `LYRA_NOTES_ENGINE=local` adds notes; `LYRA_MODELS_DIR` reuses downloads |
+| Speaker evals | `pnpm eval:calls` (in `apps/lyra`): synthetic call/room scenarios with exact ground truth (speaker bleed, clipping, quick turns, crosstalk, similar voices); `pnpm eval:ami` scores real AMI meetings (`--meetings`, `--minutes`, `--mic`). WER, cpWER, DER; data and results go to `eval-data/` |
 | Package (Windows dir build) | `pnpm build:unpack`; runs `prepare:llama`, which ships node-llama-cpp as its own npm install |
 
 ## Layout
+
+Turborepo + pnpm workspace. The app is `apps/lyra/`; every path below (and in `.agents/`) is relative to it
+unless it says otherwise. Run `pnpm` scripts from the repo root (they go through `turbo`) or inside `apps/lyra`.
+Repo-level files (`.changeset/`, `.github/`, `docs/`, `scripts/release-*`, `turbo.json`) stay at the root.
 
 - `src/main/` — Electron main process: files, settings, Whisper, tray/hotkeys/overlay, mic watcher, recorder, updater. Node APIs live here only.
 - `src/main/meeting/` — speaker pipeline (diarization worker, voiceprints) and meeting notes (local worker, Claude). Workers run in `utilityProcess`.
 - `src/preload/` — the `window.api` bridge. Thin: `ipcRenderer.invoke`/`on` wrappers, no logic.
 - `src/renderer/src/` — React UI, audio capture (`audio/`), hooks, text helpers. Browser APIs only.
 - `src/shared/types.ts` — types shared across processes, including the `VoicePagesApi` contract.
+- `src/main/sessionStore.ts` + `src/shared/sessionDoc.ts` — sessions: each note is a Yjs document
+  (main owns it, windows hold replicas over IPC), exported to the `.txt`/`.md` file plus a
+  `.lyra.json` metadata file. Audio and raw model passes live in `.sessions/<id>/`.
+  `components/Transcript.tsx` edits the transcript and speakers through the same document.
+  Design: [docs/SESSION-MODEL.md](docs/SESSION-MODEL.md) (repo root).
 - `scripts/` — build, release and smoke-test scripts (CommonJS).
 - `.agents/` — roles, skills and rules for coding agents (see below).
 
@@ -58,6 +69,9 @@ Roadmap: [docs/PLAN.md](docs/PLAN.md). Human contributor guide: [CONTRIBUTING.md
 - Run `pnpm check` and `pnpm smoke:ui` before saying a change is done.
 - New behavior in `src/main/` that the renderer can reach gets a case in `runUiSmoke`
   (`src/main/index.ts`).
+- Audio, transcription, diarization or meeting-notes changes: QA with real audio per the `qa-test` skill
+  (`test-audio/meeting.wav`), comparing output to the known script. Smoke tests alone don't count.
+  Speaker or diarization changes also run `pnpm eval:calls` and report the table before and after.
 - UI changes: launch `pnpm dev` and look at the change; say so if you couldn't.
 
 ## Commits and PRs
@@ -81,4 +95,5 @@ Pick the role that matches the task and follow its file; load a skill when its t
 | --- | --- |
 | [add-ipc-channel](.agents/skills/add-ipc-channel/SKILL.md) | Exposing a new main-process capability to the renderer |
 | [add-setting](.agents/skills/add-setting/SKILL.md) | Adding a user-configurable setting |
+| [qa-test](.agents/skills/qa-test/SKILL.md) | Changes touching audio, Whisper, speakers or meeting notes; any request to QA or test with audio |
 | [verify-change](.agents/skills/verify-change/SKILL.md) | Before declaring any change done or committing |

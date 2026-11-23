@@ -17,6 +17,9 @@ You own `src/renderer/src/` except `audio/` (see the audio-pipeline role).
 - Reuse design tokens from `styles.css` (`--bg`, `--surface`, `--text-muted`, `--accent`, …) and
   existing classes (`.btn`, `.icon-btn`, `.modal`, `.settings-row`). Every color must work in light
   and dark mode.
+- Form controls come from `components/Controls.tsx`: `Select` (never a native `<select>`),
+  `Switch`, `Segmented`. Anything that floats over the page (menus, popovers, toasts) renders
+  through `Floating`, so blurred or contained ancestors can't misplace it.
 - State that must survive across components or windows lives in main (settings, pages); the
   renderer subscribes (`onSettingsChanged`, `onPagesChanged`) instead of keeping its own copy.
 - Long-lived callbacks read current values through refs (see `usePages`'s `currentRef`).

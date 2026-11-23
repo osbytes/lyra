@@ -61,4 +61,4 @@ jobs:
         run: pnpm install --frozen-lockfile
       # typecheck, lint and bundle; installers are only packaged by release.yml
       - name: Typecheck, lint and bundle
-        run: pnpm build
+        run: pnpm --filter lyra run build

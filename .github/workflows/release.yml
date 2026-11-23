@@ -26,9 +26,9 @@ jobs:
         run: |
           # tag names may only be versions: nothing else ever reaches a shell
           case "$GITHUB_REF_NAME" in v[0-9]*.[0-9]*.[0-9]*) ;; *) [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] || { echo "not a version tag: $GITHUB_REF_NAME"; exit 1; } ;; esac
-          pkg=$(node -p "require('./package.json').version")
+          pkg=$(node -p "require('./apps/lyra/package.json').version")
           if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] && [ "v$pkg" != "$GITHUB_REF_NAME" ]; then
-            echo "tag $GITHUB_REF_NAME does not match package.json $pkg"; exit 1
+            echo "tag $GITHUB_REF_NAME does not match apps/lyra/package.json $pkg"; exit 1
           fi
           echo "version=$(printf %s "$pkg" | tr -cd 'A-Za-z0-9.+-')" >> "$GITHUB_OUTPUT"
 
@@ -66,19 +66,19 @@ jobs:
       - name: Typecheck and package
         env:
           SCRIPT: ${{ matrix.script }}
-        run: pnpm run "$SCRIPT"
+        run: pnpm --filter lyra run "$SCRIPT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.name }}-dist
           if-no-files-found: error
           path: |
-            dist/*.dmg
-            dist/*.zip
-            dist/*-setup.exe
-            dist/*.AppImage
-            dist/*.deb
-            dist/latest*.yml
-            dist/*.blockmap
+            apps/lyra/dist/*.dmg
+            apps/lyra/dist/*.zip
+            apps/lyra/dist/*-setup.exe
+            apps/lyra/dist/*.AppImage
+            apps/lyra/dist/*.deb
+            apps/lyra/dist/latest*.yml
+            apps/lyra/dist/*.blockmap
 
   publish:
     needs: [version, build]

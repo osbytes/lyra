@@ -2,7 +2,7 @@
 
 Lyra is one desktop app shipped as installers for macOS, Windows and Linux, versioned with
 [changesets](https://github.com/changesets/changesets). The version lives in the root
-`package.json`; nothing is published to npm (`"private": true`).
+`apps/lyra/package.json`; nothing is published to npm (`"private": true`).
 
 ## Every pull request
 

@@ -13,9 +13,11 @@ if one can't run, say which and why.
    from the path-guard checks and are fine.
 3. `pnpm smoke` — only if `src/main/whisper.ts`, native dependencies, or `electron-builder.yml`
    changed.
-4. UI or audio change → run `pnpm dev` and exercise it (light and dark mode for UI; a short
+4. Audio, transcription, speaker or meeting-notes change → run the [qa-test](../qa-test/SKILL.md)
+   skill on `test-audio/meeting.wav` and compare to the known script.
+5. UI or audio change → run `pnpm dev` and exercise it (light and dark mode for UI; a short
    dictation for audio).
-5. Read your own diff (`git diff`) with the [reviewer role](../../roles/reviewer.md) checklist:
+6. Read your own diff (`git diff`) with the [reviewer role](../../roles/reviewer.md) checklist:
    - no `any`, `!`, or unexplained `eslint-disable`
    - no unrelated changes or reformatting
    - line endings preserved (CRLF files stay CRLF)
