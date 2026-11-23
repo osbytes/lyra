@@ -290,8 +290,12 @@ async function runMeetingFixture(wavPath: string): Promise<void> {
     const micPath = trackPath(page.id, 'mic')
     await mkdir(join(micPath, '..'), { recursive: true })
     await copyFile(wavPath, micPath)
+    // Optional second track, to exercise the mic-vs-system "Me" labeling.
+    const systemFixture = process.env.LYRA_MEETING_SYSTEM_FIXTURE
+    const systemPath = systemFixture ? trackPath(page.id, 'system') : null
+    if (systemFixture && systemPath) await copyFile(systemFixture, systemPath)
     const started = Date.now()
-    await processMeeting({ pageId: page.id, micPath, systemPath: null, seconds: 0 })
+    await processMeeting({ pageId: page.id, micPath, systemPath, seconds: 0 })
     const labeled = await getPage(page.id)
     const took = ((Date.now() - started) / 1000).toFixed(1)
     process.stdout.write(`meeting-fixture (${took} s):\n${labeled.body}\n`)

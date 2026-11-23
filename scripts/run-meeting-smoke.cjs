@@ -1,5 +1,6 @@
 // Runs the real meeting pipeline on a 16 kHz mono 16-bit WAV in a throwaway profile:
-//   pnpm smoke:meeting path/to/meeting.wav
+//   pnpm smoke:meeting path/to/meeting.wav [path/to/system.wav]
+// The optional second file is the system-audio track (the other side of a call).
 // Downloads the speech and speaker models on first use (~180 MB); set LYRA_MODELS_DIR to keep them.
 // LYRA_NOTES_ENGINE=local|claude also writes meeting notes (local downloads a ~2 GB model).
 const { spawnSync } = require('node:child_process')
@@ -26,7 +27,13 @@ if (!wav) {
 const home = mkdtempSync(join(tmpdir(), 'lyra-meeting-'))
 const result = spawnSync(electron, ['.', `--user-data-dir=${join(home, 'data')}`], {
   cwd: join(__dirname, '..'),
-  env: { ...process.env, LYRA_MEETING_FIXTURE: resolve(wav), USERPROFILE: home, HOME: home },
+  env: {
+    ...process.env,
+    LYRA_MEETING_FIXTURE: resolve(wav),
+    ...(process.argv[3] ? { LYRA_MEETING_SYSTEM_FIXTURE: resolve(process.argv[3]) } : {}),
+    USERPROFILE: home,
+    HOME: home
+  },
   stdio: 'inherit'
 })
 // Test runs keep their profile in a per-process temp folder; don't leave it (or models) behind.

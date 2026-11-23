@@ -15,6 +15,7 @@ Roadmap: [docs/PLAN.md](docs/PLAN.md). Human contributor guide: [CONTRIBUTING.md
 | Typecheck + lint | `pnpm check` — must pass before every commit |
 | UI smoke test | `pnpm smoke:ui` (builds, launches Electron headless, exercises the IPC bridge) |
 | Native addon smoke | `pnpm smoke` (only needed when touching `src/main/whisper.ts` or native deps) |
+| QA with real audio | `powershell -File scripts/make-demo-audio.ps1` makes `test-audio/meeting.wav` (two synthetic voices); see the `qa-test` skill |
 | Meeting pipeline smoke | `pnpm smoke:meeting <file.wav>`: real diarization, Whisper, and relabeling; `LYRA_NOTES_ENGINE=local` adds notes; `LYRA_MODELS_DIR` reuses downloads |
 | Package (Windows dir build) | `pnpm build:unpack`; runs `prepare:llama`, which ships node-llama-cpp as its own npm install |
 
@@ -58,6 +59,8 @@ Roadmap: [docs/PLAN.md](docs/PLAN.md). Human contributor guide: [CONTRIBUTING.md
 - Run `pnpm check` and `pnpm smoke:ui` before saying a change is done.
 - New behavior in `src/main/` that the renderer can reach gets a case in `runUiSmoke`
   (`src/main/index.ts`).
+- Audio, transcription, diarization or meeting-notes changes: QA with real audio per the `qa-test` skill
+  (`test-audio/meeting.wav`), comparing output to the known script. Smoke tests alone don't count.
 - UI changes: launch `pnpm dev` and look at the change; say so if you couldn't.
 
 ## Commits and PRs
@@ -81,4 +84,5 @@ Pick the role that matches the task and follow its file; load a skill when its t
 | --- | --- |
 | [add-ipc-channel](.agents/skills/add-ipc-channel/SKILL.md) | Exposing a new main-process capability to the renderer |
 | [add-setting](.agents/skills/add-setting/SKILL.md) | Adding a user-configurable setting |
+| [qa-test](.agents/skills/qa-test/SKILL.md) | Changes touching audio, Whisper, speakers or meeting notes; any request to QA or test with audio |
 | [verify-change](.agents/skills/verify-change/SKILL.md) | Before declaring any change done or committing |
