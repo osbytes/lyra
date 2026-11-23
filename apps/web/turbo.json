@@ -1,0 +1,10 @@
+{
+  "$schema": "https://turborepo.com/schema.json",
+  "extends": ["//"],
+  "tasks": {
+    "build": {
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/apps/lyra/src/renderer/src/assets/styles.css"],
+      "outputs": [".next/**", "!.next/cache/**"]
+    }
+  }
+}

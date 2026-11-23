@@ -17,3 +17,8 @@ build/helpers/
 build/llama/
 test-audio/
 .turbo
+.next
+next-env.d.ts
+.vercel
+apps/web/components/demo/app-styles.generated.css
+*.tsbuildinfo

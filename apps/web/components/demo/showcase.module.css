@@ -1,0 +1,451 @@
+/* The meeting card and the files browser: site-styled frames around app content. */
+
+.card {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--card);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font: 500 11.5px var(--f-ui);
+  white-space: nowrap;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 999px;
+  font: 600 14px/1 var(--f-ui);
+  cursor: pointer;
+}
+
+.btnPrimary {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.btnPrimary:hover {
+  background: var(--accent-hover);
+}
+
+/* Meeting card */
+
+.meetTop {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.meetTitle {
+  font-weight: 600;
+}
+
+.meetTitle span {
+  margin-left: 8px;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.meetClock {
+  color: var(--muted);
+  font: 500 13px var(--f-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.tabs,
+.segmented {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--paper-2);
+}
+
+.tabs {
+  margin-left: auto;
+}
+
+.tabs button,
+.segmented button {
+  padding: 6px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: 500 13px var(--f-ui);
+  cursor: pointer;
+}
+
+.tabs button[aria-selected='true'],
+.segmented button[aria-pressed='true'] {
+  background: var(--card);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+  color: var(--ink);
+}
+
+.timeline {
+  display: grid;
+  grid-template-columns: 124px minmax(0, 1fr);
+  gap: 14px;
+  padding: 20px 16px 34px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tlLabels,
+.tlTracks {
+  display: grid;
+  grid-template-rows: 24px 24px;
+  row-gap: 8px;
+}
+
+.tlLabels {
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tlTracks {
+  position: relative;
+}
+
+.track {
+  position: relative;
+  border-radius: 6px;
+  background: var(--paper-2);
+}
+
+.blk {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  border-radius: 4px;
+  transition: opacity 0.25s;
+}
+
+.s1 {
+  background: var(--spk-1);
+}
+
+.s2 {
+  background: var(--spk-2);
+}
+
+.s3 {
+  background: var(--spk-3);
+}
+
+.future {
+  opacity: 0.18;
+}
+
+.playhead {
+  position: absolute;
+  top: -6px;
+  bottom: -6px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 2px;
+  background: var(--ink);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.isPlaying .playhead {
+  opacity: 1;
+}
+
+.ticks {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  left: 0;
+  height: 14px;
+  color: var(--faint);
+  font: 11px var(--f-mono);
+}
+
+.ticks span {
+  position: absolute;
+  transform: translateX(-50%);
+}
+
+.ticks span:first-child {
+  transform: none;
+}
+
+.ticks span:last-child {
+  transform: translateX(-100%);
+}
+
+.tx {
+  padding: 20px 20px 26px;
+  background: transparent;
+}
+
+.notes {
+  padding: 20px 20px 26px;
+}
+
+.engine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  margin-bottom: 24px;
+}
+
+.engineCap {
+  max-width: 46em;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+.notesGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  gap: 28px 44px;
+}
+
+.notesGrid h3 {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.summary {
+  margin: 0;
+  font-family: var(--f-display);
+  font-size: 18px;
+  line-height: 1.6;
+}
+
+.notesCol {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.notesGrid ul {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  font-size: 15px;
+  list-style: none;
+}
+
+.todo li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.todo input {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin: 3px 0 0;
+  accent-color: var(--accent);
+}
+
+.todo label {
+  cursor: pointer;
+}
+
+.todo input:checked + label {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+.none {
+  color: var(--faint);
+}
+
+/* Files browser */
+
+.finder {
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1fr);
+  min-height: 460px;
+}
+
+.flSide {
+  min-width: 0;
+  padding: 12px 8px;
+  border-right: 1px solid var(--line);
+  background: var(--paper-2);
+}
+
+.flPath {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 10px;
+  color: var(--ink-2);
+  font: 500 13px var(--f-mono);
+}
+
+.flPath svg {
+  color: var(--accent);
+}
+
+.flList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 520px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.fl {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 2px 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.fl svg {
+  grid-row: span 2;
+  margin-top: 2px;
+  color: var(--muted);
+}
+
+.flMeta {
+  padding-block: 4px;
+  padding-left: 34px;
+}
+
+.flMeta svg {
+  grid-row: auto;
+}
+
+.fl:hover {
+  background: var(--paper);
+}
+
+.flActive,
+.flActive:hover {
+  background: var(--accent-soft);
+}
+
+.flActive .flName,
+.flActive svg {
+  color: var(--accent-ink);
+}
+
+.flName {
+  overflow: hidden;
+  color: var(--ink);
+  font: 500 12.5px var(--f-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flMeta .flName,
+.hiddenDir .flName {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.flTitle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.fv {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.fvHead {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 12px;
+  padding: 12px 22px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font: 12px var(--f-mono);
+}
+
+.fvHead b {
+  color: var(--ink);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.fvText {
+  flex: 1;
+  max-height: 520px;
+  margin: 0;
+  padding: 22px 24px;
+  overflow: auto;
+  color: var(--ink);
+  font: 13px/1.75 var(--f-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 860px) {
+  .finder {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .flSide {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .flList {
+    max-height: 300px;
+  }
+}
+
+@media (max-width: 760px) {
+  .notesGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 720px) {
+  .timeline {
+    grid-template-columns: 92px minmax(0, 1fr);
+  }
+
+  .tabs {
+    margin-left: 0;
+  }
+}

@@ -13,6 +13,8 @@ pnpm dev
 
 On macOS, grant microphone access when prompted. The first **Record** click downloads the Whisper `base.en` model (~150 MB) into the app data folder.
 
+The website lives in `apps/web` (Next.js). Run it with `pnpm dev:web` and open http://localhost:3100.
+
 ## Checks
 
 Run these before opening a pull request:

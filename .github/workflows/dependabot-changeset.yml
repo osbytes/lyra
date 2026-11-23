@@ -1,6 +1,6 @@
 # Dependabot cannot write changesets, and CI requires one on every PR (.changeset/README.md). This
 # adds a patch changeset to a Dependabot PR that touches the app's dependencies (workflow action
-# bumps are not shipped in the app, so their PRs get an empty one).
+# and website bumps are not shipped in the app, so their PRs get an empty one).
 #
 # pull_request_target runs with repository secrets, so nothing from the PR may run here: the job
 # never checks the PR out. It reads the PR's file list and writes the changeset through the GitHub
@@ -40,8 +40,15 @@ jobs:
             echo "the PR already carries a changeset"; exit 0
           fi
           path=".changeset/dependabot-$NUMBER.md"
-          # the title is data: written through printf into the file body, never evaluated
-          if grep -qE '^(pnpm-lock\.yaml|package\.json|apps/[^/]+/package\.json)$' <<<"$changed"; then
+          # the title is data: written through printf into the file body, never evaluated. The
+          # website (apps/web) is not released, so a bump that only touches it gets an empty one.
+          app=false
+          if grep -qE '^(package\.json|apps/lyra/package\.json)$' <<<"$changed"; then
+            app=true
+          elif grep -qx 'pnpm-lock.yaml' <<<"$changed" && ! grep -qx 'apps/web/package.json' <<<"$changed"; then
+            app=true
+          fi
+          if [ "$app" = true ]; then
             content=$(printf -- '---\n"lyra": patch\n---\n\nDependencies: %s.\n' "$TITLE" | base64 -w0)
           else
             content=$(printf -- '---\n---\n' | base64 -w0)
