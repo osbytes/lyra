@@ -30,6 +30,9 @@ Repo-level files (`.changeset/`, `.github/`, `docs/`, `scripts/release-*`, `turb
 - `src/preload/` — the `window.api` bridge. Thin: `ipcRenderer.invoke`/`on` wrappers, no logic.
 - `src/renderer/src/` — React UI, audio capture (`audio/`), hooks, text helpers. Browser APIs only.
 - `src/shared/types.ts` — types shared across processes, including the `VoicePagesApi` contract.
+- `src/main/sessionStore.ts` + `src/shared/sessionDoc.ts` — sessions: each note is a Yjs document
+  (main owns it, windows hold replicas over IPC), exported to the `.txt`/`.md` file plus a
+  `.lyra.json` metadata file. Design: [docs/SESSION-MODEL.md](docs/SESSION-MODEL.md) (repo root).
 - `scripts/` — build, release and smoke-test scripts (CommonJS).
 - `.agents/` — roles, skills and rules for coding agents (see below).
 

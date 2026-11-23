@@ -34,7 +34,8 @@
     "@electron-toolkit/utils": "^4.0.0",
     "@kutalia/whisper-node-addon": "^1.1.0",
     "electron-updater": "^6.8.9",
-    "sherpa-onnx-node": "^2.0.2"
+    "sherpa-onnx-node": "^2.0.2",
+    "yjs": "13.6.27"
   },
   "devDependencies": {
     "@electron-toolkit/tsconfig": "^2.0.0",

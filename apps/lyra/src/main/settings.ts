@@ -15,7 +15,8 @@ export function defaultSettings(): Settings {
     meetingHotkey: 'CommandOrControl+Shift+M',
     launchAtLogin: false,
     micPrompt: { enabled: false, ignoredApps: [] },
-    keepMeetingAudio: false,
+    // Long enough to replay or re-transcribe recent sessions, short enough not to pile up.
+    audioRetentionDays: 30,
     captureSystemAudio: true,
     notesEngine: 'off',
     meetingNoticeSeen: false
@@ -39,6 +40,8 @@ const oneOf =
   (value: unknown): value is T =>
     values.includes(value as T)
 
+const MAX_RETENTION_DAYS = 3650
+
 type FlatKey = Exclude<keyof Settings, 'micPrompt'>
 
 /** How to recognize a well-formed value for each top-level setting. */
@@ -49,7 +52,8 @@ const FIELD_CHECKS: { [K in FlatKey]: (value: unknown) => value is Settings[K] }
   hotkey: isString,
   meetingHotkey: isString,
   launchAtLogin: isBool,
-  keepMeetingAudio: isBool,
+  audioRetentionDays: (value): value is number | null =>
+    value === null || (Number.isInteger(value) && (value as number) >= 0 && (value as number) <= MAX_RETENTION_DAYS),
   captureSystemAudio: isBool,
   notesEngine: oneOf('off', 'local', 'claude'),
   meetingNoticeSeen: isBool
@@ -61,6 +65,9 @@ function applyValidFields(raw: Record<string, unknown>, out: Settings): void {
     const value = raw[key]
     if (FIELD_CHECKS[key](value)) (out as Record<FlatKey, unknown>)[key] = value
   }
+
+  // Before retention days there was "Keep meeting audio"; on means keep forever.
+  if (!('audioRetentionDays' in raw) && raw.keepMeetingAudio === true) out.audioRetentionDays = null
 
   const prompt = raw.micPrompt as Record<string, unknown> | undefined
   if (prompt && typeof prompt === 'object') {

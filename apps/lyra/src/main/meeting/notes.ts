@@ -1,7 +1,7 @@
 import { BrowserWindow, ipcMain } from 'electron'
 import type { MeetingStatus } from '../../shared/types'
 import { log } from '../log'
-import { getPage, notifyPagesChanged, savePage } from '../pages'
+import { getSessionPage as getPage, saveSessionPage as savePage } from '../sessionStore'
 import { getClaudeKey, hasClaudeKey, setClaudeKey } from '../secrets'
 import { getSettings } from '../settings'
 import { claudeNotes } from './notesClaude'
@@ -42,7 +42,6 @@ export async function generateNotes(pageId: string): Promise<void> {
     // Re-read: the note may have been edited while the model was working.
     const page = await getPage(pageId)
     await savePage({ id: pageId, title: page.title, body: withNotes(page.body, renderNotes(notes)) })
-    notifyPagesChanged()
     log('notes', 'generated', { pageId, engine, ms: Date.now() - started })
     status('done', 1)
   } catch (error) {

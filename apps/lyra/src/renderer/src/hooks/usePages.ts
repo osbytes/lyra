@@ -1,24 +1,48 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Page, PageSummary } from '../../../shared/types'
+import * as Y from 'yjs'
+import type { PageSummary } from '../../../shared/types'
+import {
+  docNotes,
+  docTitle,
+  editDoc,
+  ORIGIN_REMOTE,
+  ORIGIN_USER
+} from '../../../shared/sessionDoc'
+import { log } from '../lib/log'
 
 export type SaveState = 'saved' | 'saving'
 
-type Edit = Partial<Pick<Page, 'title' | 'body'>>
+/** What the editor shows of the open session. */
+export type OpenPage = {
+  id: string
+  title: string
+  body: string
+}
 
-const SAVE_DELAY_MS = 400
+type Edit = { title?: string; body?: string }
 
-/** Page list + the open page, with debounced autosave. */
+type Replica = {
+  id: string
+  doc: Y.Doc
+  undo: Y.UndoManager
+  dispose: () => void
+}
+
+/**
+ * The page list, plus the open session as a Yjs replica of main's document. Edits go to the
+ * replica and stream to main as updates; changes made elsewhere (meeting labeling, notes,
+ * another window) arrive the same way and merge instead of overwriting.
+ */
 export function usePages() {
   const [pages, setPages] = useState<PageSummary[]>([])
-  const [current, setCurrent] = useState<Page | null>(null)
+  const [current, setCurrent] = useState<OpenPage | null>(null)
   const [saveState, setSaveState] = useState<SaveState>('saved')
-  const currentRef = useRef<Page | null>(null)
-  const pendingSave = useRef<{ page: Page; timer: ReturnType<typeof setTimeout> } | null>(null)
+  const currentRef = useRef<OpenPage | null>(null)
+  const replica = useRef<Replica | null>(null)
+  /** Updates main hasn't confirmed yet; `flush` waits for all of them. */
+  const pending = useRef(new Set<Promise<void>>())
 
-  // A function, not a property read: the ref can change across an `await`.
-  const hasPendingSave = (): boolean => pendingSave.current !== null
-
-  const show = (page: Page | null): void => {
+  const show = (page: OpenPage | null): void => {
     currentRef.current = page
     setCurrent(page)
   }
@@ -29,107 +53,151 @@ export function usePages() {
     return list
   }, [])
 
-  const write = useCallback(
-    async (page: Page) => {
-      const saved = await window.api.savePage({ id: page.id, title: page.title, body: page.body })
-      if (currentRef.current?.id === saved.id) {
-        show({ ...currentRef.current, updatedAt: saved.updatedAt })
-      }
-      if (!pendingSave.current) setSaveState('saved')
-      await refreshList()
-    },
-    [refreshList]
-  )
-
-  /** Writes any pending edit right away (e.g. before switching pages). */
   const flush = useCallback(async () => {
-    const pending = pendingSave.current
-    if (!pending) return
-    clearTimeout(pending.timer)
-    pendingSave.current = null
-    await write(pending.page)
-  }, [write])
+    while (pending.current.size) await Promise.all([...pending.current])
+  }, [])
 
-  const edit = useCallback(
-    (changes: Edit) => {
-      const page = currentRef.current
-      if (!page) return
-      const next = { ...page, ...changes }
-      show(next)
-      setSaveState('saving')
-      if (pendingSave.current) clearTimeout(pendingSave.current.timer)
-      const timer = setTimeout(() => {
-        pendingSave.current = null
-        void write(next)
-      }, SAVE_DELAY_MS)
-      pendingSave.current = { page: next, timer }
-    },
-    [write]
-  )
-
-  const open = useCallback(
-    async (id: string) => {
-      await flush()
-      show(await window.api.getPage(id))
-    },
-    [flush]
-  )
-
-  /** Leaves the open page without picking another (e.g. it is about to be deleted). */
-  const close = useCallback(async () => {
+  const detach = useCallback(async () => {
+    const open = replica.current
+    if (!open) return
+    replica.current = null
     await flush()
-    show(null)
+    open.dispose()
+    window.api.closeSession(open.id)
   }, [flush])
 
-  const create = useCallback(async (options?: { startedAt?: string }) => {
-    await flush()
-    const page = await window.api.createPage(options)
-    show(page)
-    await refreshList()
-    return page
-  }, [flush, refreshList])
+  const attach = useCallback(
+    async (id: string) => {
+      await detach()
+      const state = await window.api.openSession(id)
+      const doc = new Y.Doc()
+      Y.applyUpdate(doc, state, ORIGIN_REMOTE)
+      const title = docTitle(doc)
+      const notes = docNotes(doc)
+      const render = (): void => {
+        show({ id, title: title.toJSON(), body: notes.toJSON() })
+      }
+
+      const onUpdate = (update: Uint8Array, origin: unknown): void => {
+        render()
+        if (origin === ORIGIN_REMOTE) return
+        setSaveState('saving')
+        const sent = window.api.updateSession(id, update).catch((error: unknown) => {
+          log('pages', 'could not save change', String(error))
+        })
+        pending.current.add(sent)
+        void sent.finally(() => {
+          pending.current.delete(sent)
+          if (!pending.current.size) setSaveState('saved')
+        })
+      }
+      doc.on('update', onUpdate)
+      const stopRemote = window.api.onSessionUpdate((change) => {
+        if (change.id === id) Y.applyUpdate(doc, change.update, ORIGIN_REMOTE)
+      })
+      // Undo covers this window's own edits only, never text that arrived from elsewhere.
+      const undo = new Y.UndoManager([title, notes], {
+        trackedOrigins: new Set([ORIGIN_USER]),
+        captureTimeout: 600
+      })
+
+      replica.current = {
+        id,
+        doc,
+        undo,
+        dispose: () => {
+          stopRemote()
+          undo.destroy()
+          doc.off('update', onUpdate)
+          doc.destroy()
+        }
+      }
+      render()
+    },
+    [detach]
+  )
+
+  const edit = useCallback((changes: Edit) => {
+    const open = replica.current
+    if (!open) return
+    editDoc(open.doc, { title: changes.title, notes: changes.body }, ORIGIN_USER)
+  }, [])
+
+  const undo = useCallback(() => replica.current?.undo.undo() !== null, [])
+  const redo = useCallback(() => replica.current?.undo.redo() !== null, [])
+
+  const open = useCallback((id: string) => attach(id), [attach])
+
+  const close = useCallback(async () => {
+    await detach()
+    show(null)
+  }, [detach])
+
+  const create = useCallback(
+    async (options?: { startedAt?: string }) => {
+      await flush()
+      const page = await window.api.createPage(options)
+      await attach(page.id)
+      await refreshList()
+      return page
+    },
+    [flush, attach, refreshList]
+  )
 
   const remove = useCallback(
     async (id: string) => {
-      if (pendingSave.current?.page.id === id) {
-        clearTimeout(pendingSave.current.timer)
-        pendingSave.current = null
-        setSaveState('saved')
-      }
+      const wasOpen = replica.current?.id === id
+      if (wasOpen) await detach()
       await window.api.deletePage(id)
       const list = await refreshList()
-      if (currentRef.current?.id !== id) return
-      show(list[0] ? await window.api.getPage(list[0].id) : null)
+      if (!wasOpen && currentRef.current?.id !== id) return
+      const next = list[0]
+      if (next) await attach(next.id)
+      else show(null)
     },
-    [refreshList]
+    [detach, attach, refreshList]
   )
 
   useEffect(() => {
     void refreshList().then(async (list) => {
-      if (list[0] && !currentRef.current) show(await window.api.getPage(list[0].id))
+      const first = list[0]
+      if (first && !replica.current) await attach(first.id)
     })
     return () => {
-      void flush()
+      void detach()
     }
-  }, [refreshList, flush])
+  }, [refreshList, attach, detach])
 
-  // Files added, edited, or removed outside Lyra (or the notes folder changed).
+  // Notes added or removed outside Lyra, or a title or preview changed: refresh the list. The
+  // open session's content itself syncs through its document.
   useEffect(
     () =>
       window.api.onPagesChanged(() => {
         void refreshList().then(async (list) => {
-          const open = currentRef.current
-          if (hasPendingSave()) return
-          if (open && list.some((page) => page.id === open.id)) {
-            const fresh = await window.api.getPage(open.id).catch(() => null)
-            if (fresh && currentRef.current?.id === fresh.id && !hasPendingSave()) show(fresh)
-            return
-          }
-          show(list[0] ? await window.api.getPage(list[0].id) : null)
+          const openId = replica.current?.id
+          if (!openId || list.some((page) => page.id === openId)) return
+          // The open note's file was removed outside Lyra.
+          await detach()
+          const next = list[0]
+          if (next) await attach(next.id)
+          else show(null)
         })
       }),
-    [refreshList]
+    [refreshList, attach, detach]
   )
 
-  return { pages, current, currentRef, saveState, edit, open, close, create, remove, flush }
+  return {
+    pages,
+    current,
+    currentRef,
+    saveState,
+    edit,
+    undo,
+    redo,
+    open,
+    close,
+    create,
+    remove,
+    flush
+  }
 }
