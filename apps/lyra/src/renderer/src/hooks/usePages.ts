@@ -3,7 +3,6 @@ import * as Y from 'yjs'
 import type { PageSummary } from '../../../shared/types'
 import {
   addTag,
-  docNotes,
   docSummary,
   docTitle,
   docTranscript,
@@ -13,6 +12,7 @@ import {
   ORIGIN_REMOTE,
   ORIGIN_USER,
   removeTag,
+  setSegmentEdits,
   setSegmentsCluster,
   setSegmentText,
   snapshotOf,
@@ -24,6 +24,7 @@ import {
   type SpeakerEntry,
   type TranscriptSegment
 } from '../../../shared/sessionDoc'
+import type { TranscriptEdit } from '../../../shared/transcriptOverlay'
 import { log } from '../lib/log'
 
 export type SaveState = 'saved' | 'saving'
@@ -105,7 +106,6 @@ export function usePages() {
       const doc = new Y.Doc()
       Y.applyUpdate(doc, state, ORIGIN_REMOTE)
       const title = docTitle(doc)
-      const notes = docNotes(doc)
       const render = (): void => {
         const snapshot = snapshotOf(doc)
         show({
@@ -139,8 +139,9 @@ export function usePages() {
       const stopRemote = window.api.onSessionUpdate((change) => {
         if (change.id === id) Y.applyUpdate(doc, change.update, ORIGIN_REMOTE)
       })
-      // Undo covers this window's own edits only, never text that arrived from elsewhere.
-      const undo = new Y.UndoManager([title, notes, docSummary(doc), docTranscript(doc), docMeta(doc)], {
+      // Undo covers this window's own edits only, never text that arrived from elsewhere. The
+      // notes editor keeps its own history (it knows the user's selection), so they're not here.
+      const undo = new Y.UndoManager([title, docSummary(doc), docTranscript(doc), docMeta(doc)], {
         trackedOrigins: new Set([ORIGIN_USER]),
         captureTimeout: 600
       })
@@ -177,9 +178,27 @@ export function usePages() {
     (summary: string) => change((doc) => editDoc(doc, { summary }, ORIGIN_USER)),
     [change]
   )
+  /**
+   * A transcript action (correct, remove, highlight, rewrite, reassign) as one undo step of its
+   * own: typing merges keystrokes into a step, but two quick menu actions must undo separately.
+   */
+  const step = useCallback((apply: (doc: Y.Doc) => void) => {
+    const open = replica.current
+    if (!open) return
+    open.undo.stopCapturing()
+    apply(open.doc)
+    open.undo.stopCapturing()
+  }, [])
+
   const editSegment = useCallback(
-    (id: string, text: string) => change((doc) => setSegmentText(doc, id, text, ORIGIN_USER)),
-    [change]
+    (id: string, text: string) => step((doc) => setSegmentText(doc, id, text, ORIGIN_USER)),
+    [step]
+  )
+  /** Sets a line's corrections, removals and highlights over its raw words. */
+  const editLineOverlay = useCallback(
+    (id: string, edits: readonly TranscriptEdit[]) =>
+      step((doc) => setSegmentEdits(doc, id, edits, ORIGIN_USER)),
+    [step]
   )
   /** Moves lines to a speaker, creating it first when given a name. Returns the speaker's id. */
   const assignLines = useCallback(
@@ -187,6 +206,7 @@ export function usePages() {
       const open = replica.current
       if (!open) return null
       const id = typeof speaker === 'string' ? speaker : newSpeakerId(open.doc)
+      open.undo.stopCapturing()
       open.doc.transact(() => {
         if (typeof speaker !== 'string') {
           upsertSpeaker(open.doc, id, {
@@ -199,6 +219,7 @@ export function usePages() {
         }
         setSegmentsCluster(open.doc, ids, id, ORIGIN_USER)
       }, ORIGIN_USER)
+      open.undo.stopCapturing()
       return id
     },
     []
@@ -283,6 +304,7 @@ export function usePages() {
     edit,
     editSummary,
     editSegment,
+    editLineOverlay,
     assignLines,
     tag,
     untag,

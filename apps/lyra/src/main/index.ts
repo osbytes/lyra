@@ -52,10 +52,19 @@ import {
   mergeSpeakers,
   renumberSpeakers,
   addTag,
+  setSegmentEdits,
   setSegmentText,
   snapshotOf,
+  docTranscript,
   upsertSpeaker
 } from '../shared/sessionDoc'
+import {
+  correctRange,
+  removeRange,
+  restoreRange,
+  toggleHighlight,
+  type TranscriptEdit
+} from '../shared/transcriptOverlay'
 import { registerHotkeys, unregisterHotkeys } from './hotkey'
 import { registerMicPrompt, stopMicPrompt } from './micprompt'
 import { parseConsentStore } from './micwatch'
@@ -331,6 +340,90 @@ async function seedScreenshotPages(): Promise<void> {
   })
 }
 
+/**
+ * Review shots of the locked transcript: the selection toolbar, a correction, a removal and a
+ * highlight, the right-click menu, the Raw view, and Ctrl+Z taking the edits back one by one.
+ */
+async function reviewTranscriptEditing(
+  win: BrowserWindow,
+  theme: 'light' | 'dark',
+  dir: string,
+  save: (dir: string, name: string) => Promise<void>,
+  settle: () => Promise<void>
+): Promise<void> {
+  const run = (script: string): Promise<unknown> => win.webContents.executeJavaScript(script)
+  // Selects `words` inside line `id` the way a drag would.
+  const select = (id: string, words: string): Promise<unknown> =>
+    run(`(() => {
+      const piece = [...document.querySelectorAll('[data-line="${id}"] [data-kind="raw"]')]
+        .find((el) => el.textContent.includes(${JSON.stringify(words)}))
+      const node = piece?.firstChild
+      if (!node) return false
+      const start = node.textContent.indexOf(${JSON.stringify(words)})
+      const range = document.createRange()
+      range.setStart(node, start)
+      range.setEnd(node, start + ${String(words.length)})
+      const sel = window.getSelection()
+      sel.removeAllRanges()
+      sel.addRange(range)
+      return true
+    })()`)
+  const bar = (label: string): Promise<unknown> =>
+    run(`[...document.querySelectorAll('.selection-bar button')].find((b) => b.textContent === ${JSON.stringify(label)})?.click()`)
+  const lineText = (id: string): Promise<unknown> =>
+    run(`(() => {
+      const line = document.querySelector('[data-line="${id}"]')?.cloneNode(true)
+      line?.querySelectorAll('del').forEach((el) => el.remove())
+      const marks = [...(document.querySelector('[data-line="${id}"]')?.querySelectorAll('ins, del, .hl') ?? [])]
+      return line ? line.textContent + ' [' + marks.map((el) => el.tagName === 'SPAN' ? 'hl' : el.tagName.toLowerCase()).join(',') + ']' : null
+    })()`)
+  const undoKey = (): Promise<unknown> =>
+    run(`document.querySelector('.lines').dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, metaKey: true, bubbles: true }))`)
+
+  if (!(await select('s1', 'contrast numbers'))) throw new Error('could not select words')
+  await settle()
+  await save(dir, `transcript-select-${theme}.png`)
+  await bar('Highlight')
+  await settle()
+  await select('s1', ' this afternoon')
+  await settle()
+  await bar('Remove')
+  await settle()
+  await select('s0', 'dock')
+  await settle()
+  await bar('Correct')
+  await settle()
+  await run(`(() => {
+    const input = document.querySelector('.correct-pop input')
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'dark mode')
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })()`)
+  await save(dir, `transcript-correct-${theme}.png`)
+  await run(`document.querySelector('.correct-pop').requestSubmit()`)
+  await settle()
+  await save(dir, `transcript-edited-${theme}.png`)
+  const box = (await run(
+    `(() => { const r = document.querySelector('[data-line="s4"]').getBoundingClientRect(); return [r.left + 40, r.top + 8] })()`
+  )) as [number, number]
+  win.webContents.sendInputEvent({ type: 'mouseDown', x: box[0], y: box[1], button: 'right', clickCount: 1 })
+  win.webContents.sendInputEvent({ type: 'mouseUp', x: box[0], y: box[1], button: 'right', clickCount: 1 })
+  await settle()
+  await save(dir, `transcript-menu-${theme}.png`)
+  await run(`document.querySelector('.picker-layer')?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`)
+  await run(`document.querySelector('.transcript-mode button:last-child').click()`)
+  await settle()
+  await save(dir, `transcript-raw-${theme}.png`)
+  await run(`document.querySelector('.transcript-mode button:first-child').click()`)
+  await settle()
+  const steps = [String(await lineText('s0')), String(await lineText('s1'))]
+  for (let i = 0; i < 3; i++) {
+    await undoKey()
+    await settle()
+    steps.push(`${String(await lineText('s0'))} / ${String(await lineText('s1'))}`)
+  }
+  process.stdout.write(`transcript undo (${theme}):\n  ${steps.join('\n  ')}\n`)
+}
+
 async function captureScreenshot(win: BrowserWindow): Promise<void> {
   const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 600))
   const reload = async (): Promise<void> => {
@@ -391,11 +484,15 @@ async function captureScreenshot(win: BrowserWindow): Promise<void> {
       for (const theme of ['light', 'dark'] as const) {
         nativeTheme.themeSource = theme
         await reload()
-        await click('.page-row:last-child .page-item')
+        // By title: editing the meeting moves it to the top of the list.
+        await win.webContents.executeJavaScript(
+          `[...document.querySelectorAll('.page-item')].find((el) => el.textContent.includes('Design review'))?.click()`
+        )
         await settle()
         await win.webContents.executeJavaScript(`document.querySelector('.transcript')?.scrollIntoView()`)
         await settle()
         await save(reviewDir, `meeting-${theme}.png`)
+        await reviewTranscriptEditing(win, theme, reviewDir, save, settle)
         await click('.speaker-chip.likely')
         await settle()
         await save(reviewDir, `picker-${theme}.png`)
@@ -678,9 +775,48 @@ async function checkTranscriptModel(): Promise<void> {
     { id: 'b2', rawId: 'b2', start: 4.1, end: 8, cluster: 'c1', confidence: 0.5, text: 'Hi' }
   ], 'pipeline')
   const kept = snapshotOf(doc).transcript.find((segment) => segment.id === 'b2')
-  if (kept?.text !== 'Hi, all.' || !kept.edited || kept.original !== 'Hi') {
+  // The kept line keeps the raw words its edits were made over, so the overlay still lines up.
+  if (kept?.text !== 'Hi, all.' || !kept.edited || kept.original !== 'Hi.') {
     fail(`an edit did not survive a new pass: ${JSON.stringify(kept)}`)
   }
+
+  // The transcript is locked: edits overlay the raw line, which never changes, and each
+  // action undoes on its own.
+  replaceTranscript(doc, [
+    { id: 'o', rawId: 'o', start: 10, end: 14, cluster: 'c0', confidence: 0.9, text: 'So um the cat sat on teh mat.' }
+  ], 'pipeline')
+  const heard = 'So um the cat sat on teh mat.'
+  const lineEdits = (): TranscriptEdit[] =>
+    snapshotOf(doc).transcript.find((segment) => segment.id === 'o')?.edits ?? []
+  const overlayUndo = new Y.UndoManager(docTranscript(doc), { trackedOrigins: new Set([ORIGIN_USER]), captureTimeout: 60_000 })
+  const at = (word: string): { start: number; end: number } => {
+    const start = heard.indexOf(word)
+    return { start, end: start + word.length }
+  }
+  const act = (edits: TranscriptEdit[]): void => {
+    overlayUndo.stopCapturing()
+    setSegmentEdits(doc, 'o', edits, ORIGIN_USER)
+    overlayUndo.stopCapturing()
+  }
+  act(removeRange(lineEdits(), at('um')))
+  act(correctRange(heard, lineEdits(), at('teh'), 'the'))
+  act(toggleHighlight(lineEdits(), at('cat sat')))
+  const overlaid = snapshotOf(doc).transcript.find((segment) => segment.id === 'o')
+  if (overlaid?.text !== 'So the cat sat on the mat.' || overlaid.original !== heard || !overlaid.edited) {
+    fail(`overlay: ${JSON.stringify(overlaid)}`)
+  }
+  if (lineEdits().length !== 3) fail(`overlay edits: ${JSON.stringify(lineEdits())}`)
+  overlayUndo.undo()
+  overlayUndo.undo()
+  const undone = snapshotOf(doc).transcript.find((segment) => segment.id === 'o')
+  if (undone?.text !== 'So the cat sat on teh mat.' || undone.edits.length !== 1) {
+    fail(`overlay undo should go one action at a time: ${JSON.stringify(undone)}`)
+  }
+  act(restoreRange(lineEdits(), { start: 0, end: heard.length }))
+  if (snapshotOf(doc).transcript.find((segment) => segment.id === 'o')?.text !== heard) {
+    fail('restoring a line should bring back what was heard')
+  }
+  overlayUndo.destroy()
   doc.destroy()
 
   // Live speakers: phrases become lines for their speaker, one line per turn, and each placed

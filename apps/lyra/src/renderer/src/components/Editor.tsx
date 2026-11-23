@@ -11,10 +11,6 @@ type Props = {
   onChange: (value: string) => void
   /** Accessible name; also turns off the "start talking" placeholder for secondary fields. */
   label?: string
-  /** Replaces the empty-page prompt (e.g. above a transcript, where notes are optional). */
-  placeholder?: string
-  /** Sized to its text only: above a transcript, empty notes shouldn't push it down the page. */
-  compact?: boolean
   ref?: Ref<HTMLTextAreaElement>
 }
 
@@ -50,8 +46,6 @@ export function Editor({
   transcriberAt,
   onChange,
   label,
-  placeholder,
-  compact = false,
   ref
 }: Props) {
   const area = useRef<HTMLTextAreaElement | null>(null)
@@ -78,7 +72,7 @@ export function Editor({
   const preview = merged.startsWith(before) ? merged.slice(before.length) : ''
 
   return (
-    <div className={compact ? 'editor-field compact' : 'editor-field'}>
+    <div className="editor-field">
       <div className="editor-mirror" aria-hidden="true">
         {before}
         <span className="ghost">{preview}</span>
@@ -106,7 +100,7 @@ export function Editor({
         placeholder={
           preview || listening || label
             ? ''
-            : (placeholder ?? 'Start talking — or typing. Your words land here and save automatically.')
+            : 'Start talking — or typing. Your words land here and save automatically.'
         }
         aria-label={label ?? 'Page body'}
       />

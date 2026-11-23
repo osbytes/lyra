@@ -287,7 +287,18 @@ from the plan above:
 - **Per-line confidence** is the cosine similarity between a line's own voiceprint and its
   speaker's. Lines below 0.6 are flagged and pre-ticked in Split.
 - **A re-run keeps edits**: a new pass replaces the transcript, but a line the user edited keeps
-  their text when the new pass has a line over the same stretch of audio.
+  its words, and the raw words its edits were made over, when the new pass has a line over the
+  same stretch of audio.
+- **The transcript is locked; edits are an overlay.** A segment's `original` is never changed
+  once written. The user's changes are `edits`: `replace` (a correction), `delete` (struck
+  through but still shown) and `highlight` ranges over `original`
+  (`src/shared/transcriptOverlay.ts`). `text` is derived from them and kept in the document, so
+  the export and other readers needn't apply the overlay. The window has no text field on a
+  line: edits come from the selection toolbar and the right-click menu, "Raw" shows exactly what
+  was heard, and each action is its own undo step. The metadata file lists a line's `edits`.
+- **Notes are markdown in a rich editor.** The window edits `notes` with Tiptap and writes it
+  back as markdown, so the export stays plain text. The notes sit above the transcript in their
+  own pane.
 
 1. **Session store and Yjs document.** Add `sessions.ts` (manifest, `doc.yjs` log and compaction,
    export rendering), migration, and the IPC sync. Plain notes only: `notes`, `title`, `tags`.

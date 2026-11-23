@@ -1,5 +1,12 @@
 import * as Y from 'yjs'
 import { appendTranscript } from './transcriptText'
+import {
+  applyOverlay,
+  hasTextEdits,
+  readEdits,
+  rewriteLine,
+  type TranscriptEdit
+} from './transcriptOverlay'
 
 /**
  * The editable layer of a session, as a Yjs document. Main owns the copy on disk; each window
@@ -12,7 +19,10 @@ import { appendTranscript } from './transcriptText'
  *   meta: Y.Map { tags: Y.Array<string>, speakers: Y.Map<id, Y.Map> }
  *     speaker: { name, personId, confirmed, confidence, matches: { personId, score }[] }
  *   transcript: Y.Array<Y.Map>       one entry per segment, in time order
- *     segment: { id, rawId, start, end, cluster, text: Y.Text, original, edited, confidence }
+ *     segment: { id, rawId, start, end, cluster, text: Y.Text, original, edits, edited, confidence }
+ *       `original` is what the model heard and is never edited; `edits` are the user's
+ *       corrections, removals and highlights over it (transcriptOverlay.ts); `text` is the
+ *       result, kept in the document so exports and readers needn't apply the overlay.
  */
 
 /** Who made a change. Lets undo skip machine writes and lets main skip echoing a window. */
@@ -47,8 +57,11 @@ export type TranscriptSegment = {
   end: number
   cluster: string | null
   text: string
-  /** What the model heard, before any edit. */
+  /** What the model heard, before any edit. Locked: edits overlay it, never change it. */
   original: string
+  /** The user's corrections, removals and highlights, as ranges of `original`. */
+  edits: TranscriptEdit[]
+  /** Some of the words differ from `original` (a highlight alone isn't an edit). */
   edited: boolean
   /** How much this line's voice sounds like the rest of its speaker, 0–1; null if unknown. */
   confidence: number | null
@@ -119,6 +132,12 @@ export function readSegment(entry: Y.Map<unknown>): TranscriptSegment {
   const rawId = entry.get('rawId')
   const cluster = entry.get('cluster')
   const current = text instanceof Y.Text ? text.toJSON() : ''
+  const original = str(entry.get('original'), current)
+  const edited = entry.get('edited') === true
+  const stored = readEdits(entry.get('edits'), original.length)
+  // Lines edited before the overlay existed were typed over directly: read the change as one
+  // correction, so they draw the same way.
+  const edits = !stored.length && edited && current !== original ? rewriteLine(original, [], current) : stored
   return {
     id: str(entry.get('id')),
     rawId: typeof rawId === 'string' ? rawId : null,
@@ -126,8 +145,9 @@ export function readSegment(entry: Y.Map<unknown>): TranscriptSegment {
     end: num(entry.get('end')),
     cluster: typeof cluster === 'string' ? cluster : null,
     text: current,
-    original: str(entry.get('original'), current),
-    edited: entry.get('edited') === true,
+    original,
+    edits,
+    edited,
     confidence: numOrNull(entry.get('confidence'))
   }
 }
@@ -210,7 +230,7 @@ export function initDoc(
 
 // --- Transcript edits ---------------------------------------------------------------
 
-export type NewSegment = Omit<TranscriptSegment, 'text' | 'original' | 'edited'> & {
+export type NewSegment = Omit<TranscriptSegment, 'text' | 'original' | 'edits' | 'edited'> & {
   text: string
 }
 
@@ -222,8 +242,10 @@ function segmentMap(segment: NewSegment, keep?: TranscriptSegment): Y.Map<unknow
   entry.set('end', segment.end)
   entry.set('cluster', segment.cluster)
   entry.set('confidence', segment.confidence)
-  entry.set('original', segment.text)
-  entry.set('text', new Y.Text(keep?.edited ? keep.text : segment.text))
+  // A kept line keeps the words its edits were made over, so they still line up.
+  entry.set('original', keep ? keep.original : segment.text)
+  entry.set('edits', keep ? keep.edits : [])
+  entry.set('text', new Y.Text(keep ? keep.text : segment.text))
   entry.set('edited', keep?.edited === true)
   return entry
 }
@@ -238,7 +260,10 @@ const overlap = (a: { start: number; end: number }, b: { start: number; end: num
 export function replaceTranscript(doc: Y.Doc, segments: NewSegment[], origin: unknown): void {
   doc.transact(() => {
     const transcript = docTranscript(doc)
-    const edited = transcript.toArray().map(readSegment).filter((segment) => segment.edited)
+    const edited = transcript
+      .toArray()
+      .map(readSegment)
+      .filter((segment) => segment.edited || segment.edits.length > 0)
     const used = new Set<string>()
     const entries = segments.map((segment) => {
       const keep = edited
@@ -439,15 +464,36 @@ function findSegment(doc: Y.Doc, id: string): Y.Map<unknown> | null {
   return docTranscript(doc).toArray().find((entry) => entry.get('id') === id) ?? null
 }
 
-/** The user typed into a line. */
-export function setSegmentText(doc: Y.Doc, id: string, next: string, origin: unknown): void {
+/** The line carries any user edit, highlights included; such lines are never rejoined. */
+function hasOverlay(entry: Y.Map<unknown>): boolean {
+  const edits = entry.get('edits')
+  return entry.get('edited') === true || (Array.isArray(edits) && edits.length > 0)
+}
+
+/** Sets a line's overlay and the text it produces. The original is left as heard. */
+export function setSegmentEdits(
+  doc: Y.Doc,
+  id: string,
+  edits: readonly TranscriptEdit[],
+  origin: unknown
+): void {
   const entry = findSegment(doc, id)
   const text = entry?.get('text')
   if (!entry || !(text instanceof Y.Text)) return
+  const original = str(entry.get('original'), text.toJSON())
   doc.transact(() => {
-    applyTextChange(text, next)
-    entry.set('edited', next !== str(entry.get('original')))
+    entry.set('edits', edits.map((edit) => ({ ...edit })))
+    applyTextChange(text, applyOverlay(original, edits))
+    entry.set('edited', hasTextEdits(edits))
   }, origin)
+}
+
+/** The user rewrote a whole line: stored as a correction over the words that changed. */
+export function setSegmentText(doc: Y.Doc, id: string, next: string, origin: unknown): void {
+  const entry = findSegment(doc, id)
+  if (!entry) return
+  const segment = readSegment(entry)
+  setSegmentEdits(doc, id, rewriteLine(segment.original, segment.edits, next), origin)
 }
 
 /** Points lines at another speaker (per-line fix, or a split). */
@@ -551,7 +597,7 @@ export function joinSplitLines(doc: Y.Doc, maxLine: number, origin: unknown): vo
       const beforeText = before.get('text')
       if (!(text instanceof Y.Text) || !(beforeText instanceof Y.Text)) continue
       if (line.get('cluster') !== before.get('cluster') || line.get('cluster') === null) continue
-      if (line.get('edited') === true || before.get('edited') === true) continue
+      if (hasOverlay(line) || hasOverlay(before)) continue
       if (num(line.get('end')) - num(before.get('start')) > maxLine) continue
       const head = beforeText.toJSON().trimEnd()
       const tail = text.toJSON().trim()
