@@ -2862,3 +2862,37 @@ code {
 .scroll-x::-webkit-scrollbar {
   display: none;
 }
+
+/* The transcript's live row: unconfirmed words and the transcriber's cursor, while a
+   conversation is recorded. Speaker-labeled lines appear above it as phrases are confirmed. */
+.live-line .live-text {
+  margin: 0;
+  min-height: 1.5em;
+  white-space: pre-wrap;
+}
+
+/* One voice: the transcript reads as the page's paragraphs. Names, signal and the speaker bar
+   only appear once a second voice is heard; the time stays, quietly, for Listen. */
+.transcript.solo .who,
+.transcript.solo .line-meta .signal,
+.transcript.solo .line-pct {
+  display: none;
+}
+.transcript.solo .speakers-bar {
+  border: 0;
+}
+
+.editor-field.compact {
+  flex: none;
+  min-height: 0;
+}
+
+/* With one voice the transcript simply continues the page: no rule, no heading. */
+.transcript.solo {
+  margin-top: 8px;
+  padding-top: 0;
+  border-top: 0;
+}
+.transcript.solo .speakers-label {
+  display: none;
+}
