@@ -31,6 +31,7 @@ import {
   sessionRawDir,
   updateManifest,
   saveSessionPage as savePage,
+  setAutoTitle,
   sidecarPath
 } from './sessionStore'
 import * as Y from 'yjs'
@@ -79,14 +80,19 @@ import { getSettings, onSettingsChanged, overrideSettings, updateSettings } from
 import { assignSpeaker, processMeeting, registerMeetingPipeline } from './meeting/pipeline'
 import { addPerson, listPeople } from './voices'
 import { generateNotes, registerMeetingNotes } from './meeting/notes'
+import { registerTitleSuggestions, suggestTitle } from './meeting/title'
+import { defaultTitle, partOfDay } from './sessionTitle'
 import { stopNotesWorker } from './meeting/notesLocal'
 import { stopSpeakerWorker } from './meeting/speakers'
-import { registerRecorderIpc, trackPath } from './recorder'
+import { replayRecording } from './meeting/replay'
+import { relabeled, relabelSession } from './meeting/relabel'
+import { identifiesSpeakers, onRecordingFinished, registerRecorderIpc, trackPath } from './recorder'
 import { startAudioRetention, sweepAudio } from './audioRetention'
 import { createTray } from './tray'
 import { registerUpdater } from './updater'
 import { broadcastStatus, pcmFromIpc, transcribePcm, warmUp } from './whisper'
 import { log, logPath } from './log'
+import { searchSessions } from './search'
 import type { Page, Settings } from '../shared/types'
 
 const isTestRun =
@@ -217,6 +223,9 @@ function createWindow(): void {
 
 function registerIpc(): void {
   ipcMain.handle('pages:list', () => listPages())
+  ipcMain.handle('pages:search', (_event, query: unknown) =>
+    typeof query === 'string' ? searchSessions(query.slice(0, 200)) : []
+  )
   ipcMain.handle('pages:get', (_event, id: string) => getPage(id))
   ipcMain.handle('pages:create', (_event, options: unknown) =>
     createPage(options && typeof options === 'object' ? options : {})
@@ -470,6 +479,17 @@ async function captureScreenshot(win: BrowserWindow): Promise<void> {
         nativeTheme.themeSource = theme
         await reload()
         await save(reviewDir, `page-${theme}.png`)
+        await pressShortcut('k')
+        await settle()
+        await save(reviewDir, `search-recent-${theme}.png`)
+        // A typo, to show fuzzy matching reaching the transcript.
+        await win.webContents.insertText('contrst')
+        await settle()
+        await save(reviewDir, `search-${theme}.png`)
+        win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' })
+        await settle()
+        await save(reviewDir, `search-open-${theme}.png`)
+        await reload()
         await pressShortcut(',')
         await settle()
         await save(reviewDir, `settings-${theme}.png`)
@@ -553,15 +573,21 @@ function checkConsentParser(): void {
 async function runMeetingFixture(wavPath: string): Promise<void> {
   try {
     const page = await createPage()
-    const micPath = trackPath(page.id, 'mic')
-    await mkdir(join(micPath, '..'), { recursive: true })
-    await copyFile(wavPath, micPath)
     // Optional second track, to exercise the mic-vs-system "Me" labeling.
-    const systemFixture = process.env.LYRA_MEETING_SYSTEM_FIXTURE
-    const systemPath = systemFixture ? trackPath(page.id, 'system') : null
-    if (systemFixture && systemPath) await copyFile(systemFixture, systemPath)
+    const systemFixture = process.env.LYRA_MEETING_SYSTEM_FIXTURE ?? null
     const started = Date.now()
-    await processMeeting({ pageId: page.id, micPath, systemPath, seconds: 0 })
+    // `live` (the default) replays the audio as a recording; `offline` labels it after the fact.
+    if (process.env.LYRA_MEETING_PIPELINE === 'offline') {
+      const micPath = trackPath(page.id, 'mic')
+      await mkdir(join(micPath, '..'), { recursive: true })
+      await copyFile(wavPath, micPath)
+      const systemPath = systemFixture ? trackPath(page.id, 'system') : null
+      if (systemFixture && systemPath) await copyFile(systemFixture, systemPath)
+      await processMeeting({ pageId: page.id, micPath, systemPath, seconds: 0 })
+    } else {
+      await replayRecording(page.id, wavPath, systemFixture)
+      await relabeled(page.id)
+    }
     await flushAllSessions()
     const exported = await readFile(join(notesDir(), page.id), 'utf8')
     const took = ((Date.now() - started) / 1000).toFixed(1)
@@ -580,7 +606,11 @@ async function runMeetingFixture(wavPath: string): Promise<void> {
         end,
         text
       }))
-      await writeFile(output, JSON.stringify({ seconds: +took, segments }, null, 2), 'utf8')
+      // The live pass's decisions too, so a bad result can be traced to the phrase that caused it.
+      const livePath = join(sessionRawDir(page.id), 'live.json')
+      const live: unknown = existsSync(livePath) ? JSON.parse(await readFile(livePath, 'utf8')) : null
+      const trace = live && typeof live === 'object' && 'trace' in live ? live.trace : []
+      await writeFile(output, JSON.stringify({ seconds: +took, segments, trace }, null, 2), 'utf8')
     }
 
     // Name the first speaker and save their voice, as the speaker picker does.
@@ -609,6 +639,13 @@ async function runMeetingFixture(wavPath: string): Promise<void> {
       const withNotes = await readSession(page.id)
       const notesTook = ((Date.now() - notesStarted) / 1000).toFixed(1)
       process.stdout.write(`meeting-fixture notes (${engine}, ${notesTook} s):\n${withNotes.summary}\n`)
+      // The recording ended before the engine was turned on, so ask for the title here.
+      const before = withNotes.title
+      const titleStarted = Date.now()
+      await suggestTitle(page.id)
+      const titled = (await readSession(page.id)).title
+      const titleTook = ((Date.now() - titleStarted) / 1000).toFixed(1)
+      process.stdout.write(`meeting-fixture title (${engine}, ${titleTook} s): "${before}" -> "${titled}"\n`)
     }
     app.exit(0)
   } catch (error) {
@@ -623,6 +660,18 @@ async function checkSessionStore(): Promise<void> {
     throw new Error(`session store: ${message}`)
   }
   const page = await createPage({ startedAt: '2026-02-03T04:05:06' })
+  // A new session is titled by when it started, and takes suggestions until the user titles it.
+  if (page.title !== defaultTitle(new Date('2026-02-03T04:05:06')) || !page.title.startsWith('Tuesday early morning · Feb 3, 4:05')) {
+    fail(`default title is wrong: ${page.title}`)
+  }
+  const parts = ['00:10', '02:00', '05:30', '09:00', '11:30', '12:10', '15:00', '18:00', '21:00', '23:50']
+    .map((time) => partOfDay(new Date(`2026-02-03T${time}:00`)))
+  if (parts.join('|') !== 'midnight|late night|early morning|morning|mid-day|noon|afternoon|evening|night|midnight') {
+    fail(`parts of the day are wrong: ${parts.join('|')}`)
+  }
+  if (!(await setAutoTitle(page.id, 'Suggested')) || (await getPage(page.id)).title !== 'Suggested') {
+    fail('an untouched title did not take a suggestion')
+  }
   const state = await openSessionFor(page.id, -1)
 
   // Two windows edit the same starting state; both edits must survive.
@@ -650,6 +699,7 @@ async function checkSessionStore(): Promise<void> {
   if (merged.title !== 'Merged' || !merged.body.includes('first') || !merged.body.includes('second')) {
     fail(`concurrent edits did not merge: ${JSON.stringify(merged)}`)
   }
+  if (await setAutoTitle(page.id, 'Overwritten')) fail('a suggestion replaced the user’s title')
   closeSessionFor(page.id, -1)
 
   // The log on disk rebuilds the same document.
@@ -877,6 +927,10 @@ async function checkTranscriptModel(): Promise<void> {
     fail('legacy audio was not moved into the session')
   }
   if (!existsSync(join(sessionRawDir(id), 'legacy.json'))) fail('legacy pass was not kept')
+  // Search reaches transcript lines, with who said them and the line to jump to.
+  const spoken = (await searchSessions('hi ana')).find((hit) => hit.id === id)
+  const said = spoken?.matches.find((match) => match.field === 'transcript')
+  if (said?.speaker !== 'Ben' || !said.line) fail(`transcript search missed: ${JSON.stringify(spoken)}`)
   // Editing a line through the document reaches the export.
   await editSession(id, (session) => {
     const segment = session.getArray<Y.Map<unknown>>('transcript').get(1)
@@ -923,6 +977,14 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
           }
           const list = await window.api.listPages()
           if (!list.some((page) => page.id === created.id)) fail('page missing from list')
+          // Fuzzy: a typo still finds the note, and the match carries highlighted runs.
+          const hits = await window.api.searchPages('helo  SMOKE')
+          const hit = hits.find((entry) => entry.id === created.id)
+          const notesMatch = hit?.matches.find((match) => match.field === 'notes')
+          if (!notesMatch?.parts.some((part) => part.hit)) {
+            fail(fileFormat + ' search missed the page: ' + JSON.stringify(hits))
+          }
+          if ((await window.api.searchPages('hello nowhere-in-any-note')).length) fail('search matched a missing word')
 
           // Untitled: the body's first line must not turn into the title on reload.
           const twoParagraphs = ['First line', '', 'Second'].join(String.fromCharCode(10))
@@ -1020,8 +1082,15 @@ void app.whenReady().then(() => {
   registerIpc()
   registerSessionIpc()
   registerRecorderIpc({ identifySpeakers: !isTestRun })
+  // Evals set LYRA_RELABEL=0 to score live identification on its own.
+  if (process.env.LYRA_RELABEL !== '0') {
+    onRecordingFinished((recording) => {
+      if (identifiesSpeakers()) void relabelSession(recording.pageId)
+    })
+  }
   registerMeetingPipeline()
   registerMeetingNotes()
+  registerTitleSuggestions()
   registerUpdater()
   if (!isTestRun) {
     createTray()

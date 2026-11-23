@@ -125,6 +125,26 @@ export const TagIcon = () => (
   </Icon>
 )
 
+export const NoteIcon = () => (
+  <Icon>
+    <path d="M7 3h7l5 5v13H7z" />
+    <path d="M14 3v5h5M10 13h6M10 17h4" />
+  </Icon>
+)
+
+export const QuoteIcon = () => (
+  <Icon>
+    <path d="M4 5h16v11H9l-5 4z" />
+    <path d="M8 9h8M8 12h5" />
+  </Icon>
+)
+
+export const CommandIcon = () => (
+  <Icon>
+    <path d="m5 7 5 5-5 5M12 17h7" />
+  </Icon>
+)
+
 export const PlayIcon = () => (
   <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
     <path d="M7 4.5v15l12.5-7.5z" fill="currentColor" />
@@ -134,5 +154,16 @@ export const PlayIcon = () => (
 export const StopIcon = () => (
   <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
     <rect x="6" y="6" width="12" height="12" rx="3" fill="currentColor" />
+  </svg>
+)
+
+export const GripIcon = () => (
+  <svg viewBox="0 0 10 16" width="8" height="14" aria-hidden="true" fill="currentColor">
+    <circle cx="2.5" cy="3" r="1.25" />
+    <circle cx="7.5" cy="3" r="1.25" />
+    <circle cx="2.5" cy="8" r="1.25" />
+    <circle cx="7.5" cy="8" r="1.25" />
+    <circle cx="2.5" cy="13" r="1.25" />
+    <circle cx="7.5" cy="13" r="1.25" />
   </svg>
 )

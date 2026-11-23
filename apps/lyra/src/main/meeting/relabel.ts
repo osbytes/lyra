@@ -1,0 +1,305 @@
+import { BrowserWindow } from 'electron'
+import { existsSync } from 'node:fs'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import type { MeetingStatus, TranscriptWord } from '../../shared/types'
+import {
+  newSpeakerId,
+  renumberSpeakers,
+  replaceTranscript,
+  speakersOf,
+  SURE_MATCH,
+  upsertSpeaker,
+  type NewSegment,
+  type SpeakerEntry
+} from '../../shared/sessionDoc'
+import { log } from '../log'
+import { deleteSessionAudio, recordingPageId, trackPath } from '../recorder'
+import { editSession, readSession, sessionRawDir, updateManifest, type RawPass } from '../sessionStore'
+import { getSettings } from '../settings'
+import { notifyLabeled } from './events'
+import { mergeTinySpeakers, nameSpeakers, nextPassId } from './pipeline'
+import type { DiarizedSegment } from './protocol'
+import { diarize, ensureSpeakerModels } from './speakers'
+
+/**
+ * Speaker labels settled once a recording stops. Live identification (`live.ts`) has to decide
+ * who said each phrase from a second or two of audio, against voiceprints that are still forming,
+ * and in a long session those voiceprints drift together until everyone is one speaker. With the
+ * whole recording in hand, offline diarization (pyannote segmentation + clustering over every
+ * stretch at once) separates them far better. Each live word then goes to the speaker diarized
+ * at its time, as WhisperX does: the text the user watched appear stays word for word, only who
+ * said it and where lines break change. Lines the user edited keep their text.
+ */
+
+/** Must match the offline pipeline's clustering threshold (`pipeline.ts`). */
+const CLUSTER_THRESHOLD = 0.5
+/** A word with no diarized speech under it takes the nearest speaker within this many seconds. */
+const NEAREST_SECONDS = 1
+/** Same as live lines: one line per turn, up to MAX_LINE_SECONDS. */
+const LINE_JOIN_GAP = 8
+const MAX_LINE_SECONDS = 30
+const ORIGIN_RELABEL = 'relabel'
+const MODEL = 'sherpa-onnx diarization over live words'
+
+type Line = { speaker: number; words: TranscriptWord[] }
+
+const overlap = (a: { start: number; end: number }, b: { start: number; end: number }): number =>
+  Math.max(0, Math.min(a.end, b.end) - Math.max(a.start, b.start))
+
+/** The diarized speaker of each word: most overlap, else the nearest close by, else the one before. */
+export function assignWords(words: readonly TranscriptWord[], segments: readonly DiarizedSegment[]): number[] {
+  const out: number[] = []
+  for (const word of words) {
+    let speaker: number | null = null
+    let best = 0
+    for (const segment of segments) {
+      const shared = overlap(word, segment)
+      if (shared > best) {
+        best = shared
+        speaker = segment.speaker
+      }
+    }
+    if (speaker === null) {
+      const middle = (word.start + word.end) / 2
+      let nearest = NEAREST_SECONDS
+      for (const segment of segments) {
+        const distance = Math.max(segment.start - middle, middle - segment.end)
+        if (distance < nearest) {
+          nearest = distance
+          speaker = segment.speaker
+        }
+      }
+    }
+    out.push(speaker ?? out.at(-1) ?? segments[0]?.speaker ?? 0)
+  }
+  return out
+}
+
+/** Groups words into lines: a new line when the speaker changes, after a long pause, or past MAX_LINE_SECONDS. */
+export function buildLines(words: readonly TranscriptWord[], speakers: readonly number[]): Line[] {
+  const lines: Line[] = []
+  words.forEach((word, index) => {
+    const speaker = speakers[index] ?? 0
+    const line = lines.at(-1)
+    const first = line?.words[0]
+    const last = line?.words.at(-1)
+    if (
+      line?.speaker === speaker &&
+      first &&
+      last &&
+      word.start - last.end <= LINE_JOIN_GAP &&
+      word.end - first.start <= MAX_LINE_SECONDS
+    ) {
+      line.words.push(word)
+    } else {
+      lines.push({ speaker, words: [word] })
+    }
+  })
+  return lines
+}
+
+function isWord(value: unknown): value is TranscriptWord {
+  if (!value || typeof value !== 'object') return false
+  const word = value as Record<string, unknown>
+  return typeof word.text === 'string' && typeof word.start === 'number' && typeof word.end === 'number'
+}
+
+/**
+ * Every word the live transcriber committed in this session, in the order it committed them.
+ * Not sorted by time: streaming word times can step backwards by a word or two, and sorting by
+ * them scrambles the sentence.
+ */
+async function liveWords(pageId: string): Promise<TranscriptWord[]> {
+  const path = join(sessionRawDir(pageId), 'live.json')
+  if (!existsSync(path)) return []
+  const parsed: unknown = JSON.parse(await readFile(path, 'utf8'))
+  const segments = (parsed as { segments?: unknown } | null)?.segments
+  if (!Array.isArray(segments)) return []
+  return (segments as unknown[])
+    .flatMap((segment) => {
+      const words = (segment as { words?: unknown } | null)?.words
+      return Array.isArray(words) ? (words as unknown[]).filter(isWord) : []
+    })
+}
+
+/**
+ * Which existing speaker each diarized one continues: the pairs that share the most talk, one to
+ * one, so a name the user gave while recording stays with the person who mostly had it.
+ */
+function matchSpeakers(
+  lines: readonly Line[],
+  before: readonly { start: number; end: number; cluster: string | null }[]
+): Map<number, string> {
+  const shared = new Map<string, number>()
+  for (const line of lines) {
+    const span = { start: line.words[0]?.start ?? 0, end: line.words.at(-1)?.end ?? 0 }
+    for (const old of before) {
+      if (!old.cluster) continue
+      const key = `${String(line.speaker)} ${old.cluster}`
+      shared.set(key, (shared.get(key) ?? 0) + overlap(span, old))
+    }
+  }
+  const pairs = [...shared.entries()]
+    .filter(([, seconds]) => seconds > 0)
+    .sort((a, b) => b[1] - a[1])
+  const out = new Map<number, string>()
+  const taken = new Set<string>()
+  for (const [key] of pairs) {
+    const [speaker = '', id = ''] = key.split(' ')
+    const cluster = Number(speaker)
+    if (out.has(cluster) || taken.has(id)) continue
+    out.set(cluster, id)
+    taken.add(id)
+  }
+  return out
+}
+
+function broadcast(status: MeetingStatus): void {
+  for (const win of BrowserWindow.getAllWindows()) win.webContents.send('meeting:status', status)
+}
+
+const running = new Map<string, Promise<void>>()
+
+/** Settles a session's speakers after a recording; one run per session at a time. */
+export function relabelSession(pageId: string): Promise<void> {
+  const previous = running.get(pageId) ?? Promise.resolve()
+  const next = previous
+    .then(() => relabel(pageId))
+    .catch((error: unknown) => {
+      log('relabel', 'failed', { pageId, error: error instanceof Error ? error.message : String(error) })
+      broadcast({ pageId, state: 'error', progress: 0, message: error instanceof Error ? error.message : String(error) })
+    })
+    .finally(async () => {
+      if (running.get(pageId) === next) running.delete(pageId)
+      // "Keep recordings until transcribed": this was the last step that needed the audio.
+      if (getSettings().audioRetentionDays === 0 && recordingPageId() !== pageId) await deleteSessionAudio(pageId)
+    })
+  running.set(pageId, next)
+  return next
+}
+
+/** Resolves once any relabeling of `pageId` has finished (fixtures wait on this). */
+export function relabeled(pageId: string): Promise<void> {
+  return running.get(pageId) ?? Promise.resolve()
+}
+
+async function relabel(pageId: string): Promise<void> {
+  const micPath = trackPath(pageId, 'mic')
+  if (!existsSync(micPath)) return
+  const systemFile = trackPath(pageId, 'system')
+  const systemPath = existsSync(systemFile) ? systemFile : null
+  const words = await liveWords(pageId)
+  if (!words.length) return
+  const before = await readSession(pageId)
+  const started = Date.now()
+
+  const models = await ensureSpeakerModels()
+  broadcast({ pageId, state: 'diarizing', progress: 0 })
+  const result = mergeTinySpeakers(await diarize({ micPath, systemPath, models, threshold: CLUSTER_THRESHOLD }))
+  const speakers = assignWords(words, result.segments)
+  const lines = buildLines(words, speakers)
+  const voices = new Set(speakers)
+  const liveVoices = new Set(before.transcript.flatMap((line) => (line.cluster ? [line.cluster] : [])))
+  log('relabel', 'diarized', {
+    pageId,
+    liveSpeakers: liveVoices.size,
+    speakers: voices.size,
+    words: words.length,
+    lines: lines.length,
+    seconds: +((Date.now() - started) / 1000).toFixed(1)
+  })
+
+  // A recording started on this session meanwhile, or its lines changed: this pass is stale.
+  const now = await readSession(pageId)
+  const ids = (snapshot: typeof now): string => snapshot.transcript.map((line) => line.id).join(',')
+  if (recordingPageId() === pageId || ids(now) !== ids(before)) {
+    log('relabel', 'session changed while diarizing; left as is', { pageId })
+    broadcast({ pageId, state: 'done', progress: 1 })
+    return
+  }
+
+  const continues = matchSpeakers(lines, before.transcript)
+  const named = await nameSpeakers(
+    { ...result, clusters: result.clusters.filter((cluster) => voices.has(cluster.speaker)) },
+    systemPath !== null
+  )
+  const passId = await nextPassId(pageId)
+  const idOf = new Map<number, string>()
+  const fields = new Map<string, Omit<SpeakerEntry, 'id'>>()
+  await editSession(pageId, (doc) => {
+    const old = new Map(before.speakers.map((speaker) => [speaker.id, speaker]))
+    for (const speaker of named) {
+      const id = continues.get(speaker.cluster) ?? null
+      const kept = id ? old.get(id) : undefined
+      const fresh = id ?? newSpeakerId(doc)
+      idOf.set(speaker.cluster, fresh)
+      // The user's name for a voice outranks Lyra's guess at it.
+      fields.set(
+        fresh,
+        kept?.confirmed
+          ? { ...kept, matches: speaker.matches }
+          : {
+              name: speaker.name,
+              personId: speaker.personId,
+              confirmed: (speaker.confidence ?? 0) >= SURE_MATCH,
+              confidence: speaker.confidence,
+              matches: speaker.matches
+            }
+      )
+      // Reserve the id so the next newSpeakerId doesn't hand it out again.
+      if (!id) upsertSpeaker(doc, fresh, fields.get(fresh) ?? {}, ORIGIN_RELABEL)
+    }
+  })
+
+  const segments: NewSegment[] = lines.map((line, index) => ({
+    id: `${passId}-s${String(index)}`,
+    rawId: `${passId}-s${String(index)}`,
+    start: line.words[0]?.start ?? 0,
+    end: line.words.at(-1)?.end ?? 0,
+    cluster: idOf.get(line.speaker) ?? null,
+    confidence: null,
+    text: line.words.map((word) => word.text).join('').trim()
+  }))
+  const pass: RawPass = {
+    id: passId,
+    kind: 'diarized',
+    model: MODEL,
+    createdAt: new Date().toISOString(),
+    segments: segments.map((segment, index) => ({
+      id: segment.id,
+      start: segment.start,
+      end: segment.end,
+      track: systemPath ? 'mix' : 'mic',
+      cluster: segment.cluster,
+      confidence: null,
+      words: lines[index]?.words ?? []
+    })),
+    clusters: named.map((speaker) => ({
+      id: idOf.get(speaker.cluster) ?? speaker.id,
+      embedding: speaker.embedding,
+      matches: speaker.matches
+    }))
+  }
+  await mkdir(sessionRawDir(pageId), { recursive: true })
+  await writeFile(join(sessionRawDir(pageId), `${passId}.json`), JSON.stringify(pass), 'utf8')
+
+  await editSession(pageId, (doc) => {
+    doc.transact(() => {
+      for (const [id, speaker] of fields) upsertSpeaker(doc, id, speaker, ORIGIN_RELABEL)
+      replaceTranscript(doc, segments, ORIGIN_RELABEL)
+      // Voices nobody speaks as any more.
+      const used = new Set(fields.keys())
+      const map = speakersOf(doc)
+      for (const id of [...(map?.keys() ?? [])]) if (!used.has(id)) map?.delete(id)
+      renumberSpeakers(doc, ORIGIN_RELABEL)
+    }, ORIGIN_RELABEL)
+  })
+  await updateManifest(pageId, (manifest) => ({
+    ...manifest,
+    passes: [...manifest.passes, { id: passId, kind: 'diarized', createdAt: pass.createdAt, model: pass.model }]
+  }))
+  broadcast({ pageId, state: 'done', progress: 1 })
+  log('relabel', 'labeled', { pageId, pass: passId, speakers: fields.size, lines: segments.length })
+  if (fields.size >= 2) notifyLabeled(pageId)
+}

@@ -13,6 +13,7 @@ import {
   sessionAudioDir,
   sessionRawDir,
   updateManifest,
+  type LiveTraceEvent,
   type RawPass,
   type TrackInfo
 } from './sessionStore'
@@ -160,7 +161,8 @@ function appendWords(payload: unknown): void {
     id: `live-${String(Math.round(first.start * 1000))}`,
     start: first.start,
     end: last.end,
-    track: 'mic',
+    // The transcriber hears both tracks mixed when there is a system track (`capture.ts`).
+    track: recording.tracks.has('system') ? 'mix' : 'mic',
     cluster: null,
     confidence: null,
     words
@@ -205,7 +207,8 @@ async function finalize(file: TrackFile): Promise<void> {
 async function saveLivePass(
   pageId: string,
   segments: LiveSegment[],
-  clusters: RawPass['clusters']
+  clusters: RawPass['clusters'],
+  trace: LiveTraceEvent[]
 ): Promise<boolean> {
   if (!segments.length && !clusters.length) return false
   const dir = sessionRawDir(pageId)
@@ -213,12 +216,15 @@ async function saveLivePass(
   const path = join(dir, 'live.json')
   let previous: LiveSegment[] = []
   let previousClusters: RawPass['clusters'] = []
+  let previousTrace: LiveTraceEvent[] = []
   try {
     const parsed: unknown = JSON.parse(await readFile(path, 'utf8'))
     const list = (parsed as { segments?: unknown }).segments
     if (Array.isArray(list)) previous = list as LiveSegment[]
     const known = (parsed as { clusters?: unknown }).clusters
     if (Array.isArray(known)) previousClusters = known as RawPass['clusters']
+    const traced = (parsed as { trace?: unknown }).trace
+    if (Array.isArray(traced)) previousTrace = traced as LiveTraceEvent[]
   } catch {
     // First take.
   }
@@ -232,7 +238,8 @@ async function saveLivePass(
     clusters: [
       ...previousClusters.filter((cluster) => !clusters.some((entry) => entry.id === cluster.id)),
       ...clusters
-    ]
+    ],
+    trace: [...previousTrace, ...trace]
   }
   await writeFile(path, JSON.stringify(pass), 'utf8')
   return true
@@ -256,7 +263,8 @@ async function stop(): Promise<MeetingRecording | null> {
   const hasLive = await saveLivePass(
     recording.pageId,
     labelSegments(recording.live, live),
-    live.clusters
+    live.clusters,
+    live.trace
   )
 
   const tracks: TrackInfo[] = [mic, system].flatMap((file, index) =>
@@ -286,11 +294,14 @@ async function stop(): Promise<MeetingRecording | null> {
     conversation: live.conversation,
     voices: live.clusters.length
   })
-  // The words are already placed, so "until transcribed" retention can drop the audio now.
-  if (getSettings().audioRetentionDays === 0) await deleteSessionAudio(recording.pageId)
+  // With speakers identified, relabeling (`meeting/relabel.ts`, a listener) still needs the
+  // audio and announces the labeled session; without, the live words are final.
+  if (!identifySpeakers) {
+    if (getSettings().audioRetentionDays === 0) await deleteSessionAudio(recording.pageId)
+    if (live.conversation) notifyLabeled(recording.pageId)
+  }
   for (const listener of listeners) listener(result)
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send('recorder:finished', result)
-  if (live.conversation) notifyLabeled(recording.pageId)
   return result
 }
 
@@ -309,10 +320,31 @@ export function recordingPageId(): string | null {
   return active?.pageId ?? null
 }
 
+/** Whether recordings identify speakers (off in test runs, which have no speaker models). */
+export function identifiesSpeakers(): boolean {
+  return identifySpeakers
+}
+
 /** Called with each finished recording (the speaker pipeline hooks in here). */
 export function onRecordingFinished(listener: (recording: MeetingRecording) => void): () => void {
   listeners.add(listener)
   return () => listeners.delete(listener)
+}
+
+/**
+ * The recorder's IPC entry points without a window, so a fixture can replay recorded audio
+ * through exactly what a live recording runs (`meeting/replay.ts`).
+ */
+export const recorderFixture = {
+  start: (pageId: string, withSystem: boolean): Promise<number> => {
+    identifySpeakers = true
+    return start(pageId, withSystem)
+  },
+  ready: (): Promise<void> => active?.session.whenReady() ?? Promise.resolve(),
+  append,
+  appendWords,
+  appendText,
+  stop
 }
 
 export function registerRecorderIpc(options: { identifySpeakers: boolean }): void {

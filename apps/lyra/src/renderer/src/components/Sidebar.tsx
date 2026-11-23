@@ -13,6 +13,8 @@ type Props = {
   onCreate: () => void
   onDelete: (page: PageSummary) => void
   onSettings: () => void
+  /** Opens the full-text search palette. */
+  onSearch: () => void
   /** Every tag in use, with counts, most used first. */
   tags: readonly (readonly [string, number])[]
   tagFilter: string | null
@@ -57,6 +59,7 @@ export function Sidebar({
   onCreate,
   onDelete,
   onSettings,
+  onSearch,
   tags,
   tagFilter,
   onTagFilter
@@ -100,6 +103,17 @@ export function Sidebar({
             placeholder="Search sessions"
             aria-label="Search sessions"
           />
+          {query ? null : (
+            <button
+              className="search-shortcut"
+              type="button"
+              onClick={onSearch}
+              title="Search notes and transcripts"
+              aria-label={`Search notes and transcripts (${shortcutLabel('K')})`}
+            >
+              <kbd>{shortcutLabel('K')}</kbd>
+            </button>
+          )}
         </label>
         <button
           className="new-page-btn"

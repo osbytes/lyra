@@ -6,11 +6,13 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type * as NodeLlamaCpp from 'node-llama-cpp'
 import type { Llama, LlamaModel } from 'node-llama-cpp'
-import { NOTES_SCHEMA, NOTES_SYSTEM_PROMPT } from './notesFormat'
+import { NOTES_SCHEMA, NOTES_SYSTEM_PROMPT, TITLE_SCHEMA, TITLE_SYSTEM_PROMPT } from './notesFormat'
 
 export type NotesWorkerRequest = {
   id: number
   modelPath: string
+  /** Meeting notes, or a title suggestion. */
+  task: 'notes' | 'title'
   /** Each prompt is answered independently, in a fresh chat. */
   prompts: string[]
 }
@@ -55,14 +57,17 @@ async function getModel(modelPath: string): Promise<{ llama: Llama; model: Llama
 async function answer(request: NotesWorkerRequest): Promise<unknown[]> {
   const { LlamaChatSession } = await loadLlamaModule()
   const { llama: runtime, model } = await getModel(request.modelPath)
-  const grammar = await runtime.createGrammarForJsonSchema(NOTES_SCHEMA)
+  const title = request.task === 'title'
+  const grammar = title
+    ? await runtime.createGrammarForJsonSchema(TITLE_SCHEMA)
+    : await runtime.createGrammarForJsonSchema(NOTES_SCHEMA)
   const results: unknown[] = []
   for (const prompt of request.prompts) {
     const context = await model.createContext({ contextSize: CONTEXT_SIZE })
     try {
       const session = new LlamaChatSession({
         contextSequence: context.getSequence(),
-        systemPrompt: NOTES_SYSTEM_PROMPT
+        systemPrompt: title ? TITLE_SYSTEM_PROMPT : NOTES_SYSTEM_PROMPT
       })
       const text = await session.prompt(prompt, { grammar, temperature: 0.2 })
       results.push(grammar.parse(text))
@@ -73,9 +78,14 @@ async function answer(request: NotesWorkerRequest): Promise<unknown[]> {
   return results
 }
 
+/** One request at a time: a title and notes asked together would otherwise load the model twice. */
+let queue: Promise<unknown> = Promise.resolve()
+
 process.parentPort.on('message', (event: Electron.MessageEvent) => {
   const request = event.data as NotesWorkerRequest
-  answer(request).then(
+  const run = queue.then(() => answer(request))
+  queue = run.catch(() => undefined)
+  run.then(
     (results) => {
       const response: NotesWorkerResponse = { id: request.id, ok: true, results }
       process.parentPort.postMessage(response)

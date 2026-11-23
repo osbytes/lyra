@@ -1,5 +1,13 @@
 import Anthropic from '@anthropic-ai/sdk'
-import { NOTES_SCHEMA, NOTES_SYSTEM_PROMPT, parseNotes, type MeetingNotes } from './notesFormat'
+import {
+  NOTES_SCHEMA,
+  NOTES_SYSTEM_PROMPT,
+  parseNotes,
+  parseTitle,
+  TITLE_SCHEMA,
+  TITLE_SYSTEM_PROMPT,
+  type MeetingNotes
+} from './notesFormat'
 
 const MODEL = 'claude-opus-5-5'
 
@@ -27,18 +35,50 @@ export async function claudeNotes(apiKey: string, transcript: string): Promise<M
       .join('')
     return parseNotes(JSON.parse(text))
   } catch (error) {
-    if (error instanceof Anthropic.AuthenticationError) {
-      throw new Error('Claude rejected the API key. Check it in Settings → Meeting notes.', { cause: error })
-    }
-    if (error instanceof Anthropic.RateLimitError) {
-      throw new Error('Claude is rate-limiting this key. Try again in a minute.', { cause: error })
-    }
-    if (error instanceof Anthropic.APIConnectionError) {
-      throw new Error('Couldn’t reach Claude. Check your internet connection.', { cause: error })
-    }
-    if (error instanceof Anthropic.APIError) {
-      throw new Error(`Claude API error (${String(error.status)}): ${error.message}`, { cause: error })
-    }
-    throw error
+    throw friendlyError(error)
   }
+}
+
+/** A title suggestion from Claude; null if it gave nothing usable. */
+export async function claudeTitle(apiKey: string, text: string): Promise<string | null> {
+  const client = new Anthropic({ apiKey })
+  try {
+    const message = await client.beta.messages
+      .stream({
+        model: MODEL,
+        max_tokens: 4000,
+        betas: ['server-side-fallback-2026-07-01'],
+        fallbacks: 'default',
+        // A few words: no need to think hard.
+        output_config: { effort: 'low', format: { type: 'json_schema', schema: TITLE_SCHEMA } },
+        system: TITLE_SYSTEM_PROMPT,
+        messages: [{ role: 'user', content: `Note:\n\n${text}` }]
+      })
+      .finalMessage()
+    if (message.stop_reason === 'refusal' || message.stop_reason === 'max_tokens') return null
+    const reply = message.content
+      .flatMap((block) => (block.type === 'text' ? [block.text] : []))
+      .join('')
+    const parsed: unknown = JSON.parse(reply)
+    return parseTitle(parsed)
+  } catch (error) {
+    throw friendlyError(error)
+  }
+}
+
+/** Claude API failures as messages a person can act on. */
+function friendlyError(error: unknown): unknown {
+  if (error instanceof Anthropic.AuthenticationError) {
+    return new Error('Claude rejected the API key. Check it in Settings → Meeting notes.', { cause: error })
+  }
+  if (error instanceof Anthropic.RateLimitError) {
+    return new Error('Claude is rate-limiting this key. Try again in a minute.', { cause: error })
+  }
+  if (error instanceof Anthropic.APIConnectionError) {
+    return new Error('Couldn’t reach Claude. Check your internet connection.', { cause: error })
+  }
+  if (error instanceof Anthropic.APIError) {
+    return new Error(`Claude API error (${String(error.status)}): ${error.message}`, { cause: error })
+  }
+  return error
 }

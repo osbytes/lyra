@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Person } from '../../../shared/types'
 import { openMicrophone, startCapture, type CaptureHandle } from '../audio/capture'
-import { SAMPLE_RATE } from '../audio/vad'
+import { SAMPLE_RATE } from '../../../shared/audio/vad'
 import { log } from '../lib/log'
 
 const ENROLL_SECONDS = 20

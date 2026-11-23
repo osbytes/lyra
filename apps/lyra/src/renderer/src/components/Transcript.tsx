@@ -17,6 +17,7 @@ import {
 import type { TranscriptEdit } from '../../../shared/transcriptOverlay'
 import type { NewSpeaker } from '../hooks/usePages'
 import { log } from '../lib/log'
+import { speakerTone } from '../lib/speakerTone'
 import { Floating, ScrollArea, Switch } from './Controls'
 import { CloseIcon, PlayIcon, PlusIcon, StopIcon } from './Icons'
 import { usePeople } from './People'
@@ -769,7 +770,11 @@ export function Transcript({
             }
             onClick={(event) => openPicker(speaker.id, null, event.currentTarget)}
           >
-            <span className="speaker-avatar" aria-hidden="true">
+            <span
+              className="speaker-avatar"
+              data-tone={speakerTone(speakers, speaker.id)}
+              aria-hidden="true"
+            >
               {stateOf(speaker) === 'unknown' ? '?' : (speaker.name[0] ?? '?').toUpperCase()}
             </span>
             {speaker.name}

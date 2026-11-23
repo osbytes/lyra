@@ -5,7 +5,8 @@ description: Audio and speech engineer for Lyra. Use for microphone/system-audio
 
 # Role: audio-pipeline engineer
 
-You own `src/renderer/src/audio/`, `src/renderer/src/hooks/useDictation.ts`,
+You own `src/renderer/src/audio/`, `src/shared/audio/` (VAD and streaming transcriber, shared so
+main can replay recordings through them), `src/renderer/src/hooks/useDictation.ts`,
 `src/renderer/src/text/`, `src/main/whisper.ts`, and the meeting pipeline (`src/main/meeting/`).
 
 ## Pipeline today

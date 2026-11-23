@@ -17,6 +17,7 @@ import {
   editDoc,
   initDoc,
   replaceTranscript,
+  docTitle,
   snapshotOf,
   upsertSpeaker,
   type NewSegment,
@@ -35,6 +36,7 @@ import {
   serializePage,
   timestampStem
 } from './pages'
+import { defaultTitle } from './sessionTitle'
 import { getSettings } from './settings'
 
 /**
@@ -57,6 +59,7 @@ const COMPACT_AFTER = 400
 const UNLOAD_AFTER_MS = 30_000
 const ORIGIN_LOAD = 'load'
 const ORIGIN_MAIN = 'main'
+const ORIGIN_AUTO_TITLE = 'auto-title'
 const PREVIEW_CHARS = 72
 
 type Manifest = {
@@ -70,6 +73,8 @@ type Manifest = {
   audio: 'none' | 'kept' | 'deleted'
   /** Cached for the list view, so it never has to load documents. */
   title: string
+  /** The title is Lyra's (the start time, or an AI suggestion), not one the user typed. */
+  titleAuto: boolean
   preview: string
   tags: string[]
   /** Distinct speakers in the transcript; 0 without one. */
@@ -127,7 +132,27 @@ export type RawPass = {
     words: { text: string; start: number; end: number }[]
   }[]
   clusters: { id: string; embedding: number[]; matches: { personId: string; score: number }[] }[]
+  /** Live passes: every speaker decision, so a mislabeled session can be replayed and debugged. */
+  trace?: LiveTraceEvent[]
 }
+
+/**
+ * One live speaker-identification decision. `voice`: a stretch of speech was voiceprinted and
+ * scored against every voice so far (`scores`), then joined one, started one, or (`reuse`, `held`)
+ * took the previous speaker without a voiceprint. `merge` and `fold` fold one voice into another.
+ */
+export type LiveTraceEvent =
+  | {
+      kind: 'voice'
+      start: number
+      end: number
+      cluster: string | null
+      decision: 'join' | 'new' | 'reuse' | 'held'
+      scores: Record<string, number>
+      embedding: number[]
+    }
+  | { kind: 'merge'; at: number; from: string; into: string; score: number }
+  | { kind: 'fold'; from: string; into: string }
 
 export type TrackInfo = Manifest['tracks'][number]
 
@@ -162,6 +187,8 @@ function readManifest(id: string): Manifest | null {
       passes: Array.isArray(m.passes) ? (m.passes as Manifest['passes']) : [],
       audio: m.audio === 'kept' || m.audio === 'deleted' ? m.audio : 'none',
       title: isString(m.title) ? m.title : 'Untitled',
+      // Sessions from before this flag keep their title, unless they never had one.
+      titleAuto: typeof m.titleAuto === 'boolean' ? m.titleAuto : !isString(m.title) || m.title === 'Untitled',
       preview: isString(m.preview) ? m.preview : '',
       tags: Array.isArray(m.tags) ? m.tags.filter(isString) : [],
       speakers: typeof m.speakers === 'number' ? m.speakers : 0,
@@ -374,6 +401,7 @@ async function migrateNote(id: string): Promise<Entry> {
     passes: meeting?.passes ?? [],
     audio: meeting?.tracks.length ? 'kept' : 'none',
     title: page.title,
+    titleAuto: false,
     preview: previewOf(page.body),
     tags: [],
     speakers: 0,
@@ -402,6 +430,9 @@ function makeEntry(id: string, doc: Y.Doc, manifest: Manifest, frames: number): 
   }
   doc.on('update', (update: Uint8Array, origin: unknown) => {
     onDocUpdate(entry, update, origin)
+  })
+  docTitle(doc).observe((_event, transaction) => {
+    onTitleChange(entry, transaction.origin)
   })
   return entry
 }
@@ -491,6 +522,18 @@ function onDocUpdate(entry: Entry, update: Uint8Array, origin: unknown): void {
     else target.send('sessions:update', { id: entry.id, update })
   }
   scheduleExport(entry, EXPORT_DELAY_MS)
+}
+
+/**
+ * A title change from a window (its id is the origin) or `saveSessionPage` is the user's: from
+ * then on Lyra leaves the title alone, unless they clear it.
+ */
+function onTitleChange(entry: Entry, origin: unknown): void {
+  if (typeof origin !== 'number' && origin !== ORIGIN_MAIN) return
+  const titleAuto = !docTitle(entry.doc).toJSON().trim()
+  if (entry.manifest.titleAuto === titleAuto) return
+  entry.manifest = { ...entry.manifest, titleAuto }
+  writeManifest(entry.manifest)
 }
 
 function scheduleExport(entry: Entry, delay: number): void {
@@ -750,10 +793,11 @@ export async function createSession(options: CreateSessionOptions = {}): Promise
   const stem = timestampStem(startedAt)
   const ext = getSettings().fileFormat
   const now = new Date().toISOString()
+  const title = defaultTitle(startedAt)
 
   for (let n = 1; n < 1000; n++) {
     const id = n === 1 ? `${stem}.${ext}` : `${stem}-${n}.${ext}`
-    const text = serializePage({ id, title: 'Untitled', body: '', updatedAt: now })
+    const text = serializePage({ id, title, body: '', updatedAt: now })
     // Until the session folder exists, listing and loading wait instead of mistaking the new
     // file for a note dropped in from outside.
     let done = (): void => undefined
@@ -772,7 +816,7 @@ export async function createSession(options: CreateSessionOptions = {}): Promise
     }
     try {
       const doc = new Y.Doc()
-      initDoc(doc, { title: '', notes: '' }, ORIGIN_LOAD)
+      initDoc(doc, { title, notes: '' }, ORIGIN_LOAD)
       // Synchronous from here on, so the session is complete before anyone else runs.
       mkdirSync(sessionDir(id), { recursive: true })
       writeFileSync(docPath(id), frame(Y.encodeStateAsUpdate(doc)))
@@ -785,7 +829,8 @@ export async function createSession(options: CreateSessionOptions = {}): Promise
         tracks: [],
         passes: [],
         audio: 'none',
-        title: 'Untitled',
+        title,
+        titleAuto: true,
         preview: previewOf(''),
         tags: [],
         speakers: 0,
@@ -876,6 +921,22 @@ export async function changeSession<T>(id: string, change: (doc: Y.Doc) => T): P
   const entry = await acquire(id)
   try {
     return change(entry.doc)
+  } finally {
+    release(entry)
+  }
+}
+
+/**
+ * Sets a title Lyra came up with (an AI suggestion), unless the user has set their own since
+ * the session started. Returns whether it was set.
+ */
+export async function setAutoTitle(id: string, title: string): Promise<boolean> {
+  const entry = await acquire(id)
+  try {
+    if (!entry.manifest.titleAuto) return false
+    editDoc(entry.doc, { title }, ORIGIN_AUTO_TITLE)
+    await flushExport(entry)
+    return true
   } finally {
     release(entry)
   }

@@ -16,7 +16,7 @@ import {
   type SpeakerMatch
 } from '../../shared/sessionDoc'
 import { log } from '../log'
-import { changeSession, readManifestOf, sessionRawDir } from '../sessionStore'
+import { changeSession, readManifestOf, sessionRawDir, type LiveTraceEvent } from '../sessionStore'
 import { addSample, cosine, scoreVoices, selfPerson } from '../voices'
 import type { SpeakerModels } from './protocol'
 import { embedVoice, ensureSpeakerModels } from './speakers'
@@ -27,8 +27,8 @@ import { energy, mixTracks, SAMPLE_RATE } from './wav'
  * Speaker identification while recording. Each phrase the live transcriber commits is
  * voiceprinted from the audio just captured, clustered online against the voices heard so far,
  * and written as a transcript line for its speaker. Lines only ever grow at the end, so nothing
- * on the page moves; with one voice the window shows them as plain paragraphs. There is no
- * labeling step after the recording stops.
+ * on the page moves; with one voice the window shows them as plain paragraphs. These labels are
+ * provisional: once the recording stops, `relabel.ts` settles them from the whole recording.
  */
 
 /** Audio kept in memory per track, enough for any phrase the transcriber commits late. */
@@ -93,7 +93,10 @@ export type LiveResult = {
   conversation: boolean
   spans: LiveSpan[]
   clusters: { id: string; embedding: number[]; matches: SpeakerMatch[] }[]
+  trace: LiveTraceEvent[]
 }
+
+const round = (value: number): number => +value.toFixed(4)
 
 function broadcast(status: MeetingStatus): void {
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send('meeting:status', status)
@@ -212,6 +215,8 @@ export class LiveSession {
   private readonly recentWords: TranscriptWord[] = []
   /** The text of the phrase before, to tell whether the next one opens a sentence. */
   private lastText = ''
+  private readonly trace: LiveTraceEvent[] = []
+  private modelsReady: Promise<void> = Promise.resolve()
 
   constructor(
     readonly pageId: string,
@@ -236,7 +241,7 @@ export class LiveSession {
     if (!this.identify) return
     // First use downloads the speaker models; until they're ready, lines have no speaker.
     let downloading = false
-    ensureSpeakerModels((received, total) => {
+    this.modelsReady = ensureSpeakerModels((received, total) => {
       downloading = true
       broadcast({ pageId: this.pageId, state: 'downloading', progress: total ? received / total : 0 })
     })
@@ -247,6 +252,11 @@ export class LiveSession {
       .catch((error: unknown) => {
         log('live', 'speaker models unavailable', String(error))
       })
+  }
+
+  /** Resolves once the speaker models are loaded (or failed to), for fixtures that replay audio. */
+  whenReady(): Promise<void> {
+    return this.modelsReady
   }
 
   /** Captured audio, at `at` seconds on the session timeline. */
@@ -318,7 +328,9 @@ export class LiveSession {
     for (const a of this.clusters) {
       for (const b of this.clusters) {
         if (a === b || (a.seeded && b.seeded) || b.seconds > a.seconds) continue
-        if (cosine(a.centroid, b.centroid) < SAME_VOICE_THRESHOLD) continue
+        const score = cosine(a.centroid, b.centroid)
+        if (score < SAME_VOICE_THRESHOLD) continue
+        this.trace.push({ kind: 'merge', at: round(this.heard()), from: b.id, into: a.id, score: round(score) })
         // `b` (the lesser voice) joins `a`.
         const total = a.weight + b.weight
         a.centroid = a.centroid.map((value, i) => (value * a.weight + (b.centroid[i] ?? 0) * b.weight) / total)
@@ -361,6 +373,7 @@ export class LiveSession {
     const owner = this.clusters.find((entry) => entry.id === id)
     if (owner) owner.seconds += held.end - held.start
     const span: LiveSpan = { start: held.start, end: held.end, cluster: owner?.id ?? null, confidence: null }
+    this.trace.push({ kind: 'voice', start: held.start, end: held.end, cluster: span.cluster, decision: 'held', scores: {}, embedding: [] })
     this.spans.push(span)
     await this.writeLines(held.pieces.map((piece) => ({ span, text: piece.text, last: piece.last })))
   }
@@ -431,6 +444,7 @@ export class LiveSession {
     const reuse = (): LiveSpan => {
       const same = this.clusters.find((cluster) => cluster.id === previous?.cluster)
       if (same) same.seconds += end - start
+      this.trace.push({ kind: 'voice', start, end, cluster: same?.id ?? null, decision: 'reuse', scores: {}, embedding: [] })
       return { start, end, cluster: same?.id ?? null, confidence: null }
     }
     const models = this.models
@@ -453,19 +467,31 @@ export class LiveSession {
 
     let best: Cluster | undefined
     let bestScore = -Infinity
+    const scores: Record<string, number> = {}
     for (const cluster of this.clusters) {
       const score = cosine(embedding, cluster.centroid)
+      scores[cluster.id] = round(score)
       if (score > bestScore) {
         best = cluster
         bestScore = score
       }
     }
     let cluster = best
-    if (!cluster || bestScore < JOIN_THRESHOLD) {
+    const fresh = !cluster || bestScore < JOIN_THRESHOLD
+    if (!cluster || fresh) {
       cluster = { id: this.newId(), centroid: embedding, weight: 0, seconds: 0, mic: 0, system: 0, seeded: false }
       this.clusters.push(cluster)
       log('live', 'new voice', { pageId: this.pageId, id: cluster.id, closest: +bestScore.toFixed(3) })
     }
+    this.trace.push({
+      kind: 'voice',
+      start,
+      end,
+      cluster: cluster.id,
+      decision: fresh ? 'new' : 'join',
+      scores,
+      embedding: embedding.map(round)
+    })
     const weight = Math.min(cluster.weight, MAX_WEIGHT)
     cluster.centroid = cluster.centroid.map((value, i) => (value * weight + (embedding[i] ?? 0)) / (weight + 1))
     cluster.weight = weight + 1
@@ -498,7 +524,8 @@ export class LiveSession {
       spans: this.spans,
       clusters: this.clusters
         .filter((cluster) => cluster.seeded || cluster.weight > 0)
-        .map((cluster) => ({ id: cluster.id, embedding: cluster.centroid, matches: this.matches.get(cluster.id) ?? [] }))
+        .map((cluster) => ({ id: cluster.id, embedding: cluster.centroid, matches: this.matches.get(cluster.id) ?? [] })),
+      trace: this.trace
     }
   }
 
@@ -516,7 +543,10 @@ export class LiveSession {
           bestScore = score
         }
       }
-      if (best) into.set(cluster.id, best.id)
+      if (best) {
+        into.set(cluster.id, best.id)
+        this.trace.push({ kind: 'fold', from: cluster.id, into: best.id })
+      }
     }
     for (const span of this.spans) {
       if (span.cluster) span.cluster = into.get(span.cluster) ?? span.cluster

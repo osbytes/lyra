@@ -1,5 +1,4 @@
-import type { TranscriptWord } from '../../../shared/types'
-import { log } from '../lib/log'
+import type { TranscriptWord } from '../types'
 import { SAMPLE_RATE } from './vad'
 
 /**
@@ -39,6 +38,8 @@ const CONTEXT_CHARS = 300
 const SENTENCE_END = /[.!?]["')\]]?$/
 
 type Transcribe = (pcm: Float32Array, prompt: string) => Promise<TranscriptWord[]>
+/** Where diagnostics go: the renderer's log, or nowhere when a fixture replays audio. */
+export type StreamLog = (scope: string, message: string, data?: unknown) => void
 
 export type StreamEvents = {
   /** Text that is now final, to append to the document. */
@@ -95,7 +96,8 @@ export class StreamingTranscriber {
     private readonly transcribe: Transcribe,
     private readonly events: StreamEvents,
     /** Text that precedes this session, e.g. the end of the page. */
-    private context = ''
+    private context = '',
+    private readonly log: StreamLog = () => undefined
   ) {}
 
   append(frame: Float32Array): void {
@@ -178,7 +180,7 @@ export class StreamingTranscriber {
     this.tentative = words.slice(agreed)
     this.events.onLive(joinWords(this.tentative))
 
-    log('stream', finalizeAt !== undefined ? 'finalize pass' : overdue ? 'overdue pass' : 'pass', {
+    this.log('stream', finalizeAt !== undefined ? 'finalize pass' : overdue ? 'overdue pass' : 'pass', {
       bufferSec: secs(end),
       heard: heard.length,
       fresh: words.length,
@@ -191,7 +193,7 @@ export class StreamingTranscriber {
       this.forgetCommitted()
     } else if (overdue && !this.committed.length) {
       // Whisper heard (almost) nothing in a long stretch: keep only the recent audio.
-      log('stream', 'nothing usable in a full buffer; discarding old audio', { bufferSec: secs(end) })
+      this.log('stream', 'nothing usable in a full buffer; discarding old audio', { bufferSec: secs(end) })
       this.trimTo(this.offset + this.length - MIN_TRIM)
     } else this.trimAtSentence()
   }
@@ -258,7 +260,7 @@ export class StreamingTranscriber {
       }
     }
 
-    log('stream', 'text alignment failed; falling back to timestamps', {
+    this.log('stream', 'text alignment failed; falling back to timestamps', {
       committedTail: joinWords(this.committed.slice(-ALIGN_WORDS)).trim(),
       heard: joinWords(words).trim()
     })
@@ -297,7 +299,7 @@ export class StreamingTranscriber {
     const cut = Math.min(at.end, next.start)
     const before = this.length
     this.trimTo(Math.round(cut * SAMPLE_RATE))
-    log('stream', last >= 0 ? 'trimmed at sentence' : 'trimmed at word (buffer full)', {
+    this.log('stream', last >= 0 ? 'trimmed at sentence' : 'trimmed at word (buffer full)', {
       fromSec: secs(before),
       toSec: secs(this.length)
     })

@@ -1,5 +1,7 @@
 import { is } from '@electron-toolkit/utils'
-import { BrowserWindow, screen } from 'electron'
+import { app, BrowserWindow, screen } from 'electron'
+import { readFileSync } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { log } from './log'
 import type { MicPrompt, SessionState } from '../shared/types'
@@ -10,8 +12,8 @@ import {
   onSessionState
 } from './session'
 
-const WIDTH = 380
-const PILL_HEIGHT = 64
+const WIDTH = 340
+const PILL_HEIGHT = 44
 const PROMPT_HEIGHT = 128
 const MARGIN = 24
 const PROMPT_TIMEOUT_MS = 10_000
@@ -19,6 +21,49 @@ const PROMPT_TIMEOUT_MS = 10_000
 let overlay: BrowserWindow | null = null
 let prompt: MicPrompt | null = null
 let promptTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * Where the user last dragged the window: its left edge and bottom edge, so the taller prompt
+ * grows upward from the same spot. `undefined` until read from disk; `null` means the default.
+ */
+type Anchor = { x: number; bottom: number }
+let anchor: Anchor | null | undefined
+/** The bounds `place()` last set, so its own move isn't mistaken for a drag. */
+let placed: { x: number; y: number } | null = null
+
+function anchorPath(): string {
+  return join(app.getPath('userData'), 'overlay-position.json')
+}
+
+function readAnchor(): Anchor | null {
+  try {
+    const raw: unknown = JSON.parse(readFileSync(anchorPath(), 'utf8'))
+    if (
+      typeof raw === 'object' &&
+      raw !== null &&
+      'x' in raw &&
+      'bottom' in raw &&
+      typeof raw.x === 'number' &&
+      typeof raw.bottom === 'number'
+    ) {
+      return { x: raw.x, bottom: raw.bottom }
+    }
+  } catch {
+    // Never moved, or an unreadable file: use the default spot.
+  }
+  return null
+}
+
+function saveAnchor(win: BrowserWindow): void {
+  const bounds = win.getBounds()
+  if (placed?.x === bounds.x && placed.y === bounds.y) return
+  anchor = { x: bounds.x, bottom: bounds.y + bounds.height }
+  writeFile(anchorPath(), JSON.stringify(anchor), 'utf8').catch((error: unknown) => {
+    log('overlay', 'could not save position', {
+      error: error instanceof Error ? error.message : String(error)
+    })
+  })
+}
 
 function createOverlay(): BrowserWindow {
   const win = new BrowserWindow({
@@ -53,20 +98,31 @@ function createOverlay(): BrowserWindow {
   } else {
     void win.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'overlay' })
   }
+  win.on('moved', () => {
+    saveAnchor(win)
+  })
   win.on('closed', () => {
     if (overlay === win) overlay = null
   })
   return win
 }
 
+/** The user's spot when it's still on a connected screen (kept inside it), else bottom centre. */
 function place(win: BrowserWindow, height: number): void {
-  const { workArea } = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
-  win.setBounds({
-    x: Math.round(workArea.x + (workArea.width - WIDTH) / 2),
-    y: Math.round(workArea.y + workArea.height - height - MARGIN),
-    width: WIDTH,
-    height
-  })
+  if (anchor === undefined) anchor = readAnchor()
+  let x: number
+  let y: number
+  if (anchor) {
+    const { workArea } = screen.getDisplayNearestPoint({ x: anchor.x, y: anchor.bottom })
+    x = Math.min(Math.max(anchor.x, workArea.x), workArea.x + workArea.width - WIDTH)
+    y = Math.min(Math.max(anchor.bottom - height, workArea.y), workArea.y + workArea.height - height)
+  } else {
+    const { workArea } = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+    x = workArea.x + (workArea.width - WIDTH) / 2
+    y = workArea.y + workArea.height - height - MARGIN
+  }
+  placed = { x: Math.round(x), y: Math.round(y) }
+  win.setBounds({ ...placed, width: WIDTH, height })
 }
 
 /** The main window is what the user is looking at, so the pill would be redundant. */

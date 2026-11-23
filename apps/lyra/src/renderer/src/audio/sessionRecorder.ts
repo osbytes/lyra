@@ -1,5 +1,5 @@
 import type { AudioTrack } from '../../../shared/types'
-import { SAMPLE_RATE } from './vad'
+import { SAMPLE_RATE } from '../../../shared/audio/vad'
 
 /** Send audio to main about once a second instead of 31 tiny messages. */
 const CHUNK_SAMPLES = SAMPLE_RATE

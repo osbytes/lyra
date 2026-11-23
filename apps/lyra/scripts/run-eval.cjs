@@ -6,6 +6,10 @@
 //   pnpm eval:ami --meetings ES2004a --minutes 5 --mic Mix-Headset
 //   pnpm eval:ami --minutes 0                       # whole meetings (slow)
 //   node scripts/run-eval.cjs --score ref.json hyp.json   # score any two transcripts
+//   --pipeline live|stream|offline   live (default) replays the audio as a recording, as the app
+//                             runs it: live identification, then relabeling once it stops; stream
+//                             is live identification alone; offline is the diarize-then-transcribe
+//                             pipeline
 //
 // Prints WER, cpWER (words given to the wrong speaker count as errors) and DER per item, and
 // writes references, hypotheses and results.json under eval-data/results/<time>/. Data goes to
@@ -26,6 +30,7 @@ function arg(name, fallback) {
 }
 
 const list = (value) => value.split(',').filter(Boolean)
+const pipeline = arg('pipeline', 'live')
 const pct = (value) => `${(value * 100).toFixed(1)}%`.padStart(7)
 
 function report(id, result) {
@@ -48,7 +53,7 @@ function runLyra(item, output) {
   const args = [join(__dirname, 'run-meeting-smoke.cjs'), item.wav, ...(item.system ? [item.system] : [])]
   const result = spawnSync(process.execPath, args, {
     cwd: root,
-    env: { ...process.env, LYRA_MEETING_OUTPUT: output },
+    env: { ...process.env, LYRA_MEETING_OUTPUT: output, LYRA_MEETING_PIPELINE: pipeline === 'offline' ? 'offline' : 'live', LYRA_RELABEL: pipeline === 'stream' ? '0' : '1' },
     stdio: ['ignore', 'ignore', 'inherit']
   })
   if (result.status !== 0 || !existsSync(output)) throw new Error(`pipeline failed on ${item.wav} (exit ${result.status})`)
@@ -82,7 +87,8 @@ async function main() {
   const dataDir = resolve(process.env.LYRA_EVAL_DATA ?? join(root, 'eval-data'))
   const { options, items } = plan(dataset, dataDir)
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-  const outDir = join(dataDir, 'results', `${dataset}-${stamp}`)
+  if (!['live', 'stream', 'offline'].includes(pipeline)) throw new Error('--pipeline must be live, stream or offline')
+  const outDir = join(dataDir, 'results', `${dataset}-${pipeline}-${stamp}`)
   mkdirSync(outDir, { recursive: true })
 
   // One build up front; run-meeting-smoke.cjs launches the built app.
@@ -101,7 +107,7 @@ async function main() {
       cpWer: words ? sum((r) => r.cpWer.errors) / sum((r) => r.cpWer.words) : 0,
       der: derTime ? sum((r) => r.der.rate * r.der.scoredSeconds) / derTime : 0
     }
-    writeFileSync(join(outDir, 'results.json'), JSON.stringify({ dataset, ...options, overall, results, failures }, null, 2))
+    writeFileSync(join(outDir, 'results.json'), JSON.stringify({ dataset, pipeline, ...options, overall, results, failures }, null, 2))
     return overall
   }
 
