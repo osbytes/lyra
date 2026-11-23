@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import type { HotkeyAction, HotkeyStatus, Settings as SettingsValue } from '../../../shared/types'
 import { homePath } from '../lib/format'
-import { Segmented, Select, Switch } from './Controls'
+import { ScrollArea, Segmented, Select, Switch } from './Controls'
 import { HotkeyInput } from './HotkeyInput'
 import { CloseIcon, FolderIcon, GearIcon, MicSmallIcon, PeopleIcon, RecordIcon } from './Icons'
 import { MicrophoneSelect } from './MicrophoneSelect'
@@ -404,7 +404,7 @@ export function SettingsDialog({ settings, update, onClose }: Props) {
               <CloseIcon />
             </button>
           </header>
-          <div className="modal-body">
+          <ScrollArea className="modal-body">
             {tab === 'general' ? (
               <>
                 <NotesSection settings={settings} update={update} />
@@ -435,7 +435,7 @@ export function SettingsDialog({ settings, update, onClose }: Props) {
                 <PeopleSettings micDeviceId={settings.micDeviceId} />
               </Section>
             ) : null}
-          </div>
+          </ScrollArea>
         </div>
       </div>
     </div>

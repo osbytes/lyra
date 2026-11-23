@@ -3,6 +3,7 @@ import { LOW_CONFIDENCE, SURE_MATCH } from '../../../shared/sessionDoc'
 import type { OpenPage } from '../hooks/usePages'
 import { formatDuration, readingMinutes, relativeTime } from '../lib/format'
 import { CopyIcon, FolderIcon, PeopleIcon } from './Icons'
+import { ScrollArea } from './Controls'
 import { TagRow } from './TagRow'
 
 type Props = {
@@ -61,7 +62,7 @@ export function DetailsPanel({
   if (words) facts.push(['Reading time', `${String(readingMinutes(words))} min`])
 
   return (
-    <aside className="details" aria-label="Details">
+    <ScrollArea as="aside" className="details" aria-label="Details">
       <section className="details-section">
         <h2 className="section-label">Details</h2>
         <dl className="details-facts">
@@ -142,7 +143,9 @@ export function DetailsPanel({
                     </span>
                     <span className="details-speaker-match">
                       {speaker.confidence === null
-                        ? 'No match'
+                        ? speaker.confirmed
+                          ? 'Confirmed'
+                          : 'No match'
                         : `${percent(speaker.confidence)} match`}
                     </span>
                     <span className="details-speaker-share">
@@ -191,6 +194,6 @@ export function DetailsPanel({
           ) : null}
         </div>
       </section>
-    </aside>
+    </ScrollArea>
   )
 }

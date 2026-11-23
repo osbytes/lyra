@@ -1,14 +1,39 @@
 import {
+  createElement,
   useEffect,
   useId,
   useLayoutEffect,
   useRef,
   useState,
+  type HTMLAttributes,
   type KeyboardEvent as ReactKeyboardEvent,
-  type ReactNode
+  type ReactNode,
+  type Ref
 } from 'react'
 import { createPortal } from 'react-dom'
 import { CheckIcon, ChevronDownIcon } from './Icons'
+
+type ScrollAreaProps = HTMLAttributes<HTMLElement> & {
+  /** The element to render, for semantics (a sidebar `nav`, a listbox `ul`, the panel `aside`). */
+  as?: 'div' | 'nav' | 'aside' | 'ul' | 'section'
+  /** `y` scrolls vertically (the default); `x` scrolls a strip sideways with its bar hidden. */
+  axis?: 'x' | 'y'
+  ref?: Ref<HTMLElement>
+}
+
+/**
+ * Every scrolling region in Lyra: the page, the sidebar, dialogs, panels, menus and popovers.
+ * A thin themed bar with no arrow buttons instead of the OS scrollbar, a gutter that doesn't
+ * shift content when the bar appears, and scrolling that stops at its edge instead of
+ * chaining to the page behind. Never put `overflow: auto` on a component directly.
+ */
+export function ScrollArea({ as = 'div', axis = 'y', className, ref, ...rest }: ScrollAreaProps) {
+  return createElement(as, {
+    ...rest,
+    ref,
+    className: `scroll-area scroll-${axis}${className ? ` ${className}` : ''}`
+  })
+}
 
 /**
  * Renders a floating layer (menu, popover, toast) at the top of the document. Fixed
@@ -59,7 +84,7 @@ export function Select<T extends string>({
   const [active, setActive] = useState(0)
   const [place, setPlace] = useState<{ top: number; left: number; width: number; up: boolean }>()
   const button = useRef<HTMLButtonElement>(null)
-  const list = useRef<HTMLUListElement>(null)
+  const list = useRef<HTMLElement>(null)
   const typed = useRef({ text: '', at: 0 })
   const id = useId()
   const selected = options.find((option) => option.value === value)
@@ -174,7 +199,8 @@ export function Select<T extends string>({
       {open && place ? (
         <Floating>
           <div className="select-layer" onMouseDown={() => close(false)}>
-            <ul
+            <ScrollArea
+              as="ul"
               ref={list}
               id={id}
               className={`select-list${place.up ? ' up' : ''}`}
@@ -208,7 +234,7 @@ export function Select<T extends string>({
                   </span>
                 </li>
               ))}
-            </ul>
+            </ScrollArea>
           </div>
         </Floating>
       ) : null}

@@ -17,6 +17,8 @@ import * as Y from 'yjs'
 /** Who made a change. Lets undo skip machine writes and lets main skip echoing a window. */
 export const ORIGIN_USER = 'user'
 export const ORIGIN_REMOTE = 'remote'
+/** Live transcription: its own author, never undone by the user's Ctrl+Z. */
+export const ORIGIN_TRANSCRIBER = 'transcriber'
 
 /** Below this, a line's voice doesn't sound much like the rest of its speaker. */
 export const LOW_CONFIDENCE = 0.6
@@ -268,29 +270,64 @@ function liveRanges(doc: Y.Doc): Y.Array<Y.Map<unknown>> {
   return ranges as Y.Array<Y.Map<unknown>>
 }
 
-/** Appends text to the notes as live transcription, starting a new range when `fresh`. */
-export function appendLiveNotes(doc: Y.Doc, next: string, fresh: boolean, origin: unknown): void {
+function readPosition(doc: Y.Doc, json: unknown): number | null {
+  if (!json || typeof json !== 'object') return null
+  const position = Y.createAbsolutePositionFromRelativePosition(
+    Y.createRelativePositionFromJSON(json),
+    doc
+  )
+  return position ? position.index : null
+}
+
+/**
+ * A position that sticks to the character before `index`, so text typed after it (by the user)
+ * never pushes it forward, and text inserted before it moves it along.
+ */
+function stickyPosition(text: Y.Text, index: number): unknown {
+  return Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(text, index, -1))
+}
+
+/**
+ * Starts a new transcription range at the end of the notes. The transcriber is its own author:
+ * it writes at its own cursor (this range's `cursor`), with its own origin, so the user can keep
+ * typing anywhere and undo never takes back transcribed words.
+ */
+export function startTranscriber(doc: Y.Doc, origin: unknown): void {
   const notes = docNotes(doc)
-  const current = notes.toJSON()
   doc.transact(() => {
-    const ranges = liveRanges(doc)
-    if (!next.startsWith(current)) {
-      // Not a pure append (the user edited the end meanwhile): apply it, track nothing.
-      applyTextChange(notes, next)
-      return
-    }
-    const inserted = next.slice(current.length)
-    if (!inserted) return
-    let range = fresh ? null : ranges.length ? ranges.get(ranges.length - 1) : null
-    if (!range) {
-      range = new Y.Map<unknown>()
-      // Bound to the character before the insertion, so text added later doesn't move it.
-      const anchor = Y.createRelativePositionFromTypeIndex(notes, current.length, -1)
-      range.set('start', Y.relativePositionToJSON(anchor))
-      range.set('text', '')
-      ranges.push([range])
-    }
-    notes.insert(current.length, inserted)
+    const range = new Y.Map<unknown>()
+    const at = stickyPosition(notes, notes.length)
+    range.set('start', at)
+    range.set('cursor', at)
+    range.set('text', '')
+    liveRanges(doc).push([range])
+  }, origin)
+}
+
+function currentRange(doc: Y.Doc): Y.Map<unknown> | null {
+  const ranges = docMeta(doc).get('liveRanges')
+  if (!(ranges instanceof Y.Array) || ranges.length === 0) return null
+  const last: unknown = ranges.get(ranges.length - 1)
+  return last instanceof Y.Map ? (last as Y.Map<unknown>) : null
+}
+
+/** Where the transcriber writes next, as an index into the notes; null if it hasn't started. */
+export function transcriberCursor(doc: Y.Doc): number | null {
+  const range = currentRange(doc)
+  return range ? readPosition(doc, range.get('cursor')) : null
+}
+
+/** Inserts transcribed text at the transcriber's cursor and moves the cursor past it. */
+export function transcriberWrite(doc: Y.Doc, inserted: string, origin: unknown): void {
+  if (!inserted) return
+  const notes = docNotes(doc)
+  doc.transact(() => {
+    if (!currentRange(doc)) startTranscriber(doc, origin)
+    const range = currentRange(doc)
+    if (!range) return
+    const index = Math.min(readPosition(doc, range.get('cursor')) ?? notes.length, notes.length)
+    notes.insert(index, inserted)
+    range.set('cursor', stickyPosition(notes, index + inserted.length))
     range.set('text', str(range.get('text')) + inserted)
   }, origin)
 }
@@ -307,13 +344,8 @@ export function removeLiveNotes(doc: Y.Doc, origin: unknown): number {
   doc.transact(() => {
     const found = (ranges as Y.Array<Y.Map<unknown>>).toArray().flatMap((range) => {
       const text = str(range.get('text'))
-      const json: unknown = range.get('start')
-      if (!text || !json || typeof json !== 'object') return []
-      const position = Y.createAbsolutePositionFromRelativePosition(
-        Y.createRelativePositionFromJSON(json),
-        doc
-      )
-      return position ? [{ index: position.index, text }] : []
+      const index = readPosition(doc, range.get('start'))
+      return text && index !== null ? [{ index, text }] : []
     })
     // Back to front, so earlier indexes stay valid.
     for (const { index, text } of found.sort((a, b) => b.index - a.index)) {
@@ -406,6 +438,37 @@ export function removeTag(doc: Y.Doc, tag: string, origin: unknown): void {
   doc.transact(() => {
     const index = tags.toArray().indexOf(tag)
     if (index >= 0) tags.delete(index, 1)
+  }, origin)
+}
+
+/**
+ * The speaker that `id` should merge into once it's named: another speaker who is the same saved
+ * person, or (with no saved voice) has the same name. Diarization often splits one person into
+ * two clusters; naming both the same is how the user says so.
+ */
+export function speakerToMergeInto(
+  doc: Y.Doc,
+  id: string,
+  name: string,
+  personId: string | null
+): string | null {
+  const key = name.trim().toLowerCase()
+  const other = readSpeakers(doc).find(
+    (speaker) =>
+      speaker.id !== id &&
+      ((personId !== null && speaker.personId === personId) ||
+        speaker.name.trim().toLowerCase() === key)
+  )
+  return other?.id ?? null
+}
+
+/** Moves every line of speaker `from` to `into`, then removes `from`. */
+export function mergeSpeakers(doc: Y.Doc, from: string, into: string, origin: unknown): void {
+  doc.transact(() => {
+    for (const entry of docTranscript(doc).toArray()) {
+      if (entry.get('cluster') === from) entry.set('cluster', into)
+    }
+    speakersOf(doc)?.delete(from)
   }, origin)
 }
 

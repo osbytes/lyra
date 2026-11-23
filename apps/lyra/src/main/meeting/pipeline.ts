@@ -9,7 +9,9 @@ import type {
   TranscriptWord
 } from '../../shared/types'
 import {
+  mergeSpeakers,
   removeLiveNotes,
+  speakerToMergeInto,
   replaceTranscript,
   SURE_MATCH,
   upsertSpeaker,
@@ -479,16 +481,38 @@ export async function assignSpeaker(
   } else {
     name = assignment.name.trim()
     if (!name) throw new Error('A name is required')
-    personId = null
-    if (assignment.remember && embedding.length) {
+    // A saved voice with this name already: that's who this is, not a second "Dillon".
+    const known = (await listPeople()).find(
+      (person) => person.name.trim().toLowerCase() === name.toLowerCase()
+    )
+    personId = known?.id ?? null
+    if (known) {
+      name = known.name
+      if (embedding.length) await addSample(known.id, embedding)
+    } else if (assignment.remember && embedding.length) {
       personId = (await addPerson(name, embedding, false)).id
     }
   }
 
-  await editSession(pageId, (doc) => {
-    upsertSpeaker(doc, id, { name, personId, confirmed: true }, ORIGIN_PIPELINE)
+  const merged = await editSession(pageId, (doc) => {
+    const into = speakerToMergeInto(doc, id, name, personId)
+    doc.transact(() => {
+      if (into) {
+        // Naming two speakers the same person merges them.
+        upsertSpeaker(doc, into, { name, personId, confirmed: true }, ORIGIN_PIPELINE)
+        mergeSpeakers(doc, id, into, ORIGIN_PIPELINE)
+      } else {
+        upsertSpeaker(doc, id, { name, personId, confirmed: true }, ORIGIN_PIPELINE)
+      }
+    }, ORIGIN_PIPELINE)
+    return into
   })
-  log('meeting', 'named speaker', { pageId, speaker: id, remembered: personId !== null })
+  log('meeting', 'named speaker', {
+    pageId,
+    speaker: id,
+    mergedInto: merged,
+    remembered: personId !== null
+  })
 }
 
 function parseAssignment(value: unknown): SpeakerAssignment {

@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import type { PageSummary, UpdateStatus } from '../../../shared/types'
 import lyraIcon from '../assets/lyra-icon.png'
 import { dayGroup, shortcutLabel } from '../lib/format'
+import { ScrollArea } from './Controls'
 import { GearIcon, PeopleIcon, PlusIcon, SearchIcon, TrashIcon } from './Icons'
 
 type Props = {
@@ -113,7 +114,7 @@ export function Sidebar({
 
       {tags.length ? (
         <div className="tag-filters">
-          <div className="tag-filters-scroll" role="group" aria-label="Filter by tag">
+          <ScrollArea axis="x" className="tag-filters-scroll" role="group" aria-label="Filter by tag">
             <button
               type="button"
               className="filter-chip"
@@ -134,11 +135,11 @@ export function Sidebar({
                 <span className="filter-count">{count}</span>
               </button>
             ))}
-          </div>
+          </ScrollArea>
         </div>
       ) : null}
 
-      <nav className="page-list" aria-label="Sessions">
+      <ScrollArea as="nav" className="page-list" aria-label="Sessions">
         {groups.length === 0 ? (
           tagFilter && !query ? (
             <div className="page-list-empty">
@@ -204,7 +205,7 @@ export function Sidebar({
             </section>
           ))
         )}
-      </nav>
+      </ScrollArea>
 
       <div className="sidebar-footer">
         <button

@@ -3,7 +3,6 @@ import * as Y from 'yjs'
 import type { PageSummary } from '../../../shared/types'
 import {
   addTag,
-  appendLiveNotes,
   docNotes,
   docSummary,
   docTitle,
@@ -12,16 +11,21 @@ import {
   editDoc,
   newSpeakerId,
   ORIGIN_REMOTE,
+  ORIGIN_TRANSCRIBER,
   ORIGIN_USER,
   removeTag,
   setSegmentsCluster,
   setSegmentText,
   snapshotOf,
+  startTranscriber,
+  transcriberCursor,
+  transcriberWrite,
   upsertSpeaker,
   type SpeakerEntry,
   type TranscriptSegment
 } from '../../../shared/sessionDoc'
 import { log } from '../lib/log'
+import { appendTranscript } from '../text/transcript'
 
 export type SaveState = 'saved' | 'saving'
 
@@ -34,6 +38,8 @@ export type OpenPage = {
   /** Generated meeting notes, above the user's notes. */
   summary: string
   tags: string[]
+  /** Where live transcription lands in `body`, or null before the first recording. */
+  transcriberAt: number | null
   transcript: TranscriptSegment[]
   speakers: SpeakerEntry[]
 }
@@ -105,6 +111,7 @@ export function usePages() {
           body: snapshot.notes,
           summary: snapshot.summary,
           tags: snapshot.tags,
+          transcriberAt: transcriberCursor(doc),
           transcript: snapshot.transcript,
           speakers: snapshot.speakers
         })
@@ -191,13 +198,25 @@ export function usePages() {
     },
     []
   )
+  /** A new recording: the transcriber's cursor starts at the end of the notes. */
+  const beginTranscription = useCallback(
+    () => change((doc) => startTranscriber(doc, ORIGIN_TRANSCRIBER)),
+    [change]
+  )
   /**
-   * Live dictation into the notes. `fresh` starts a new range (a new recording), so labeling
-   * can later swap untouched live text for the speaker-labeled transcript.
+   * Live dictation, written by the transcriber at its own cursor (not the user's), with spacing
+   * and capitals chosen from the text just before it. Undo never takes these words back.
    */
   const appendDictation = useCallback(
-    (next: string, fresh: boolean) =>
-      change((doc) => appendLiveNotes(doc, next, fresh, ORIGIN_USER)),
+    (chunk: string) =>
+      change((doc) => {
+        const notes = docNotes(doc).toJSON()
+        const at = Math.min(transcriberCursor(doc) ?? notes.length, notes.length)
+        const before = notes.slice(0, at)
+        const joined = appendTranscript(before, chunk)
+        const inserted = joined.startsWith(before) ? joined.slice(before.length) : chunk
+        transcriberWrite(doc, inserted, ORIGIN_TRANSCRIBER)
+      }),
     [change]
   )
   const tag = useCallback(
@@ -282,6 +301,7 @@ export function usePages() {
     editSegment,
     assignLines,
     appendDictation,
+    beginTranscription,
     tag,
     untag,
     undo,

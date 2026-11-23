@@ -4,6 +4,7 @@ import { DetailsPanel } from './components/DetailsPanel'
 import { DictationDock } from './components/DictationDock'
 import { Editor } from './components/Editor'
 import { TagRow } from './components/TagRow'
+import { ScrollArea } from './components/Controls'
 import { Transcript } from './components/Transcript'
 import { CheckIcon, CopyIcon, FolderIcon, MicIcon, PanelIcon } from './components/Icons'
 import { SettingsDialog } from './components/Settings'
@@ -12,7 +13,7 @@ import { useDictation } from './hooks/useDictation'
 import { usePages, type OpenPage } from './hooks/usePages'
 import { useSettings } from './hooks/useSettings'
 import { homePath, readingMinutes, relativeTime, shortcutLabel, wordCount } from './lib/format'
-import { appendTranscript, promptFor } from './text/transcript'
+import { promptFor } from './text/transcript'
 
 /** The overlay pill doesn't need every audio frame; ~12 updates a second look smooth. */
 const OVERLAY_FRAME_MS = 80
@@ -53,6 +54,7 @@ export default function App(): React.JSX.Element {
     editSegment,
     assignLines,
     appendDictation,
+    beginTranscription,
     tag,
     untag,
     undo,
@@ -72,7 +74,7 @@ export default function App(): React.JSX.Element {
   const settingsRef = useRef(settings)
   settingsRef.current = settings
   const titleInput = useRef<HTMLInputElement>(null)
-  const scroller = useRef<HTMLDivElement>(null)
+  const scroller = useRef<HTMLElement>(null)
 
   useEffect(() => {
     const stopStatus = window.api.onStatus(setStatus)
@@ -83,18 +85,16 @@ export default function App(): React.JSX.Element {
     }
   }, [])
 
-  /** The next live text starts a new range (a new recording), see `appendDictation`. */
-  const freshTake = useRef(true)
-
   const onCommit = useCallback(
     (text: string) => {
-      const page = currentRef.current
-      if (!page) return
+      if (!currentRef.current) return
       const view = scroller.current
-      // Keep new words in view, unless the writer has scrolled up to reread.
-      const follow = !view || view.scrollHeight - view.scrollTop - view.clientHeight < 160
-      appendDictation(appendTranscript(page.body, text), freshTake.current)
-      freshTake.current = false
+      // Keep new words in view, unless the writer has scrolled up to reread, or is typing:
+      // then their place on the page matters more than the transcriber's.
+      const typing = document.activeElement instanceof HTMLTextAreaElement
+      const follow =
+        !typing && (!view || view.scrollHeight - view.scrollTop - view.clientHeight < 160)
+      appendDictation(text)
       if (follow) {
         requestAnimationFrame(() => view?.scrollTo({ top: view.scrollHeight, behavior: 'smooth' }))
       }
@@ -102,9 +102,11 @@ export default function App(): React.JSX.Element {
     [currentRef, appendDictation]
   )
 
+  // Whisper's prompt is the text just before where its words will land.
   const getContext = useCallback(() => {
     const page = currentRef.current
-    return page ? promptFor(page.title, page.body) : ''
+    if (!page) return ''
+    return promptFor(page.title, page.body.slice(0, page.transcriberAt ?? page.body.length))
   }, [currentRef])
 
   const getDeviceId = useCallback(() => settingsRef.current?.micDeviceId ?? null, [])
@@ -121,10 +123,10 @@ export default function App(): React.JSX.Element {
   /** Records into a session: the mic, plus the computer's audio when that setting is on. */
   const record = useCallback(
     async (pageId: string) => {
-      freshTake.current = true
+      beginTranscription()
       await start({ pageId, systemAudio: settingsRef.current?.captureSystemAudio ?? true })
     },
-    [start]
+    [start, beginTranscription]
   )
 
   /** A new session, named for this moment, recording straight away. */
@@ -348,7 +350,7 @@ export default function App(): React.JSX.Element {
         {current ? (
           <div className="workspace-body">
           <div className="workspace-column">
-            <div className="scroller" ref={scroller}>
+            <ScrollArea className="scroller" ref={scroller}>
               <article className="page">
                 <input
                   ref={titleInput}
@@ -386,6 +388,7 @@ export default function App(): React.JSX.Element {
                   value={current.body}
                   ghost={dictation.live}
                   listening={dictation.phase === 'listening'}
+                  transcriberAt={current.transcriberAt}
                   onChange={(body) => edit({ body })}
                 />
                 {current.transcript.length ? (
@@ -403,7 +406,7 @@ export default function App(): React.JSX.Element {
                   />
                 ) : null}
               </article>
-            </div>
+            </ScrollArea>
             <DictationDock
               phase={dictation.phase}
               micName={dictation.micName}

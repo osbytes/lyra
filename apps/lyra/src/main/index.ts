@@ -35,7 +35,9 @@ import {
 } from './sessionStore'
 import * as Y from 'yjs'
 import {
-  appendLiveNotes,
+  ORIGIN_TRANSCRIBER,
+  startTranscriber,
+  transcriberWrite,
   editDoc,
   ORIGIN_USER,
   readSegment,
@@ -624,17 +626,29 @@ async function checkTranscriptModel(): Promise<void> {
     throw new Error(`transcript: ${message}`)
   }
   const doc = new Y.Doc()
-  // Live text lands in the notes; once labeled, untouched live text comes back out.
+  // The transcriber writes at its own cursor while the user types around it, and the user's
+  // undo never takes transcribed words back.
+  const notesText = (): string => snapshotOf(doc).notes
   editDoc(doc, { notes: 'Agenda' }, ORIGIN_USER)
-  appendLiveNotes(doc, 'Agenda\n\nHello', true, ORIGIN_USER)
-  appendLiveNotes(doc, 'Agenda\n\nHello there.', false, ORIGIN_USER)
-  editDoc(doc, { notes: `My notes: ${snapshotOf(doc).notes}` }, ORIGIN_USER)
+  const undo = new Y.UndoManager(doc.getText('notes'), { trackedOrigins: new Set([ORIGIN_USER]) })
+  startTranscriber(doc, ORIGIN_TRANSCRIBER)
+  transcriberWrite(doc, '\n\nHello', ORIGIN_TRANSCRIBER)
+  editDoc(doc, { notes: `My ${notesText()}` }, ORIGIN_USER)
+  undo.stopCapturing()
+  editDoc(doc, { notes: `${notesText()} typed` }, ORIGIN_USER)
+  transcriberWrite(doc, ' there.', ORIGIN_TRANSCRIBER)
+  if (notesText() !== 'My Agenda\n\nHello there. typed') fail(`transcriber cursor: ${JSON.stringify(notesText())}`)
+  undo.undo()
+  if (notesText() !== 'My Agenda\n\nHello there.') fail(`undo took transcribed text: ${JSON.stringify(notesText())}`)
+  undo.destroy()
+  // Once labeled, untouched transcribed text comes back out; edited text stays.
   removeLiveNotes(doc, 'pipeline')
-  if (snapshotOf(doc).notes !== 'My notes: Agenda') fail(`live notes: ${JSON.stringify(snapshotOf(doc).notes)}`)
-  appendLiveNotes(doc, 'My notes: Agenda kept', true, ORIGIN_USER)
-  editDoc(doc, { notes: 'My notes: Agenda KEPT' }, ORIGIN_USER)
+  if (notesText() !== 'My Agenda') fail(`live notes: ${JSON.stringify(notesText())}`)
+  startTranscriber(doc, ORIGIN_TRANSCRIBER)
+  transcriberWrite(doc, ' kept', ORIGIN_TRANSCRIBER)
+  editDoc(doc, { notes: 'My Agenda KEPT' }, ORIGIN_USER)
   removeLiveNotes(doc, 'pipeline')
-  if (snapshotOf(doc).notes !== 'My notes: Agenda KEPT') fail('edited live text was removed')
+  if (notesText() !== 'My Agenda KEPT') fail('edited live text was removed')
   replaceTranscript(doc, [
     { id: 'a', rawId: 'a', start: 0, end: 4, cluster: 'c0', confidence: 0.9, text: 'Hello there.' },
     { id: 'b', rawId: 'b', start: 4, end: 8, cluster: 'c1', confidence: 0.4, text: 'Hi.' }
@@ -687,6 +701,13 @@ async function checkTranscriptModel(): Promise<void> {
   const exported = await readFile(join(notesDir(), id), 'utf8')
   if (!exported.includes('[00:00:04] Ben: Hi Ana, good morning.') || !exported.startsWith('Weekly sync')) {
     fail(`export after a line edit: ${JSON.stringify(exported)}`)
+  }
+  // Naming a speaker the same as another merges them: one speaker, all their lines.
+  // Even when the name also saves a new voice (remember), the same name still merges.
+  await assignSpeaker(id, 'c1', { name: 'ana', remember: true })
+  const merged = await readSession(id)
+  if (merged.speakers.length !== 1 || merged.transcript.some((line) => line.cluster !== 'c0')) {
+    fail(`speakers did not merge: ${JSON.stringify(merged.speakers)}`)
   }
   await deletePage(id)
 }

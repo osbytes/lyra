@@ -3,7 +3,7 @@ import type { WhisperStatus } from '../../../shared/types'
 import type { DictationPhase } from '../hooks/useDictation'
 import { useMicrophones } from '../hooks/useMicrophones'
 import { formatDuration, shortcutLabel } from '../lib/format'
-import { Floating, Switch } from './Controls'
+import { Floating, ScrollArea, Switch } from './Controls'
 import { ChevronDownIcon, MicIcon, MicSmallIcon, SpeakerIcon, StopIcon } from './Icons'
 import { MicrophoneSelect } from './MicrophoneSelect'
 
@@ -134,7 +134,7 @@ function Sources({
       {open && rect ? (
         <Floating>
           <div className="picker-layer" onMouseDown={() => setOpen(false)}>
-            <div
+            <ScrollArea
               className="picker sources"
               role="dialog"
               aria-label="What to record"
@@ -170,7 +170,7 @@ function Sources({
                   onChange={onSystemAudioChange}
                 />
               </div>
-            </div>
+            </ScrollArea>
           </div>
         </Floating>
       ) : null}
