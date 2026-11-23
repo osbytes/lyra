@@ -17,6 +17,7 @@ Roadmap: [docs/PLAN.md](docs/PLAN.md). Human contributor guide: [CONTRIBUTING.md
 | Native addon smoke | `pnpm smoke` (only needed when touching `src/main/whisper.ts` or native deps) |
 | QA with real audio | `powershell -File scripts/make-demo-audio.ps1` makes `test-audio/meeting.wav` (two synthetic voices); see the `qa-test` skill |
 | Meeting pipeline smoke | `pnpm smoke:meeting <file.wav>`: real diarization, Whisper, and relabeling; `LYRA_NOTES_ENGINE=local` adds notes; `LYRA_MODELS_DIR` reuses downloads |
+| Speaker evals | `pnpm eval:calls` (in `apps/lyra`): synthetic call/room scenarios with exact ground truth (speaker bleed, clipping, quick turns, crosstalk, similar voices); `pnpm eval:ami` scores real AMI meetings (`--meetings`, `--minutes`, `--mic`). WER, cpWER, DER; data and results go to `eval-data/` |
 | Package (Windows dir build) | `pnpm build:unpack`; runs `prepare:llama`, which ships node-llama-cpp as its own npm install |
 | Run the website | `pnpm dev:web` (http://localhost:3100); check with `pnpm --filter web check` and `pnpm --filter web build` |
 
@@ -77,6 +78,7 @@ the server only).
   (`src/main/index.ts`).
 - Audio, transcription, diarization or meeting-notes changes: QA with real audio per the `qa-test` skill
   (`test-audio/meeting.wav`), comparing output to the known script. Smoke tests alone don't count.
+  Speaker or diarization changes also run `pnpm eval:calls` and report the table before and after.
 - UI changes: launch `pnpm dev` and look at the change; say so if you couldn't.
 
 ## Commits and PRs

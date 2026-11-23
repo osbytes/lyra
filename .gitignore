@@ -16,6 +16,7 @@ models
 build/helpers/
 build/llama/
 test-audio/
+eval-data/
 .turbo
 .next
 next-env.d.ts

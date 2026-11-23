@@ -3,7 +3,6 @@ import * as Y from 'yjs'
 import type { PageSummary } from '../../../shared/types'
 import {
   addTag,
-  docNotes,
   docSummary,
   docTitle,
   docTranscript,
@@ -11,21 +10,22 @@ import {
   editDoc,
   newSpeakerId,
   ORIGIN_REMOTE,
-  ORIGIN_TRANSCRIBER,
   ORIGIN_USER,
   removeTag,
+  setSegmentEdits,
   setSegmentsCluster,
   setSegmentText,
   snapshotOf,
-  startTranscriber,
   transcriberCursor,
-  transcriberWrite,
+  liveModeOf,
+  livePlaced,
+  type LiveMode,
   upsertSpeaker,
   type SpeakerEntry,
   type TranscriptSegment
 } from '../../../shared/sessionDoc'
+import type { TranscriptEdit } from '../../../shared/transcriptOverlay'
 import { log } from '../lib/log'
-import { appendTranscript } from '../text/transcript'
 
 export type SaveState = 'saved' | 'saving'
 
@@ -40,6 +40,10 @@ export type OpenPage = {
   tags: string[]
   /** Where live transcription lands in `body`, or null before the first recording. */
   transcriberAt: number | null
+  /** Where the recording's words are going: the notes, or the speaker-labeled transcript. */
+  liveMode: LiveMode | null
+  /** Phrases main has placed in the current recording (see `livePlaced`). */
+  livePlaced: number
   transcript: TranscriptSegment[]
   speakers: SpeakerEntry[]
 }
@@ -102,7 +106,6 @@ export function usePages() {
       const doc = new Y.Doc()
       Y.applyUpdate(doc, state, ORIGIN_REMOTE)
       const title = docTitle(doc)
-      const notes = docNotes(doc)
       const render = (): void => {
         const snapshot = snapshotOf(doc)
         show({
@@ -112,6 +115,8 @@ export function usePages() {
           summary: snapshot.summary,
           tags: snapshot.tags,
           transcriberAt: transcriberCursor(doc),
+          liveMode: liveModeOf(doc),
+          livePlaced: livePlaced(doc),
           transcript: snapshot.transcript,
           speakers: snapshot.speakers
         })
@@ -134,8 +139,9 @@ export function usePages() {
       const stopRemote = window.api.onSessionUpdate((change) => {
         if (change.id === id) Y.applyUpdate(doc, change.update, ORIGIN_REMOTE)
       })
-      // Undo covers this window's own edits only, never text that arrived from elsewhere.
-      const undo = new Y.UndoManager([title, notes, docSummary(doc), docTranscript(doc), docMeta(doc)], {
+      // Undo covers this window's own edits only, never text that arrived from elsewhere. The
+      // notes editor keeps its own history (it knows the user's selection), so they're not here.
+      const undo = new Y.UndoManager([title, docSummary(doc), docTranscript(doc), docMeta(doc)], {
         trackedOrigins: new Set([ORIGIN_USER]),
         captureTimeout: 600
       })
@@ -172,9 +178,27 @@ export function usePages() {
     (summary: string) => change((doc) => editDoc(doc, { summary }, ORIGIN_USER)),
     [change]
   )
+  /**
+   * A transcript action (correct, remove, highlight, rewrite, reassign) as one undo step of its
+   * own: typing merges keystrokes into a step, but two quick menu actions must undo separately.
+   */
+  const step = useCallback((apply: (doc: Y.Doc) => void) => {
+    const open = replica.current
+    if (!open) return
+    open.undo.stopCapturing()
+    apply(open.doc)
+    open.undo.stopCapturing()
+  }, [])
+
   const editSegment = useCallback(
-    (id: string, text: string) => change((doc) => setSegmentText(doc, id, text, ORIGIN_USER)),
-    [change]
+    (id: string, text: string) => step((doc) => setSegmentText(doc, id, text, ORIGIN_USER)),
+    [step]
+  )
+  /** Sets a line's corrections, removals and highlights over its raw words. */
+  const editLineOverlay = useCallback(
+    (id: string, edits: readonly TranscriptEdit[]) =>
+      step((doc) => setSegmentEdits(doc, id, edits, ORIGIN_USER)),
+    [step]
   )
   /** Moves lines to a speaker, creating it first when given a name. Returns the speaker's id. */
   const assignLines = useCallback(
@@ -182,6 +206,7 @@ export function usePages() {
       const open = replica.current
       if (!open) return null
       const id = typeof speaker === 'string' ? speaker : newSpeakerId(open.doc)
+      open.undo.stopCapturing()
       open.doc.transact(() => {
         if (typeof speaker !== 'string') {
           upsertSpeaker(open.doc, id, {
@@ -194,30 +219,10 @@ export function usePages() {
         }
         setSegmentsCluster(open.doc, ids, id, ORIGIN_USER)
       }, ORIGIN_USER)
+      open.undo.stopCapturing()
       return id
     },
     []
-  )
-  /** A new recording: the transcriber's cursor starts at the end of the notes. */
-  const beginTranscription = useCallback(
-    () => change((doc) => startTranscriber(doc, ORIGIN_TRANSCRIBER)),
-    [change]
-  )
-  /**
-   * Live dictation, written by the transcriber at its own cursor (not the user's), with spacing
-   * and capitals chosen from the text just before it. Undo never takes these words back.
-   */
-  const appendDictation = useCallback(
-    (chunk: string) =>
-      change((doc) => {
-        const notes = docNotes(doc).toJSON()
-        const at = Math.min(transcriberCursor(doc) ?? notes.length, notes.length)
-        const before = notes.slice(0, at)
-        const joined = appendTranscript(before, chunk)
-        const inserted = joined.startsWith(before) ? joined.slice(before.length) : chunk
-        transcriberWrite(doc, inserted, ORIGIN_TRANSCRIBER)
-      }),
-    [change]
   )
   const tag = useCallback(
     (name: string) => change((doc) => addTag(doc, name, ORIGIN_USER)),
@@ -299,9 +304,8 @@ export function usePages() {
     edit,
     editSummary,
     editSegment,
+    editLineOverlay,
     assignLines,
-    appendDictation,
-    beginTranscription,
     tag,
     untag,
     undo,

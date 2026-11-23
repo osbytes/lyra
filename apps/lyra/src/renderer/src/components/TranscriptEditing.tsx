@@ -1,0 +1,456 @@
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import type { TranscriptSegment } from '../../../shared/sessionDoc'
+import {
+  correctRange,
+  expandToEdits,
+  isHighlighted,
+  overlayPieces,
+  removeRange,
+  restoreRange,
+  toggleHighlight,
+  visibleText,
+  type Span,
+  type TranscriptEdit
+} from '../../../shared/transcriptOverlay'
+
+/**
+ * Editing a locked transcript. Lines are drawn from what the model heard plus the user's
+ * overlay (corrections, removals, highlights); nothing is typed into the raw words directly.
+ * Selecting words shows a small toolbar, and right-click opens the same actions plus the
+ * line's own, so every change is an explicit, reversible edit over the raw line.
+ */
+
+// --- Drawing a line -------------------------------------------------------------------------
+
+/** One line's words: raw text, removed words struck through, corrections marked. */
+export function LineText({
+  line,
+  raw,
+  label
+}: {
+  line: TranscriptSegment
+  /** Show only what was heard, ignoring the overlay. */
+  raw: boolean
+  label: string
+}) {
+  const pieces = raw
+    ? [{ kind: 'raw' as const, start: 0, end: line.original.length, text: line.original, highlight: false }]
+    : overlayPieces(line.original, line.edits)
+  return (
+    <p className="line-text" data-line={line.id} aria-label={label}>
+      {pieces.map((piece) => {
+        const common = {
+          key: `${piece.kind}:${String(piece.start)}:${String(piece.end)}`,
+          'data-kind': piece.kind,
+          'data-start': piece.start,
+          'data-end': piece.end,
+          className: piece.highlight ? 'hl' : undefined
+        }
+        if (piece.kind === 'replaced') {
+          return (
+            <ins {...common} title={piece.original ? `Heard: “${piece.original}”` : 'Added'}>
+              {piece.text}
+            </ins>
+          )
+        }
+        if (piece.kind === 'deleted') {
+          return (
+            <del {...common} title="Removed from the transcript">
+              {piece.text}
+            </del>
+          )
+        }
+        return <span {...common}>{piece.text}</span>
+      })}
+    </p>
+  )
+}
+
+// --- Mapping a selection back to the raw line --------------------------------------------
+
+export type LineSelection = { line: string; span: Span; rect: DOMRect }
+
+function pieceOffset(node: Node, offset: number, side: 'start' | 'end'): { line: string; at: number } | null {
+  const element = node instanceof Element ? node : node.parentElement
+  const lineEl = element?.closest<HTMLElement>('[data-line]')
+  const line = lineEl?.dataset.line
+  if (!lineEl || !line) return null
+  // The selection edge sits between pieces (on the line element itself).
+  if (element === lineEl) {
+    const before = lineEl.childNodes[offset - 1]
+    const end = before instanceof HTMLElement ? Number(before.dataset.end) : 0
+    return { line, at: Number.isFinite(end) ? end : 0 }
+  }
+  const piece = element?.closest<HTMLElement>('[data-kind]')
+  if (!piece) return null
+  const start = Number(piece.dataset.start)
+  const end = Number(piece.dataset.end)
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null
+  // A correction is one unit: selecting into it takes all of it.
+  if (piece.dataset.kind === 'replaced') return { line, at: side === 'start' ? start : end }
+  const within = node === piece ? (offset > 0 ? end - start : 0) : offset
+  return { line, at: Math.min(end, start + within) }
+}
+
+/** The selected words as a range of one line's original text; null across lines or when empty. */
+export function readSelection(
+  root: HTMLElement | null,
+  lines: readonly TranscriptSegment[]
+): LineSelection | null {
+  const selection = window.getSelection()
+  if (!root || !selection || selection.isCollapsed || selection.rangeCount === 0) return null
+  const range = selection.getRangeAt(0)
+  if (!root.contains(range.commonAncestorContainer)) return null
+  const from = pieceOffset(range.startContainer, range.startOffset, 'start')
+  const to = pieceOffset(range.endContainer, range.endOffset, 'end')
+  if (!from || from.line !== to?.line) return null
+  const line = lines.find((entry) => entry.id === from.line)
+  if (!line) return null
+  // Double-click picks up the space after a word; edits read better on the words alone.
+  let start = Math.min(from.at, to.at)
+  let end = Math.max(from.at, to.at)
+  while (start < end && /\s/.test(line.original.charAt(start))) start++
+  while (end > start && /\s/.test(line.original.charAt(end - 1))) end--
+  if (end <= start) return null
+  return { line: line.id, span: { start, end }, rect: range.getBoundingClientRect() }
+}
+
+/** The correction or removal under the pointer, if any, as a range of the original. */
+export function editAt(target: EventTarget | null): Span | null {
+  if (!(target instanceof Element)) return null
+  const piece = target.closest<HTMLElement>('[data-kind="replaced"], [data-kind="deleted"]')
+  if (!piece) return null
+  const start = Number(piece.dataset.start)
+  const end = Number(piece.dataset.end)
+  return Number.isFinite(start) && Number.isFinite(end) ? { start, end } : null
+}
+
+// --- Actions --------------------------------------------------------------------------------
+
+export type Actions = {
+  setEdits: (line: string, edits: TranscriptEdit[]) => void
+  rewrite: (line: string) => void
+  quote: (line: TranscriptSegment, text: string) => void
+  copy: (text: string) => void
+  listen: (line: TranscriptSegment) => void
+  speaker: ((line: TranscriptSegment, anchor: DOMRect) => void) | null
+}
+
+const touchesEdit = (edits: readonly TranscriptEdit[], span: Span): boolean =>
+  restoreRange(edits, span).length !== edits.length
+
+const short = (text: string): string => (text.length > 28 ? `${text.slice(0, 27).trimEnd()}…` : text)
+
+// --- Correcting a selection -----------------------------------------------------------------
+
+/** A small field over the selection: type what was actually said. */
+export function CorrectField({
+  line,
+  span,
+  rect,
+  onDone,
+  onApply
+}: {
+  line: TranscriptSegment
+  span: Span
+  rect: DOMRect
+  onDone: () => void
+  onApply: (edits: TranscriptEdit[]) => void
+}) {
+  const range = expandToEdits(line.edits, span)
+  const [value, setValue] = useState(() => visibleText(line.original, line.edits, range))
+  const input = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    input.current?.select()
+  }, [])
+  const heard = line.original.slice(range.start, range.end)
+  return (
+    <div className="picker-layer" onMouseDown={onDone}>
+      <form
+        className="correct-pop"
+        style={{
+          top: Math.min(rect.bottom + 8, window.innerHeight - 120),
+          left: Math.max(8, Math.min(rect.left, window.innerWidth - 336))
+        }}
+        onMouseDown={(event) => event.stopPropagation()}
+        onSubmit={(event) => {
+          event.preventDefault()
+          onApply(correctRange(line.original, line.edits, range, value))
+          onDone()
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            onDone()
+          }
+        }}
+      >
+        <input
+          ref={input}
+          type="text"
+          value={value}
+          aria-label="What was said"
+          onChange={(event) => setValue(event.target.value)}
+        />
+        <small>
+          Heard “{heard}” · <kbd>Enter</kbd> to correct, <kbd>Esc</kbd> to cancel
+        </small>
+      </form>
+    </div>
+  )
+}
+
+// --- Selection toolbar ----------------------------------------------------------------------
+
+export function SelectionBar({
+  line,
+  selection,
+  actions,
+  onCorrect
+}: {
+  line: TranscriptSegment
+  selection: LineSelection
+  actions: Actions
+  onCorrect: () => void
+}) {
+  const { span, rect } = selection
+  const lit = isHighlighted(line.edits, span)
+  const text = visibleText(line.original, line.edits, expandToEdits(line.edits, span))
+  const top = rect.top - 44 < 8 ? rect.bottom + 8 : rect.top - 44
+  return (
+    <div
+      className="selection-bar"
+      role="toolbar"
+      aria-label="Edit selected words"
+      style={{ top, left: Math.max(8, Math.min(rect.left + rect.width / 2, window.innerWidth - 8)) }}
+      // Keep the selection while a button is pressed.
+      onMouseDown={(event) => event.preventDefault()}
+    >
+      <button type="button" onClick={onCorrect}>
+        Correct
+      </button>
+      <button type="button" onClick={() => actions.setEdits(line.id, removeRange(line.edits, span))}>
+        Remove
+      </button>
+      <button type="button" onClick={() => actions.setEdits(line.id, toggleHighlight(line.edits, span))}>
+        {lit ? 'Unhighlight' : 'Highlight'}
+      </button>
+      <button type="button" onClick={() => actions.quote(line, text)}>
+        Add to notes
+      </button>
+      {touchesEdit(line.edits, span) ? (
+        <button type="button" onClick={() => actions.setEdits(line.id, restoreRange(line.edits, span))}>
+          Restore
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
+// --- Context menu ---------------------------------------------------------------------------
+
+export type MenuRequest = {
+  line: string
+  /** Selected words in this line, if any. */
+  span: Span | null
+  /** The correction or removal right-clicked, if any. */
+  edit: Span | null
+  rect: DOMRect | null
+  x: number
+  y: number
+}
+
+type Item = { label: ReactNode; run: () => void } | 'separator'
+
+export function LineMenu({
+  line,
+  request,
+  raw,
+  actions,
+  onCorrect,
+  onClose
+}: {
+  line: TranscriptSegment
+  request: MenuRequest
+  raw: boolean
+  actions: Actions
+  onCorrect: (span: Span, rect: DOMRect) => void
+  onClose: () => void
+}) {
+  const menu = useRef<HTMLDivElement>(null)
+  const [active, setActive] = useState(0)
+  const { span, edit } = request
+  const items: Item[] = []
+  if (!raw && edit) {
+    const heard = line.original.slice(edit.start, edit.end)
+    items.push({
+      label: heard ? <>Restore “{short(heard)}”</> : 'Remove added words',
+      run: () =>
+        actions.setEdits(
+          line.id,
+          line.edits.filter((e) => e.kind === 'highlight' || e.start !== edit.start || e.end !== edit.end)
+        )
+    })
+  }
+  if (span && !raw) {
+    const text = visibleText(line.original, line.edits, expandToEdits(line.edits, span))
+    const lit = isHighlighted(line.edits, span)
+    items.push(
+      { label: <>Correct “{short(text)}”…</>, run: () => onCorrect(span, request.rect ?? new DOMRect(request.x, request.y)) },
+      { label: 'Remove from transcript', run: () => actions.setEdits(line.id, removeRange(line.edits, span)) },
+      { label: lit ? 'Remove highlight' : 'Highlight', run: () => actions.setEdits(line.id, toggleHighlight(line.edits, span)) },
+      { label: 'Add selection to notes', run: () => actions.quote(line, text) },
+      { label: 'Copy selection', run: () => actions.copy(text) }
+    )
+    if (touchesEdit(line.edits, span)) {
+      items.push({ label: 'Restore what was heard', run: () => actions.setEdits(line.id, restoreRange(line.edits, span)) })
+    }
+    items.push('separator')
+  } else if (span) {
+    const text = line.original.slice(span.start, span.end)
+    items.push({ label: 'Copy selection', run: () => actions.copy(text) }, 'separator')
+  }
+  if (!raw) items.push({ label: 'Edit line…', run: () => actions.rewrite(line.id) })
+  const { speaker } = actions
+  if (speaker && line.cluster) {
+    items.push({ label: 'Who said this…', run: () => speaker(line, new DOMRect(request.x, request.y)) })
+  }
+  items.push(
+    { label: 'Listen from here', run: () => actions.listen(line) },
+    { label: 'Add line to notes', run: () => actions.quote(line, raw ? line.original : line.text) },
+    { label: 'Copy line', run: () => actions.copy(raw ? line.original : line.text) }
+  )
+  if (!raw && line.edited) {
+    items.push({
+      label: 'Restore original line',
+      run: () => actions.setEdits(line.id, line.edits.filter((e) => e.kind === 'highlight'))
+    })
+  }
+  if (!raw && line.edits.some((e) => e.kind === 'highlight')) {
+    items.push({
+      label: 'Clear highlights',
+      run: () => actions.setEdits(line.id, line.edits.filter((e) => e.kind !== 'highlight'))
+    })
+  }
+  const runnable = items.filter((item): item is Exclude<Item, 'separator'> => item !== 'separator')
+
+  useEffect(() => {
+    menu.current?.focus()
+  }, [])
+
+  const pick = (item: Exclude<Item, 'separator'> | undefined): void => {
+    if (!item) return
+    onClose()
+    item.run()
+  }
+
+  const width = 240
+  const height = items.length * 32 + 8
+  return (
+    <div
+      className="picker-layer"
+      onMouseDown={onClose}
+      onContextMenu={(event) => {
+        event.preventDefault()
+        onClose()
+      }}
+    >
+      <div
+        ref={menu}
+        className="context-menu"
+        role="menu"
+        tabIndex={-1}
+        aria-label="Transcript line"
+        style={{
+          top: Math.max(8, Math.min(request.y, window.innerHeight - height - 8)),
+          left: Math.max(8, Math.min(request.x, window.innerWidth - width - 8))
+        }}
+        onMouseDown={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            onClose()
+          } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault()
+            const step = event.key === 'ArrowDown' ? 1 : runnable.length - 1
+            setActive((value) => (value + step) % runnable.length)
+          } else if (event.key === 'Enter') {
+            event.preventDefault()
+            pick(runnable[active])
+          }
+        }}
+      >
+        {items.map((item, index) =>
+          item === 'separator' ? (
+            <hr key={`sep-${String(index)}`} />
+          ) : (
+            <button
+              key={index}
+              type="button"
+              role="menuitem"
+              className={runnable.indexOf(item) === active ? 'active' : undefined}
+              onMouseEnter={() => setActive(runnable.indexOf(item))}
+              onClick={() => pick(item)}
+            >
+              {item.label}
+            </button>
+          )
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** Rewriting a whole line in place; stored as a correction over the words that changed. */
+export function LineRewrite({
+  line,
+  onDone,
+  onSave
+}: {
+  line: TranscriptSegment
+  onDone: () => void
+  onSave: (text: string) => void
+}) {
+  const [value, setValue] = useState(line.text)
+  const area = useRef<HTMLTextAreaElement>(null)
+  // Escape and Enter finish the edit; the blur that follows unmounting mustn't save again.
+  const finished = useRef(false)
+  useEffect(() => {
+    const el = area.current
+    if (!el) return
+    el.focus()
+    el.setSelectionRange(el.value.length, el.value.length)
+  }, [])
+  const finish = (keep: boolean): void => {
+    if (finished.current) return
+    finished.current = true
+    if (keep && value.trim() !== line.text) onSave(value)
+    onDone()
+  }
+  return (
+    <div className="line-rewrite">
+      <textarea
+        ref={area}
+        className="line-edit"
+        value={value}
+        rows={1}
+        spellCheck
+        aria-label="Edit line"
+        onChange={(event) => setValue(event.target.value)}
+        onBlur={() => finish(true)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault()
+            finish(true)
+          } else if (event.key === 'Escape') {
+            event.preventDefault()
+            finish(false)
+          }
+        }}
+      />
+      <small>
+        Heard: “{line.original}” · <kbd>Enter</kbd> to save, <kbd>Esc</kbd> to cancel
+      </small>
+    </div>
+  )
+}

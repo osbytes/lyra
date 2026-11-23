@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, type Ref } from 'react'
-import { appendTranscript } from '../text/transcript'
+import { appendTranscript } from '../../../shared/transcriptText'
 
 type Props = {
   value: string
@@ -39,7 +39,15 @@ export function mapPosition(before: string, after: string, position: number): nu
  * and draws the transcriber's cursor (and its unconfirmed words) where it writes, like a second
  * author in the document. The user's caret stays where they left it when text arrives.
  */
-export function Editor({ value, ghost, listening, transcriberAt, onChange, label, ref }: Props) {
+export function Editor({
+  value,
+  ghost,
+  listening,
+  transcriberAt,
+  onChange,
+  label,
+  ref
+}: Props) {
   const area = useRef<HTMLTextAreaElement | null>(null)
   // What the textarea last showed, and the user's selection in it.
   const shown = useRef({ value, start: value.length, end: value.length })

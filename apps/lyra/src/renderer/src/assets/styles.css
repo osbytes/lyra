@@ -2862,3 +2862,397 @@ code {
 .scroll-x::-webkit-scrollbar {
   display: none;
 }
+
+/* The transcript's live row: unconfirmed words and the transcriber's cursor, while a
+   conversation is recorded. Speaker-labeled lines appear above it as phrases are confirmed. */
+.live-line .live-text {
+  margin: 0;
+  min-height: 1.5em;
+  white-space: pre-wrap;
+}
+
+
+/*
+ * Two panes in the session column: the user's notes on top, the transcript below, with a
+ * divider to drag between them. Without a transcript the notes take the whole column.
+ */
+.panes {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.notes-pane {
+  flex: 0 0 45%;
+}
+
+.notes-pane.is-alone {
+  flex: 1 1 auto;
+}
+
+.notes-pane .page {
+  padding-bottom: 32px;
+}
+
+.notes-pane.is-alone .page {
+  padding-bottom: 176px;
+}
+
+.transcript-pane {
+  flex: 1 1 0;
+  background: var(--surface-sunken);
+}
+
+.transcript-page {
+  padding-top: 16px;
+}
+
+.pane-divider {
+  position: relative;
+  flex: 0 0 auto;
+  height: 9px;
+  margin: -4px 0;
+  z-index: 2;
+  cursor: row-resize;
+  outline: none;
+}
+
+.pane-divider::before {
+  content: '';
+  position: absolute;
+  inset: 4px 0 auto;
+  height: 1px;
+  background: var(--border);
+}
+
+.pane-divider::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 50%;
+  width: 36px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--border-strong);
+  transform: translateX(-50%);
+  opacity: 0;
+  transition: opacity 120ms;
+}
+
+.pane-divider:hover::after,
+.pane-divider:focus-visible::after,
+.pane-divider:active::after {
+  opacity: 1;
+}
+
+.pane-divider:focus-visible::before {
+  background: var(--accent);
+}
+
+/* Notes: a rich-text editor (Tiptap) over the markdown the session keeps. */
+.notes-field {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 160px;
+}
+
+.notes-editor {
+  flex: 1;
+  min-height: 160px;
+  outline: none;
+  font-family: var(--font-body);
+  font-size: 18px;
+  line-height: 1.75;
+  overflow-wrap: break-word;
+}
+
+.notes-editor > :first-child {
+  margin-top: 0;
+}
+
+.notes-editor p {
+  margin: 0 0 0.6em;
+}
+
+.notes-editor h1,
+.notes-editor h2,
+.notes-editor h3 {
+  margin: 1.2em 0 0.4em;
+  font-family: var(--font-ui);
+  letter-spacing: -0.015em;
+  line-height: 1.3;
+}
+
+.notes-editor h1 {
+  font-size: 26px;
+}
+
+.notes-editor h2 {
+  font-size: 21px;
+}
+
+.notes-editor h3 {
+  font-size: 18px;
+}
+
+.notes-editor ul,
+.notes-editor ol {
+  margin: 0 0 0.6em;
+  padding-left: 1.4em;
+}
+
+.notes-editor li p {
+  margin: 0;
+}
+
+.notes-editor blockquote {
+  margin: 0 0 0.8em;
+  padding: 2px 0 2px 14px;
+  border-left: 3px solid var(--accent);
+  color: var(--text-muted);
+}
+
+.notes-editor blockquote p {
+  margin: 0;
+}
+
+.notes-editor code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--surface-sunken);
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+
+.notes-editor pre {
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  white-space: pre-wrap;
+}
+
+.notes-editor pre code {
+  padding: 0;
+  background: none;
+}
+
+.notes-editor a {
+  color: var(--accent-soft-text);
+}
+
+.notes-editor hr {
+  margin: 1.4em 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.notes-editor p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  color: var(--text-subtle);
+  pointer-events: none;
+}
+
+.notes-editor ::selection {
+  background: var(--accent-soft);
+}
+
+/* The transcript pane: locked raw lines, with the user's edits drawn over them. */
+.transcript-pane .transcript {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.transcript-pane .page {
+  padding-bottom: 176px;
+}
+
+.transcript-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
+
+.transcript-hint {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-subtle);
+  font-size: 12px;
+}
+
+.transcript-mode button {
+  height: 24px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.lines {
+  outline: none;
+}
+
+p.line-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  cursor: text;
+}
+
+.line-text ::selection {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+/* A correction: the words the user says were said, underlined; hover shows what was heard. */
+.line-text ins {
+  text-decoration: underline 1.5px var(--accent);
+  text-underline-offset: 4px;
+  text-decoration-skip-ink: none;
+}
+
+/* Removed words stay visible, faint and struck, so the raw line is never lost from view. */
+.line-text del {
+  color: var(--text-subtle);
+  text-decoration: line-through 1px;
+  opacity: 0.7;
+}
+
+.line-text .hl {
+  border-radius: 3px;
+  background: var(--warning-soft);
+  box-shadow: 0 0 0 1px var(--warning-soft);
+}
+
+.line-rewrite {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+
+.line-edit {
+  width: 100%;
+  margin: -3px -7px;
+  padding: 2px 6px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 18px;
+  line-height: 1.75;
+  resize: none;
+  field-sizing: content;
+}
+
+.line-rewrite small,
+.correct-pop small {
+  color: var(--text-subtle);
+  font-size: 11px;
+}
+
+/* Floating over a selection: the quick edits. */
+.selection-bar {
+  position: fixed;
+  z-index: var(--layer-popover);
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  transform: translateX(-50%);
+  animation: rise 120ms ease-out;
+}
+
+.selection-bar button {
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.selection-bar button:hover {
+  background: var(--surface-hover);
+}
+
+.correct-pop {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 328px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  animation: rise 120ms ease-out;
+}
+
+.correct-pop input {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  outline: none;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.correct-pop input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.context-menu {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  width: 240px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  outline: none;
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  animation: rise 120ms ease-out;
+}
+
+.context-menu button {
+  height: 30px;
+  padding: 0 10px;
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-menu button.active {
+  background: var(--surface-hover);
+}
+
+.context-menu hr {
+  margin: 4px 6px;
+  border: 0;
+  border-top: 1px solid var(--border);
+}

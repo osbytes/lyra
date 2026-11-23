@@ -190,6 +190,11 @@ export type VoicePagesApi = {
   appendRecording: (track: AudioTrack, pcm16: Int16Array) => void
   /** Words the live transcriber committed, timed on the session's timeline. */
   appendRecordingWords: (words: TranscriptWord[]) => void
+  /**
+   * A committed phrase and the stretch of the session timeline it was heard in. Main places it:
+   * in the notes while one voice speaks, as speaker-labeled transcript lines once two do.
+   */
+  appendRecordingText: (text: string, start: number, end: number) => void
   stopRecording: () => Promise<MeetingRecording | null>
   /** Mixed 16 kHz mono PCM for a stretch of a session's audio (Listen); empty if none is kept. */
   sessionAudio: (pageId: string, start: number, end: number) => Promise<Int16Array>

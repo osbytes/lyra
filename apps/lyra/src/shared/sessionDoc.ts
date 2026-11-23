@@ -1,4 +1,12 @@
 import * as Y from 'yjs'
+import { appendTranscript } from './transcriptText'
+import {
+  applyOverlay,
+  hasTextEdits,
+  readEdits,
+  rewriteLine,
+  type TranscriptEdit
+} from './transcriptOverlay'
 
 /**
  * The editable layer of a session, as a Yjs document. Main owns the copy on disk; each window
@@ -11,7 +19,10 @@ import * as Y from 'yjs'
  *   meta: Y.Map { tags: Y.Array<string>, speakers: Y.Map<id, Y.Map> }
  *     speaker: { name, personId, confirmed, confidence, matches: { personId, score }[] }
  *   transcript: Y.Array<Y.Map>       one entry per segment, in time order
- *     segment: { id, rawId, start, end, cluster, text: Y.Text, original, edited, confidence }
+ *     segment: { id, rawId, start, end, cluster, text: Y.Text, original, edits, edited, confidence }
+ *       `original` is what the model heard and is never edited; `edits` are the user's
+ *       corrections, removals and highlights over it (transcriptOverlay.ts); `text` is the
+ *       result, kept in the document so exports and readers needn't apply the overlay.
  */
 
 /** Who made a change. Lets undo skip machine writes and lets main skip echoing a window. */
@@ -46,8 +57,11 @@ export type TranscriptSegment = {
   end: number
   cluster: string | null
   text: string
-  /** What the model heard, before any edit. */
+  /** What the model heard, before any edit. Locked: edits overlay it, never change it. */
   original: string
+  /** The user's corrections, removals and highlights, as ranges of `original`. */
+  edits: TranscriptEdit[]
+  /** Some of the words differ from `original` (a highlight alone isn't an edit). */
   edited: boolean
   /** How much this line's voice sounds like the rest of its speaker, 0–1; null if unknown. */
   confidence: number | null
@@ -118,6 +132,12 @@ export function readSegment(entry: Y.Map<unknown>): TranscriptSegment {
   const rawId = entry.get('rawId')
   const cluster = entry.get('cluster')
   const current = text instanceof Y.Text ? text.toJSON() : ''
+  const original = str(entry.get('original'), current)
+  const edited = entry.get('edited') === true
+  const stored = readEdits(entry.get('edits'), original.length)
+  // Lines edited before the overlay existed were typed over directly: read the change as one
+  // correction, so they draw the same way.
+  const edits = !stored.length && edited && current !== original ? rewriteLine(original, [], current) : stored
   return {
     id: str(entry.get('id')),
     rawId: typeof rawId === 'string' ? rawId : null,
@@ -125,8 +145,9 @@ export function readSegment(entry: Y.Map<unknown>): TranscriptSegment {
     end: num(entry.get('end')),
     cluster: typeof cluster === 'string' ? cluster : null,
     text: current,
-    original: str(entry.get('original'), current),
-    edited: entry.get('edited') === true,
+    original,
+    edits,
+    edited,
     confidence: numOrNull(entry.get('confidence'))
   }
 }
@@ -209,7 +230,7 @@ export function initDoc(
 
 // --- Transcript edits ---------------------------------------------------------------
 
-export type NewSegment = Omit<TranscriptSegment, 'text' | 'original' | 'edited'> & {
+export type NewSegment = Omit<TranscriptSegment, 'text' | 'original' | 'edits' | 'edited'> & {
   text: string
 }
 
@@ -221,8 +242,10 @@ function segmentMap(segment: NewSegment, keep?: TranscriptSegment): Y.Map<unknow
   entry.set('end', segment.end)
   entry.set('cluster', segment.cluster)
   entry.set('confidence', segment.confidence)
-  entry.set('original', segment.text)
-  entry.set('text', new Y.Text(keep?.edited ? keep.text : segment.text))
+  // A kept line keeps the words its edits were made over, so they still line up.
+  entry.set('original', keep ? keep.original : segment.text)
+  entry.set('edits', keep ? keep.edits : [])
+  entry.set('text', new Y.Text(keep ? keep.text : segment.text))
   entry.set('edited', keep?.edited === true)
   return entry
 }
@@ -237,7 +260,10 @@ const overlap = (a: { start: number; end: number }, b: { start: number; end: num
 export function replaceTranscript(doc: Y.Doc, segments: NewSegment[], origin: unknown): void {
   doc.transact(() => {
     const transcript = docTranscript(doc)
-    const edited = transcript.toArray().map(readSegment).filter((segment) => segment.edited)
+    const edited = transcript
+      .toArray()
+      .map(readSegment)
+      .filter((segment) => segment.edited || segment.edits.length > 0)
     const used = new Set<string>()
     const entries = segments.map((segment) => {
       const keep = edited
@@ -292,7 +318,7 @@ function stickyPosition(text: Y.Text, index: number): unknown {
  * it writes at its own cursor (this range's `cursor`), with its own origin, so the user can keep
  * typing anywhere and undo never takes back transcribed words.
  */
-export function startTranscriber(doc: Y.Doc, origin: unknown): void {
+export function startTranscriber(doc: Y.Doc, origin: unknown, mode: LiveMode = 'notes'): void {
   const notes = docNotes(doc)
   doc.transact(() => {
     const range = new Y.Map<unknown>()
@@ -300,7 +326,91 @@ export function startTranscriber(doc: Y.Doc, origin: unknown): void {
     range.set('start', at)
     range.set('cursor', at)
     range.set('text', '')
+    range.set('mode', mode)
     liveRanges(doc).push([range])
+  }, origin)
+}
+
+/**
+ * Where the current recording's words go. New recordings always write transcript lines; `notes`
+ * is how earlier versions wrote dictation into the notes. Null before the first recording.
+ */
+export type LiveMode = 'notes' | 'transcript'
+
+export function liveModeOf(doc: Y.Doc): LiveMode | null {
+  const range = currentRange(doc)
+  if (!range) return null
+  return range.get('mode') === 'transcript' ? 'transcript' : 'notes'
+}
+
+/** Removes one range's text from the notes if it is still exactly as transcribed. */
+function removeRangeText(doc: Y.Doc, range: Y.Map<unknown>): boolean {
+  const notes = docNotes(doc)
+  const text = str(range.get('text'))
+  const index = readPosition(doc, range.get('start'))
+  if (!text || index === null || notes.toJSON().slice(index, index + text.length) !== text) return false
+  notes.delete(index, text.length)
+  // Tidy the blank lines a removal leaves at the end of the notes.
+  const trimmed = notes.toJSON().replace(/\s+$/, '')
+  if (trimmed.length < notes.length) notes.delete(trimmed.length, notes.length - trimmed.length)
+  return true
+}
+
+/**
+ * How many committed phrases main has placed in the current recording. The window sends phrases
+ * in order and draws the ones not yet placed as unconfirmed text, so nothing blinks out while a
+ * phrase is being voiceprinted.
+ */
+export function livePlaced(doc: Y.Doc): number {
+  return num(currentRange(doc)?.get('placed'))
+}
+
+/** Counts one more placed phrase (in the same change that writes it). */
+export function markPlaced(doc: Y.Doc, origin: unknown): void {
+  const range = currentRange(doc)
+  if (!range) return
+  doc.transact(() => {
+    range.set('placed', num(range.get('placed')) + 1)
+  }, origin)
+}
+
+/**
+ * A live transcript line. Words from the same speaker within `joinGap` seconds of their last
+ * line extend it (one line per turn, up to `maxLine` seconds), unless the user edited that line.
+ * Text is joined with the dictation rules (spacing, capitals, voice commands) on one line.
+ */
+export function appendLiveSegment(
+  doc: Y.Doc,
+  segment: NewSegment,
+  { joinGap, maxLine }: { joinGap: number; maxLine: number },
+  origin: unknown
+): void {
+  const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim()
+  doc.transact(() => {
+    const transcript = docTranscript(doc)
+    const last = transcript.length ? transcript.get(transcript.length - 1) : null
+    const lastText = last?.get('text')
+    if (
+      last &&
+      lastText instanceof Y.Text &&
+      last.get('cluster') === segment.cluster &&
+      last.get('edited') !== true &&
+      segment.start - num(last.get('end')) <= joinGap &&
+      segment.end - num(last.get('start')) <= maxLine
+    ) {
+      const joined = oneLine(appendTranscript(lastText.toJSON(), segment.text))
+      if (!joined) return
+      applyTextChange(lastText, joined)
+      last.set('original', joined)
+      last.set('end', segment.end)
+      const confidence = numOrNull(last.get('confidence'))
+      if (segment.confidence !== null) {
+        last.set('confidence', confidence === null ? segment.confidence : Math.min(confidence, segment.confidence))
+      }
+      return
+    }
+    const text = oneLine(appendTranscript('', segment.text))
+    if (text) transcript.push([segmentMap({ ...segment, text })])
   }, origin)
 }
 
@@ -339,23 +449,12 @@ export function transcriberWrite(doc: Y.Doc, inserted: string, origin: unknown):
 export function removeLiveNotes(doc: Y.Doc, origin: unknown): number {
   const ranges = docMeta(doc).get('liveRanges')
   if (!(ranges instanceof Y.Array) || ranges.length === 0) return 0
-  const notes = docNotes(doc)
   let removed = 0
   doc.transact(() => {
-    const found = (ranges as Y.Array<Y.Map<unknown>>).toArray().flatMap((range) => {
-      const text = str(range.get('text'))
-      const index = readPosition(doc, range.get('start'))
-      return text && index !== null ? [{ index, text }] : []
-    })
-    // Back to front, so earlier indexes stay valid.
-    for (const { index, text } of found.sort((a, b) => b.index - a.index)) {
-      if (notes.toJSON().slice(index, index + text.length) !== text) continue
-      notes.delete(index, text.length)
-      removed++
+    // Back to front, so earlier positions stay valid.
+    for (const range of (ranges as Y.Array<Y.Map<unknown>>).toArray().reverse()) {
+      if (removeRangeText(doc, range)) removed++
     }
-    // Tidy the blank lines a removal leaves at the end of the notes.
-    const trimmed = notes.toJSON().replace(/\s+$/, '')
-    if (trimmed.length < notes.length) notes.delete(trimmed.length, notes.length - trimmed.length)
     ;(ranges as Y.Array<Y.Map<unknown>>).delete(0, ranges.length)
   }, origin)
   return removed
@@ -365,15 +464,36 @@ function findSegment(doc: Y.Doc, id: string): Y.Map<unknown> | null {
   return docTranscript(doc).toArray().find((entry) => entry.get('id') === id) ?? null
 }
 
-/** The user typed into a line. */
-export function setSegmentText(doc: Y.Doc, id: string, next: string, origin: unknown): void {
+/** The line carries any user edit, highlights included; such lines are never rejoined. */
+function hasOverlay(entry: Y.Map<unknown>): boolean {
+  const edits = entry.get('edits')
+  return entry.get('edited') === true || (Array.isArray(edits) && edits.length > 0)
+}
+
+/** Sets a line's overlay and the text it produces. The original is left as heard. */
+export function setSegmentEdits(
+  doc: Y.Doc,
+  id: string,
+  edits: readonly TranscriptEdit[],
+  origin: unknown
+): void {
   const entry = findSegment(doc, id)
   const text = entry?.get('text')
   if (!entry || !(text instanceof Y.Text)) return
+  const original = str(entry.get('original'), text.toJSON())
   doc.transact(() => {
-    applyTextChange(text, next)
-    entry.set('edited', next !== str(entry.get('original')))
+    entry.set('edits', edits.map((edit) => ({ ...edit })))
+    applyTextChange(text, applyOverlay(original, edits))
+    entry.set('edited', hasTextEdits(edits))
   }, origin)
+}
+
+/** The user rewrote a whole line: stored as a correction over the words that changed. */
+export function setSegmentText(doc: Y.Doc, id: string, next: string, origin: unknown): void {
+  const entry = findSegment(doc, id)
+  if (!entry) return
+  const segment = readSegment(entry)
+  setSegmentEdits(doc, id, rewriteLine(segment.original, segment.edits, next), origin)
 }
 
 /** Points lines at another speaker (per-line fix, or a split). */
@@ -460,6 +580,69 @@ export function speakerToMergeInto(
         speaker.name.trim().toLowerCase() === key)
   )
   return other?.id ?? null
+}
+
+/**
+ * Rejoins consecutive unedited lines of one speaker that a wrong guess had split (a phantom
+ * second voice, later merged back), within `maxLine` seconds per line. A line that continues a
+ * sentence keeps its lowercase start ("…the weekly" + "planning meeting.").
+ */
+export function joinSplitLines(doc: Y.Doc, maxLine: number, origin: unknown): void {
+  doc.transact(() => {
+    const transcript = docTranscript(doc)
+    for (let i = transcript.length - 1; i > 0; i--) {
+      const line = transcript.get(i)
+      const before = transcript.get(i - 1)
+      const text = line.get('text')
+      const beforeText = before.get('text')
+      if (!(text instanceof Y.Text) || !(beforeText instanceof Y.Text)) continue
+      if (line.get('cluster') !== before.get('cluster') || line.get('cluster') === null) continue
+      if (hasOverlay(line) || hasOverlay(before)) continue
+      if (num(line.get('end')) - num(before.get('start')) > maxLine) continue
+      const head = beforeText.toJSON().trimEnd()
+      const tail = text.toJSON().trim()
+      const continues = !/[.!?:]["')\]]?$/.test(head)
+      const joined = `${head} ${continues ? tail.charAt(0).toLowerCase() + tail.slice(1) : tail}`.trim()
+      applyTextChange(beforeText, joined)
+      before.set('original', joined)
+      before.set('end', num(line.get('end')))
+      const a = numOrNull(before.get('confidence'))
+      const b = numOrNull(line.get('confidence'))
+      before.set('confidence', a === null ? b : b === null ? a : Math.min(a, b))
+      transcript.delete(i, 1)
+    }
+  }, origin)
+}
+
+/**
+ * Renumbers Lyra's placeholder names (Speaker 1, Speaker 2…) in order of first appearance, so a
+ * merged-away guess doesn't leave a gap. Names the user gave, or saved voices, are untouched.
+ */
+export function renumberSpeakers(doc: Y.Doc, origin: unknown): void {
+  const speakers = speakersOf(doc)
+  if (!speakers) return
+  const placeholder = /^Speaker \d+$/
+  const order: string[] = []
+  for (const line of docTranscript(doc).toArray()) {
+    const id = line.get('cluster')
+    if (typeof id === 'string' && !order.includes(id)) order.push(id)
+  }
+  const fixed = new Set<string>()
+  speakers.forEach((entry) => {
+    const name = str(entry.get('name'))
+    if (!placeholder.test(name) || entry.get('confirmed') === true) fixed.add(name)
+  })
+  doc.transact(() => {
+    let n = 1
+    for (const id of order) {
+      const entry = speakers.get(id)
+      if (!entry || entry.get('confirmed') === true || !placeholder.test(str(entry.get('name')))) continue
+      while (fixed.has(`Speaker ${String(n)}`)) n++
+      const name = `Speaker ${String(n)}`
+      if (entry.get('name') !== name) entry.set('name', name)
+      n++
+    }
+  }, origin)
 }
 
 /** Moves every line of speaker `from` to `into`, then removes `from`. */

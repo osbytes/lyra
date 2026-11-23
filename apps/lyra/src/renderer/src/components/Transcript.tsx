@@ -1,9 +1,11 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
-  type KeyboardEvent as ReactKeyboardEvent
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent
 } from 'react'
 import type { MeetingStatus, Person, Settings } from '../../../shared/types'
 import {
@@ -12,15 +14,30 @@ import {
   type SpeakerEntry,
   type TranscriptSegment
 } from '../../../shared/sessionDoc'
+import type { TranscriptEdit } from '../../../shared/transcriptOverlay'
 import type { NewSpeaker } from '../hooks/usePages'
 import { log } from '../lib/log'
 import { Floating, ScrollArea, Switch } from './Controls'
 import { CloseIcon, PlayIcon, PlusIcon, StopIcon } from './Icons'
 import { usePeople } from './People'
+import {
+  CorrectField,
+  editAt,
+  LineMenu,
+  LineRewrite,
+  LineText,
+  readSelection,
+  SelectionBar,
+  type Actions,
+  type LineSelection,
+  type MenuRequest
+} from './TranscriptEditing'
 
 /**
- * A session's transcript: one editable line per segment, speakers in the left margin, and a
+ * A session's transcript: one locked line per segment, speakers in the left margin, and a
  * speaker picker for naming, fixing a line, or splitting a speaker who was really two people.
+ * The raw words are never typed over: corrections, removals and highlights are an overlay made
+ * from the selection toolbar or the right-click menu, and "Raw" shows exactly what was heard.
  * Everything edits the session document, so undo and other windows just work.
  */
 
@@ -31,12 +48,17 @@ type Props = {
   hasSummary: boolean
   notesEngine: Settings['notesEngine']
   onEditLine: (id: string, text: string) => void
+  onEditOverlay: (id: string, edits: readonly TranscriptEdit[]) => void
+  /** Adds words from the transcript to the notes. */
+  onQuote: (line: TranscriptSegment, text: string) => void
   onAssign: (ids: readonly string[], speaker: string | NewSpeaker) => string | null
   onUndo: () => void
   /** False in the side-panel layout, where speakers are listed in the panel instead. */
   showSpeakersBar: boolean
   /** Opens the picker from outside (the side panel); a new object each time. */
   pickerRequest: { speaker: string; anchor: DOMRect } | null
+  /** While recording into the transcript: the words not yet confirmed (null when not). */
+  live: string | null
 }
 
 type Picker = { speaker: string; line: string | null; anchor: DOMRect }
@@ -587,10 +609,13 @@ export function Transcript({
   hasSummary,
   notesEngine,
   onEditLine,
+  onEditOverlay,
+  onQuote,
   onAssign,
   onUndo,
   showSpeakersBar,
-  pickerRequest
+  pickerRequest,
+  live
 }: Props) {
   const people = usePeople()
   const nowPlaying = usePlayback()
@@ -608,6 +633,85 @@ export function Transcript({
   )
   const pending = present.filter((speaker) => stateOf(speaker) !== 'sure')
   const unsure = transcript.filter((line) => tier(line.confidence) === 1)
+  const editedLines = transcript.filter((line) => line.edits.length > 0).length
+
+  const linesRef = useRef<HTMLDivElement>(null)
+  const [raw, setRaw] = useState(false)
+  const [selection, setSelection] = useState<LineSelection | null>(null)
+  const [menu, setMenu] = useState<MenuRequest | null>(null)
+  const [correcting, setCorrecting] = useState<LineSelection | null>(null)
+  const [rewriting, setRewriting] = useState<string | null>(null)
+  const transcriptRef = useRef(transcript)
+  transcriptRef.current = transcript
+
+  // The toolbar follows the selection inside the transcript's lines.
+  useEffect(() => {
+    if (raw) {
+      setSelection(null)
+      return
+    }
+    const onChange = (): void => {
+      setSelection(readSelection(linesRef.current, transcriptRef.current))
+    }
+    document.addEventListener('selectionchange', onChange)
+    return () => document.removeEventListener('selectionchange', onChange)
+  }, [raw])
+
+  /** After an edit: drop the selection and keep focus here, so Ctrl+Z undoes it. */
+  const settle = useCallback(() => {
+    window.getSelection()?.removeAllRanges()
+    setSelection(null)
+    linesRef.current?.focus({ preventScroll: true })
+  }, [])
+
+  const actions: Actions = {
+    setEdits: (id, next) => {
+      onEditOverlay(id, next)
+      settle()
+    },
+    rewrite: (id) => {
+      settle()
+      setRewriting(id)
+    },
+    quote: (line, text) => {
+      onQuote(line, text)
+      settle()
+    },
+    copy: (text) => {
+      window.api.copyText(text)
+      settle()
+    },
+    listen: (line) => {
+      void listen(line.id, pageId, line.start, line.end)
+    },
+    speaker: (line, anchor) => {
+      if (!line.cluster) return
+      setSplit(null)
+      setPicker({ speaker: line.cluster, line: line.id, anchor })
+    }
+  }
+
+  const onContextMenu = (event: ReactMouseEvent): void => {
+    if (!(event.target instanceof Element)) return
+    const id = event.target.closest<HTMLElement>('[data-line]')?.dataset.line
+    if (!id || rewriting === id) return
+    event.preventDefault()
+    const picked = readSelection(linesRef.current, transcript)
+    const inLine = picked?.line === id ? picked : null
+    setMenu({
+      line: id,
+      span: inLine?.span ?? null,
+      edit: inLine ? null : editAt(event.target),
+      rect: inLine?.rect ?? null,
+      x: event.clientX,
+      y: event.clientY
+    })
+  }
+  const lineById = (id: string): TranscriptSegment | undefined =>
+    transcript.find((entry) => entry.id === id)
+  const selectedLine = selection ? lineById(selection.line) : undefined
+  const menuLine = menu ? lineById(menu.line) : undefined
+  const correctingLine = correcting ? lineById(correcting.line) : undefined
 
   useEffect(() => {
     if (!toast) return
@@ -630,9 +734,25 @@ export function Transcript({
   const splitSpeaker = split ? byId.get(split.speaker) : undefined
 
   return (
-    <section className="transcript" aria-label="Transcript">
+    <section className={raw ? 'transcript is-raw' : 'transcript'} aria-label="Transcript">
+      <div className="transcript-head">
+        <h2 className="section-label">Transcript</h2>
+        <span className="transcript-hint">
+          {raw
+            ? 'Exactly what was heard. Your edits are kept; switch back to see them.'
+            : 'Select words or right-click a line to correct, remove or highlight.'}
+        </span>
+        <div className="segmented transcript-mode" role="radiogroup" aria-label="Show">
+          <button type="button" role="radio" aria-checked={!raw} onClick={() => setRaw(false)}>
+            Edited{editedLines ? ` · ${String(editedLines)}` : ''}
+          </button>
+          <button type="button" role="radio" aria-checked={raw} onClick={() => setRaw(true)}>
+            Raw
+          </button>
+        </div>
+      </div>
       <div className={showSpeakersBar ? 'speakers-bar' : 'speakers-bar status-only'}>
-        <span className="speakers-label">{labeled ? 'Speakers' : 'Transcript'}</span>
+        <span className="speakers-label">{labeled ? 'Speakers' : 'Live'}</span>
         {present.map((speaker) => (
           <button
             key={speaker.id}
@@ -706,7 +826,7 @@ export function Transcript({
         </span>
       </div>
 
-      <div className="lines">
+      <div className="lines" ref={linesRef} tabIndex={-1} onContextMenu={onContextMenu}>
         {transcript.map((line, index) => {
           const speaker = line.cluster ? byId.get(line.cluster) : undefined
           const continues = index > 0 && transcript[index - 1]?.cluster === line.cluster
@@ -765,29 +885,79 @@ export function Transcript({
                 </span>
               </div>
               <div className="line-body">
-                <textarea
-                  className="line-text"
-                  value={line.text}
-                  rows={1}
-                  spellCheck
-                  aria-label={`Line at ${clock(line.start)}, ${speaker?.name ?? 'speaker'}`}
-                  onChange={(event) => onEditLine(line.id, event.target.value)}
-                />
-                {line.edited ? (
-                  <button
-                    type="button"
-                    className="edited-mark"
-                    title={`Original: ${line.original}`}
-                    onClick={() => onEditLine(line.id, line.original)}
-                  >
-                    Edited · show original
-                  </button>
-                ) : null}
+                {rewriting === line.id && !raw ? (
+                  <LineRewrite
+                    line={line}
+                    onSave={(text) => onEditLine(line.id, text)}
+                    onDone={() => {
+                      setRewriting(null)
+                      linesRef.current?.focus({ preventScroll: true })
+                    }}
+                  />
+                ) : (
+                  <LineText
+                    line={line}
+                    raw={raw}
+                    label={`Line at ${clock(line.start)}, ${speaker?.name ?? 'speaker'}`}
+                  />
+                )}
               </div>
             </div>
           )
         })}
+        {live !== null ? (
+          <div className="line live-line" aria-live="polite">
+            <div className="gutter">
+              <span className="who unknown">Listening</span>
+            </div>
+            <div className="line-body">
+              <p className="line-text live-text">
+                <span className="ghost">{live}</span>
+                <span className="transcriber-caret" />
+              </p>
+            </div>
+          </div>
+        ) : null}
       </div>
+
+      {selection && selectedLine && !menu && !correcting && !rewriting ? (
+        <Floating>
+          <SelectionBar
+            line={selectedLine}
+            selection={selection}
+            actions={actions}
+            onCorrect={() => setCorrecting(selection)}
+          />
+        </Floating>
+      ) : null}
+
+      {menu && menuLine ? (
+        <Floating>
+          <LineMenu
+            line={menuLine}
+            request={menu}
+            raw={raw}
+            actions={actions}
+            onCorrect={(span, rect) => setCorrecting({ line: menuLine.id, span, rect })}
+            onClose={() => setMenu(null)}
+          />
+        </Floating>
+      ) : null}
+
+      {correcting && correctingLine ? (
+        <Floating>
+          <CorrectField
+            line={correctingLine}
+            span={correcting.span}
+            rect={correcting.rect}
+            onApply={(next) => onEditOverlay(correctingLine.id, next)}
+            onDone={() => {
+              setCorrecting(null)
+              settle()
+            }}
+          />
+        </Floating>
+      ) : null}
 
       {picker && pickedSpeaker ? (
         <Floating>
