@@ -17,6 +17,8 @@ import {
 import type { TranscriptEdit } from '../../../shared/transcriptOverlay'
 import type { NewSpeaker } from '../hooks/usePages'
 import { log } from '../lib/log'
+import { notify } from '../lib/toast'
+import { useContextMenu } from './ContextMenu'
 import { speakerTone } from '../lib/speakerTone'
 import { Floating, ScrollArea, Switch } from './Controls'
 import { CloseIcon, PlayIcon, PlusIcon, StopIcon } from './Icons'
@@ -33,6 +35,7 @@ import {
   type LineSelection,
   type MenuRequest
 } from './TranscriptEditing'
+import { tip } from './Tooltip'
 
 /**
  * A session's transcript: one locked line per segment, speakers in the left margin, and a
@@ -53,6 +56,8 @@ type Props = {
   /** Adds words from the transcript to the notes. */
   onQuote: (line: TranscriptSegment, text: string) => void
   onAssign: (ids: readonly string[], speaker: string | NewSpeaker) => string | null
+  /** Names a speaker in the document (after main has worked out who it is). */
+  onName: (id: string, name: string, personId: string | null) => void
   onUndo: () => void
   /** False in the side-panel layout, where speakers are listed in the panel instead. */
   showSpeakersBar: boolean
@@ -94,7 +99,7 @@ function Signal({ confidence }: { confidence: number | null }) {
   const level = tier(confidence)
   const label = confidence === null ? 'voice match unknown' : `${percent(confidence)} voice match`
   return (
-    <span className={`signal l${String(level)}`} role="img" aria-label={label} title={label}>
+    <span className={`signal l${String(level)}`} role="img" aria-label={label} {...tip(label)}>
       <i />
       <i />
       <i />
@@ -178,6 +183,7 @@ function SpeakerPicker({
   people,
   onClose,
   onAssign,
+  onName,
   onSplit
 }: {
   pageId: string
@@ -188,6 +194,7 @@ function SpeakerPicker({
   people: Person[]
   onClose: () => void
   onAssign: Props['onAssign']
+  onName: Props['onName']
   onSplit: () => void
 }) {
   const [query, setQuery] = useState('')
@@ -245,11 +252,12 @@ function SpeakerPicker({
         onClose()
         return
       }
-      await window.api.assignSpeaker(
+      const who = await window.api.resolveSpeaker(
         pageId,
         speaker.id,
         option.kind === 'person' ? { personId: option.person.id } : { name: option.name, remember }
       )
+      onName(speaker.id, who.name, who.personId)
       onClose()
     } catch (caught) {
       log('transcript', 'could not name speaker', String(caught))
@@ -572,7 +580,7 @@ function statusLabel(status: MeetingStatus): string {
     case 'transcribing':
       return `Transcribing each speaker… ${pct}`
     case 'summarizing':
-      return 'Writing meeting notes…'
+      return 'Writing the summary…'
     case 'error':
       return `Couldn’t label speakers: ${status.message ?? 'unknown error'}`
     case 'done':
@@ -613,6 +621,7 @@ export function Transcript({
   onEditOverlay,
   onQuote,
   onAssign,
+  onName,
   onUndo,
   showSpeakersBar,
   pickerRequest,
@@ -625,7 +634,6 @@ export function Transcript({
   useEffect(() => stopPlayback, [pageId])
   const [picker, setPicker] = useState<Picker | null>(null)
   const [split, setSplit] = useState<{ speaker: string; anchor: DOMRect } | null>(null)
-  const [toast, setToast] = useState<string | null>(null)
   const byId = useMemo(() => new Map(speakers.map((speaker) => [speaker.id, speaker])), [speakers])
   const busy = !!status && status.state !== 'done' && status.state !== 'error'
   const labeled = transcript.some((line) => line.cluster !== null)
@@ -677,10 +685,12 @@ export function Transcript({
     quote: (line, text) => {
       onQuote(line, text)
       settle()
+      notify('Added to your notes')
     },
     copy: (text) => {
       window.api.copyText(text)
       settle()
+      notify('Copied')
     },
     listen: (line) => {
       void listen(line.id, pageId, line.start, line.end)
@@ -715,12 +725,6 @@ export function Transcript({
   const correctingLine = correcting ? lineById(correcting.line) : undefined
 
   useEffect(() => {
-    if (!toast) return
-    const timer = setTimeout(() => setToast(null), 6000)
-    return () => clearTimeout(timer)
-  }, [toast])
-
-  useEffect(() => {
     if (!pickerRequest) return
     setSplit(null)
     setPicker({ speaker: pickerRequest.speaker, line: null, anchor: pickerRequest.anchor })
@@ -731,6 +735,7 @@ export function Transcript({
     setPicker({ speaker, line, anchor: target.getBoundingClientRect() })
   }
 
+  const speakerMenu = useContextMenu()
   const pickedSpeaker = picker ? byId.get(picker.speaker) : undefined
   const splitSpeaker = split ? byId.get(split.speaker) : undefined
 
@@ -761,14 +766,30 @@ export function Transcript({
             className={`speaker-chip ${stateOf(speaker)}`}
             aria-haspopup="dialog"
             aria-expanded={picker?.speaker === speaker.id && !picker.line}
-            title={
+            {...tip(
               stateOf(speaker) === 'likely' && speaker.confidence !== null
                 ? `${percent(speaker.confidence)} voice match — click to confirm`
                 : stateOf(speaker) === 'unknown'
                   ? 'No saved voice matched — click to name'
                   : speaker.name
-            }
+            )}
             onClick={(event) => openPicker(speaker.id, null, event.currentTarget)}
+            onContextMenu={(event) => {
+              const target = event.currentTarget
+              speakerMenu.open(event, speaker.name, [
+                {
+                  label: stateOf(speaker) === 'sure' ? 'Rename…' : 'Who is this…',
+                  run: () => openPicker(speaker.id, null, target)
+                },
+                {
+                  label: 'Split into two speakers…',
+                  run: () => {
+                    setPicker(null)
+                    setSplit({ speaker: speaker.id, anchor: target.getBoundingClientRect() })
+                  }
+                }
+              ])
+            }}
           >
             <span
               className="speaker-avatar"
@@ -805,7 +826,7 @@ export function Transcript({
             <button
               type="button"
               className="pill"
-              title="Lines whose voice doesn’t match their speaker well"
+              {...tip('Lines whose voice doesn’t match their speaker well')}
               onClick={(event) => {
                 const first = unsure[0]
                 if (first?.cluster) openPicker(first.cluster, first.id, event.currentTarget)
@@ -825,7 +846,7 @@ export function Transcript({
                 })
               }}
             >
-              {hasSummary ? 'Rewrite notes' : 'Write notes'}
+              {hasSummary ? 'Rewrite summary' : 'Write summary'}
             </button>
           ) : null}
         </span>
@@ -853,7 +874,7 @@ export function Transcript({
                   <button
                     type="button"
                     className={`who ${state}`}
-                    title="Change who said this"
+                    {...tip('Change who said this')}
                     onClick={(event) => {
                       if (line.cluster) openPicker(line.cluster, line.id, event.currentTarget)
                     }}
@@ -872,7 +893,7 @@ export function Transcript({
                     aria-label={
                       nowPlaying === line.id ? 'Stop playback' : `Listen from ${clock(line.start)}`
                     }
-                    title={nowPlaying === line.id ? 'Stop' : 'Listen'}
+                    {...tip(nowPlaying === line.id ? 'Stop' : 'Listen')}
                     onClick={() => {
                       if (nowPlaying === line.id) stopPlayback()
                       else void listen(line.id, pageId, line.start, line.end)
@@ -936,17 +957,16 @@ export function Transcript({
         </Floating>
       ) : null}
 
+      {speakerMenu.element}
       {menu && menuLine ? (
-        <Floating>
-          <LineMenu
-            line={menuLine}
-            request={menu}
-            raw={raw}
-            actions={actions}
-            onCorrect={(span, rect) => setCorrecting({ line: menuLine.id, span, rect })}
-            onClose={() => setMenu(null)}
-          />
-        </Floating>
+        <LineMenu
+          line={menuLine}
+          request={menu}
+          raw={raw}
+          actions={actions}
+          onCorrect={(span, rect) => setCorrecting({ line: menuLine.id, span, rect })}
+          onClose={() => setMenu(null)}
+        />
       ) : null}
 
       {correcting && correctingLine ? (
@@ -976,6 +996,7 @@ export function Transcript({
             people={people}
             onClose={() => setPicker(null)}
             onAssign={onAssign}
+            onName={onName}
             onSplit={() => {
               setSplit({ speaker: picker.speaker, anchor: picker.anchor })
               setPicker(null)
@@ -994,8 +1015,9 @@ export function Transcript({
             onSplit={(ids) => {
               const blank = `Speaker ${String(speakers.length + 1)}`
               const created = onAssign(ids, { name: blank, personId: null, confirmed: false })
-              setToast(
-                `Split ${splitSpeaker.name} · ${String(ids.length)} ${ids.length === 1 ? 'line' : 'lines'} moved to ${blank}`
+              notify(
+                `Split ${splitSpeaker.name} · ${String(ids.length)} ${ids.length === 1 ? 'line' : 'lines'} moved to ${blank}`,
+                { label: 'Undo', run: onUndo }
               )
               setSplit(null)
               if (created) setPicker({ speaker: created, line: null, anchor: split.anchor })
@@ -1004,22 +1026,6 @@ export function Transcript({
         </Floating>
       ) : null}
 
-      {toast ? (
-        <Floating>
-          <div className="transcript-toast toast" role="status">
-            <span>{toast}</span>
-            <button
-              type="button"
-              onClick={() => {
-                onUndo()
-                setToast(null)
-              }}
-            >
-              Undo
-            </button>
-          </div>
-        </Floating>
-      ) : null}
     </section>
   )
 }

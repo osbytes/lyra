@@ -12,17 +12,30 @@ import { CheckIcon, CopyIcon, FolderIcon, GearIcon, MicIcon, PanelIcon, PlusIcon
 import { SettingsDialog } from './components/Settings'
 import { CommandPalette } from './components/CommandPalette'
 import { Sidebar } from './components/Sidebar'
+import { ConfirmDialog } from './components/ConfirmDialog'
+import { TooltipLayer } from './components/Tooltip'
 import { useDictation } from './hooks/useDictation'
 import { usePages, type OpenPage } from './hooks/usePages'
 import { useSettings } from './hooks/useSettings'
+import { useSettingsIssues } from './hooks/useSettingsIssues'
 import { clockLabel, homePath, readingMinutes, relativeTime, shortcutLabel, wordCount } from './lib/format'
 import { promptFor } from './text/transcript'
+import {
+  onHistory,
+  perform,
+  redo as redoAction,
+  redoAt as historyRedoAt,
+  undo as undoAction,
+  undoAt as historyUndoAt
+} from './lib/history'
+import { notify, onToast, type ToastMessage } from './lib/toast'
+import { tip } from './components/Tooltip'
 
 /** The overlay pill doesn't need every audio frame; ~12 updates a second look smooth. */
 const OVERLAY_FRAME_MS = 80
 
-/** How long a deleted page can be brought back before its file is removed. */
-const UNDO_DELETE_MS = 6000
+/** How long a toast stays up. */
+const TOAST_MS = 6000
 
 /** Smallest share of the column either pane can be dragged down to. */
 const MIN_PANE = 0.15
@@ -33,14 +46,19 @@ const MIN_PANE = 0.15
  */
 function isPageField(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false
-  // Nothing focused (a menu just closed): undo means the page, as in any editor.
-  if (target === document.body) return true
   if (target.classList.contains('title-input') || target.classList.contains('editor')) return true
   // Anywhere in the locked transcript, except a field with its own text history.
   return (
     !!target.closest('.transcript') &&
     !(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)
   )
+}
+
+/** A field with its own text history (search, rename, settings): undo stays native there. */
+function isTextField(target: EventTarget | null): boolean {
+  if (target instanceof HTMLTextAreaElement) return true
+  if (target instanceof HTMLInputElement) return !['checkbox', 'radio', 'button'].includes(target.type)
+  return target instanceof HTMLElement && target.isContentEditable
 }
 
 /** A quote of the transcript for the notes: the words, then who said them and when. */
@@ -91,20 +109,24 @@ export default function App(): React.JSX.Element {
     editSegment,
     editLineOverlay,
     assignLines,
+    nameSpeaker,
     tag,
     untag,
     undo,
     redo,
+    undoAt,
+    redoAt,
     open,
-    close,
     create,
     remove,
+    restore,
     flush
   } = usePages()
   const [status, setStatus] = useState<WhisperStatus>({ state: 'idle' })
   const [update, setUpdate] = useState<UpdateStatus>({ state: 'idle' })
   const [copied, setCopied] = useState(false)
   const { settings, update: updateSettings } = useSettings()
+  const settingsIssues = useSettingsIssues(settings)
   const [showSettings, setShowSettings] = useState(false)
   const closeSettings = useCallback(() => setShowSettings(false), [])
   const [showSearch, setShowSearch] = useState(false)
@@ -230,48 +252,72 @@ export default function App(): React.JSX.Element {
     await open(id)
   }
 
-  // Deleting hides the page at once and removes its file after a few seconds, so the user can
-  // undo instead of answering a confirm dialog. If Lyra quits first, the note simply survives.
-  const [trashed, setTrashed] = useState<PageSummary | null>(null)
-  const trashTimer = useRef<{ id: string; timer: ReturnType<typeof setTimeout> } | null>(null)
+  const [toast, setToast] = useState<ToastMessage | null>(null)
+  useEffect(() => {
+    if (!toast) return
+    const timer = setTimeout(() => setToast(null), TOAST_MS)
+    return () => clearTimeout(timer)
+  }, [toast])
 
-  const commitTrash = useCallback(async () => {
-    const pending = trashTimer.current
-    if (!pending) return
-    clearTimeout(pending.timer)
-    trashTimer.current = null
-    setTrashed(null)
-    await remove(pending.id)
-  }, [remove])
+  useEffect(() => onToast(setToast), [])
 
+  // Every undoable action outside a session's document says what it did, with Undo or Redo.
+  useEffect(
+    () =>
+      onHistory((event) => {
+        if (event.quiet && event.kind === 'done') return
+        setToast(
+          event.kind === 'undone'
+            ? { text: event.undoneLabel, action: { label: 'Redo', run: () => void redoAction() } }
+            : { text: event.label, action: { label: 'Undo', run: () => void undoAction() } }
+        )
+      }),
+    []
+  )
+
+  /** Undo or redo whichever came last: an edit to the open session, or an action elsewhere. */
+  const undoLatest = useCallback(
+    (again: boolean): void => {
+      const doc = again ? redoAt() : undoAt()
+      const action = again ? historyRedoAt() : historyUndoAt()
+      if (action !== null && (doc === null || action > doc)) {
+        void (again ? redoAction() : undoAction())
+      } else if (again) redo()
+      else undo()
+    },
+    [undo, redo, undoAt, redoAt]
+  )
+
+  // Deleting asks first, then can still be undone (Ctrl+Z, or the toast) until Lyra quits.
+  const [confirmDelete, setConfirmDelete] = useState<PageSummary | null>(null)
+  const cancelDelete = useCallback(() => setConfirmDelete(null), [])
   const deletePage = async (page: PageSummary): Promise<void> => {
-    await commitTrash()
-    if (page.id === current?.id) {
-      await stop()
-      const next = pages.find((other) => other.id !== page.id)
-      if (next) await open(next.id)
-      else await close()
-    }
-    const timer = setTimeout(() => void commitTrash(), UNDO_DELETE_MS)
-    trashTimer.current = { id: page.id, timer }
-    setTrashed(page)
+    setConfirmDelete(null)
+    await perform({
+      label: `Deleted “${page.title || 'Untitled'}”`,
+      undoneLabel: `Restored “${page.title || 'Untitled'}”`,
+      run: async () => {
+        if (currentRef.current?.id === page.id) await stop()
+        await remove(page.id)
+      },
+      undo: () => restore(page.id)
+    })
   }
 
-  const undoDelete = (): void => {
-    const pending = trashTimer.current
-    if (!pending) return
-    clearTimeout(pending.timer)
-    trashTimer.current = null
-    setTrashed(null)
-    void open(pending.id)
-  }
-
-  const undoToast = trashed ? (
+  const toastElement = toast ? (
     <div className="toast" role="status">
-      <span>Deleted session “{trashed.title || 'Untitled'}”</span>
-      <button type="button" onClick={undoDelete}>
-        Undo
-      </button>
+      <span>{toast.text}</span>
+      {toast.action ? (
+        <button
+          type="button"
+          onClick={() => {
+            toast.action?.run()
+            setToast(null)
+          }}
+        >
+          {toast.action.label}
+        </button>
+      ) : null}
     </div>
   ) : null
 
@@ -279,6 +325,7 @@ export default function App(): React.JSX.Element {
     if (!current) return
     window.api.copyText(toMarkdown(current))
     setCopied(true)
+    notify('Copied as Markdown')
   }
 
   useEffect(() => {
@@ -310,10 +357,16 @@ export default function App(): React.JSX.Element {
       const key = event.key.toLowerCase()
       // The page's text lives in a shared document, so undo goes through it (and skips text
       // that arrived from elsewhere) instead of the textarea's own history.
-      if ((key === 'z' || key === 'y') && isPageField(event.target)) {
-        event.preventDefault()
-        if (key === 'y' || event.shiftKey) redo()
-        else undo()
+      if (key === 'z' || key === 'y') {
+        const again = key === 'y' || event.shiftKey
+        if (isPageField(event.target)) {
+          event.preventDefault()
+          if (again) redo()
+          else undo()
+        } else if (!isTextField(event.target)) {
+          event.preventDefault()
+          undoLatest(again)
+        }
         return
       }
       if (key === 'd' && event.shiftKey) {
@@ -335,7 +388,7 @@ export default function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [toggleDictation, startSession, toggleLayout, undo, redo])
+  }, [toggleDictation, startSession, toggleLayout, undo, redo, undoLatest])
 
   const words = current
     ? wordCount([current.summary, current.body, ...current.transcript.map((line) => line.text)].join(' '))
@@ -377,13 +430,14 @@ export default function App(): React.JSX.Element {
   return (
     <div className={`app platform-${window.api.platform}`}>
       <Sidebar
-        pages={trashed ? pages.filter((page) => page.id !== trashed.id) : pages}
+        pages={pages}
         activeId={current?.id}
         update={update}
         onOpen={(id) => void openPage(id)}
         onCreate={() => void startSession()}
-        onDelete={(page) => void deletePage(page)}
+        onDelete={setConfirmDelete}
         onSettings={() => setShowSettings(true)}
+        settingsIssue={settingsIssues.length > 0}
         onSearch={() => setShowSearch(true)}
         tags={knownTags}
         tagFilter={tagFilter}
@@ -402,7 +456,7 @@ export default function App(): React.JSX.Element {
                 type="button"
                 onClick={copy}
                 disabled={!current.body && !current.summary && !current.transcript.length}
-                title="Copy as Markdown"
+                {...tip('Copy as Markdown')}
               >
                 {copied ? <CheckIcon /> : <CopyIcon />}
                 {copied ? 'Copied' : 'Copy'}
@@ -412,7 +466,7 @@ export default function App(): React.JSX.Element {
                 type="button"
                 aria-pressed={panel}
                 aria-label="Details panel"
-                title={`Details panel (${shortcutLabel('.')})`}
+                {...tip(panel ? 'Hide details' : 'Show details', shortcutLabel('.'))}
                 onClick={toggleLayout}
               >
                 <PanelIcon />
@@ -457,13 +511,13 @@ export default function App(): React.JSX.Element {
                   </>
                 )}
                 {current.summary.trim() ? (
-                  <section className="summary" aria-label="Meeting notes">
-                    <h2 className="section-label">Meeting notes</h2>
+                  <section className="summary" aria-label="Generated summary">
+                    <h2 className="section-label">Generated summary</h2>
                     <Editor
                       value={current.summary}
                       ghost=""
                       listening={false}
-                      label="Meeting notes"
+                      label="Generated summary"
                       onChange={editSummary}
                     />
                   </section>
@@ -513,6 +567,7 @@ export default function App(): React.JSX.Element {
                       onEditOverlay={editLineOverlay}
                       onQuote={quote}
                       onAssign={assignLines}
+                      onName={nameSpeaker}
                       onUndo={() => void undo()}
                       showSpeakersBar={!panel}
                       pickerRequest={pickerRequest}
@@ -549,7 +604,7 @@ export default function App(): React.JSX.Element {
                   </button>
                 </div>
               ) : null}
-              {undoToast}
+              {toastElement}
             </DictationDock>
           </div>
           {panel ? (
@@ -585,20 +640,20 @@ export default function App(): React.JSX.Element {
                 <kbd>{shortcutLabel('N')}</kbd>
               </button>
               {settings ? (
-                <span className="empty-folder" title={settings.notesDir}>
+                <span className="empty-folder" {...tip(settings.notesDir)}>
                   <FolderIcon />
                   Saved to <code>{homePath(settings.notesDir)}</code>
                 </span>
               ) : null}
             </div>
-            {undoToast ? <div className="dock-area">{undoToast}</div> : null}
+            {toastElement ? <div className="dock-area">{toastElement}</div> : null}
           </div>
         )}
       </main>
 
       {showSearch ? (
         <CommandPalette
-          pages={trashed ? pages.filter((page) => page.id !== trashed.id) : pages}
+          pages={pages}
           activeId={current?.id}
           onOpen={(id, line) => void openPage(id).then(() => line && revealLine(line))}
           onClose={() => setShowSearch(false)}
@@ -650,8 +705,28 @@ export default function App(): React.JSX.Element {
         />
       ) : null}
 
+      {confirmDelete ? (
+        <ConfirmDialog
+          title={`Delete “${confirmDelete.title || 'Untitled'}”?`}
+          confirm="Delete session"
+          danger
+          onConfirm={() => void deletePage(confirmDelete)}
+          onCancel={cancelDelete}
+        >
+          Its notes, transcript and audio are removed. You can undo this with{' '}
+          <kbd>{shortcutLabel('Z')}</kbd> until Lyra quits; after that it’s in the system trash.
+        </ConfirmDialog>
+      ) : null}
+
+      <TooltipLayer />
+
       {showSettings && settings ? (
-        <SettingsDialog settings={settings} update={updateSettings} onClose={closeSettings} />
+        <SettingsDialog
+          settings={settings}
+          update={updateSettings}
+          issues={settingsIssues}
+          onClose={closeSettings}
+        />
       ) : null}
     </div>
   )

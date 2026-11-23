@@ -2,7 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import type { Person } from '../../../shared/types'
 import { openMicrophone, startCapture, type CaptureHandle } from '../audio/capture'
 import { SAMPLE_RATE } from '../../../shared/audio/vad'
+import { perform } from '../lib/history'
 import { log } from '../lib/log'
+import { ConfirmDialog } from './ConfirmDialog'
+import { useContextMenu } from './ContextMenu'
+import { TrashIcon } from './Icons'
 
 const ENROLL_SECONDS = 20
 
@@ -137,19 +141,62 @@ function Enroll({ micDeviceId, onDone }: EnrollProps) {
   )
 }
 
-function PersonRow({ person }: { person: Person }) {
+/** Who "me" is now, so making someone else "me" can be undone. */
+function selfId(people: readonly Person[]): string | null {
+  return people.find((person) => person.self)?.id ?? null
+}
+
+function PersonRow({ person, people }: { person: Person; people: readonly Person[] }) {
   const [name, setName] = useState(person.name)
+  const [confirming, setConfirming] = useState(false)
+  const menu = useContextMenu()
   useEffect(() => {
     setName(person.name)
   }, [person.name])
 
   const commitName = (): void => {
-    if (name.trim() && name !== person.name) void window.api.renamePerson(person.id, name)
-    else setName(person.name)
+    const next = name.trim()
+    if (!next || next === person.name) {
+      setName(person.name)
+      return
+    }
+    const before = person.name
+    void perform({
+      label: `Renamed ${before} to ${next}`,
+      run: () => window.api.renamePerson(person.id, next),
+      undo: () => window.api.renamePerson(person.id, before)
+    })
+  }
+
+  const makeSelf = (): void => {
+    const before = selfId(people)
+    void perform({
+      label: `Marked ${person.name} as you`,
+      run: () => window.api.setSelfPerson(person.id),
+      undo: () => window.api.setSelfPerson(before)
+    })
+  }
+
+  const remove = (): void => {
+    setConfirming(false)
+    void perform({
+      label: `Deleted ${person.name}’s voice`,
+      undoneLabel: `Restored ${person.name}’s voice`,
+      run: () => window.api.deletePerson(person.id),
+      undo: () => window.api.restorePerson(person.id)
+    })
   }
 
   return (
-    <li className="person">
+    <li
+      className="person"
+      onContextMenu={(event) => {
+        menu.open(event, person.name, [
+          ...(person.self ? [] : [{ label: 'This is me', run: makeSelf }]),
+          { label: 'Delete voice…', icon: <TrashIcon />, danger: true, run: () => setConfirming(true) }
+        ])
+      }}
+    >
       <input
         className="settings-input"
         value={name}
@@ -159,6 +206,11 @@ function PersonRow({ person }: { person: Person }) {
         onBlur={commitName}
         onKeyDown={(event) => {
           if (event.key === 'Enter') event.currentTarget.blur()
+          else if (event.key === 'Escape' && name !== person.name) {
+            event.preventDefault()
+            event.stopPropagation()
+            setName(person.name)
+          }
         }}
         aria-label={`Name for ${person.name}`}
       />
@@ -168,21 +220,25 @@ function PersonRow({ person }: { person: Person }) {
       {person.self ? (
         <span className="person-self">You</span>
       ) : (
-        <button className="btn ghost" type="button" onClick={() => void window.api.setSelfPerson(person.id)}>
+        <button className="btn ghost" type="button" onClick={makeSelf}>
           This is me
         </button>
       )}
-      <button
-        className="btn ghost danger"
-        type="button"
-        onClick={() => {
-          if (window.confirm(`Delete ${person.name}’s voiceprint? This cannot be undone.`)) {
-            void window.api.deletePerson(person.id)
-          }
-        }}
-      >
+      <button className="btn ghost danger" type="button" onClick={() => setConfirming(true)}>
         Delete
       </button>
+      {confirming ? (
+        <ConfirmDialog
+          title={`Delete ${person.name}’s voice?`}
+          confirm="Delete voice"
+          danger
+          onConfirm={remove}
+          onCancel={() => setConfirming(false)}
+        >
+          Lyra will stop recognizing them in new sessions. Sessions already named keep the name.
+        </ConfirmDialog>
+      ) : null}
+      {menu.element}
     </li>
   )
 }
@@ -197,7 +253,7 @@ export function PeopleSettings({ micDeviceId }: { micDeviceId: string | null }) 
       {people.length ? (
         <ul className="people-list">
           {people.map((person) => (
-            <PersonRow key={person.id} person={person} />
+            <PersonRow key={person.id} person={person} people={people} />
           ))}
         </ul>
       ) : (

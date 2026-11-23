@@ -24,7 +24,7 @@ function buildMenu(state: SessionState): Menu {
   return Menu.buildFromTemplate([
     recording
       ? {
-          label: 'Stop recording',
+          label: 'Stop session',
           click: () => {
             sendSessionCommand({ type: 'stop' })
           }
@@ -40,7 +40,7 @@ function buildMenu(state: SessionState): Menu {
     { type: 'separator' },
     { label: 'Open Lyra', click: showMainWindow },
     {
-      label: 'Open notes folder',
+      label: 'Open sessions folder',
       click: () => {
         void shell.openPath(notesDir())
       }

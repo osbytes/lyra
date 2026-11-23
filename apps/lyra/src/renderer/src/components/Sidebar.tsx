@@ -2,8 +2,10 @@ import { useMemo, useState } from 'react'
 import type { PageSummary, UpdateStatus } from '../../../shared/types'
 import lyraIcon from '../assets/lyra-icon.png'
 import { dayGroup, shortcutLabel } from '../lib/format'
+import { useContextMenu } from './ContextMenu'
 import { ScrollArea } from './Controls'
-import { GearIcon, PeopleIcon, PlusIcon, SearchIcon, TrashIcon } from './Icons'
+import { FolderIcon, GearIcon, PeopleIcon, PlusIcon, SearchIcon, TrashIcon } from './Icons'
+import { tip } from './Tooltip'
 
 type Props = {
   pages: PageSummary[]
@@ -13,6 +15,8 @@ type Props = {
   onCreate: () => void
   onDelete: (page: PageSummary) => void
   onSettings: () => void
+  /** A setting needs attention (e.g. the shortcut is taken): flags the Settings button. */
+  settingsIssue: boolean
   /** Opens the full-text search palette. */
   onSearch: () => void
   /** Every tag in use, with counts, most used first. */
@@ -59,12 +63,14 @@ export function Sidebar({
   onCreate,
   onDelete,
   onSettings,
+  settingsIssue,
   onSearch,
   tags,
   tagFilter,
   onTagFilter
 }: Props) {
   const [query, setQuery] = useState('')
+  const menu = useContextMenu()
 
   const groups = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -100,7 +106,7 @@ export function Sidebar({
             onChange={(event) => {
               setQuery(event.target.value)
             }}
-            placeholder="Search sessions"
+            placeholder="Search"
             aria-label="Search sessions"
           />
           {query ? null : (
@@ -108,7 +114,7 @@ export function Sidebar({
               className="search-shortcut"
               type="button"
               onClick={onSearch}
-              title="Search notes and transcripts"
+              {...tip('Search notes and transcripts', shortcutLabel('K'))}
               aria-label={`Search notes and transcripts (${shortcutLabel('K')})`}
             >
               <kbd>{shortcutLabel('K')}</kbd>
@@ -119,7 +125,7 @@ export function Sidebar({
           className="new-page-btn"
           type="button"
           onClick={onCreate}
-          title={`New session (${shortcutLabel('N')})`}
+          {...tip('New session', shortcutLabel('N'))}
           aria-label="New session"
         >
           <PlusIcon />
@@ -183,7 +189,34 @@ export function Sidebar({
             <section key={group.label} className="page-group" aria-label={group.label}>
               <h2 className="page-group-label">{group.label}</h2>
               {group.pages.map((page) => (
-                <div key={page.id} className={`page-row${page.id === activeId ? ' active' : ''}`}>
+                <div
+                  key={page.id}
+                  className={`page-row${page.id === activeId ? ' active' : ''}`}
+                  onContextMenu={(event) => {
+                    menu.open(event, page.title || 'Untitled', [
+                      { label: 'Open', run: () => onOpen(page.id) },
+                      {
+                        label: 'Show in folder',
+                        icon: <FolderIcon />,
+                        run: () => void window.api.revealPage(page.id)
+                      },
+                      'separator',
+                      {
+                        label: 'Delete…',
+                        icon: <TrashIcon />,
+                        shortcut: 'Del',
+                        danger: true,
+                        run: () => onDelete(page)
+                      }
+                    ])
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Delete' || (event.key === 'Backspace' && event.metaKey)) {
+                      event.preventDefault()
+                      onDelete(page)
+                    }
+                  }}
+                >
                   <button
                     type="button"
                     className="page-item"
@@ -197,9 +230,10 @@ export function Sidebar({
                       {page.speakers > 1 ? (
                         <span className="page-speakers">
                           <PeopleIcon />
-                          {page.speakers} speakers ·{' '}
+                          {page.speakers} speakers
                         </span>
                       ) : null}
+                      {page.speakers > 1 ? ' · ' : null}
                       {page.preview || 'Empty session'}
                     </span>
                   </button>
@@ -207,7 +241,7 @@ export function Sidebar({
                     type="button"
                     className="page-delete"
                     aria-label={`Delete ${page.title || 'Untitled'}`}
-                    title="Delete session"
+                    {...tip('Delete session')}
                     onClick={() => {
                       onDelete(page)
                     }}
@@ -226,9 +260,13 @@ export function Sidebar({
           className="ghost-btn"
           type="button"
           onClick={onSettings}
-          title={`Settings (${shortcutLabel(',')})`}
+          aria-label={settingsIssue ? 'Settings (needs attention)' : 'Settings'}
+          {...tip(settingsIssue ? 'A setting needs attention' : 'Settings', shortcutLabel(','))}
         >
-          <GearIcon />
+          <span className="icon-with-badge">
+            <GearIcon />
+            {settingsIssue ? <span className="issue-dot" aria-hidden="true" /> : null}
+          </span>
           Settings
         </button>
         {label ? (
@@ -237,13 +275,14 @@ export function Sidebar({
             type="button"
             disabled={update.state === 'downloading'}
             onClick={onUpdate}
-            title={label}
+            {...tip(label)}
           >
             <span className="update-dot" />
             <span className="update-label">{label}</span>
           </button>
         ) : null}
       </div>
+      {menu.element}
     </aside>
   )
 }

@@ -34,6 +34,7 @@ const api: VoicePagesApi = {
   createPage: (options) => ipcRenderer.invoke('pages:create', options ?? {}),
   savePage: (page) => ipcRenderer.invoke('pages:save', page),
   deletePage: (id) => ipcRenderer.invoke('pages:delete', id),
+  restorePage: (id) => ipcRenderer.invoke('pages:restore', id),
   revealPage: (id) => ipcRenderer.invoke('pages:reveal', id),
   onPagesChanged: (callback) => subscribe('pages:changed', () => {
       callback()
@@ -90,8 +91,9 @@ const api: VoicePagesApi = {
   renamePerson: (id, name) => ipcRenderer.invoke('people:rename', id, name),
   setSelfPerson: (id) => ipcRenderer.invoke('people:setSelf', id),
   deletePerson: (id) => ipcRenderer.invoke('people:delete', id),
-  assignSpeaker: (pageId, speakerId, assignment) =>
-    ipcRenderer.invoke('meeting:assign', pageId, speakerId, assignment),
+  restorePerson: (id) => ipcRenderer.invoke('people:restore', id),
+  resolveSpeaker: (pageId, speakerId, assignment) =>
+    ipcRenderer.invoke('meeting:resolveSpeaker', pageId, speakerId, assignment),
   onMeetingStatus: (callback) => subscribe<MeetingStatus>('meeting:status', callback),
   generateNotes: (pageId) => ipcRenderer.invoke('notes:generate', pageId),
   hasClaudeKey: () => ipcRenderer.invoke('secrets:hasClaudeKey'),

@@ -14,6 +14,7 @@ import { formatDuration, shortcutLabel } from '../lib/format'
 import { Floating, ScrollArea, Switch } from './Controls'
 import { ChevronDownIcon, GripIcon, MicIcon, MicSmallIcon, SpeakerIcon, StopIcon } from './Icons'
 import { MicrophoneSelect } from './MicrophoneSelect'
+import { tip } from './Tooltip'
 
 const BAR_COUNT = 20
 const OFFSET_KEY = 'lyra.dockOffset'
@@ -122,7 +123,7 @@ function Sources({
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-label={`Recording: ${summary}. Change`}
-        title={`Recording: ${summary}`}
+        {...tip(`Recording: ${summary}`)}
         disabled={disabled}
         onClick={() => setOpen((value) => !value)}
       >
@@ -328,7 +329,7 @@ export function DictationDock(props: Props) {
         onPointerDown={drag.onPointerDown}
         onDoubleClick={drag.reset}
       >
-        <span className="dock-grip" title="Drag to move · double-click to reset" aria-hidden="true">
+        <span className="dock-grip" {...tip('Drag to move · double-click to reset')} aria-hidden="true">
           <GripIcon />
         </span>
         <button
@@ -338,7 +339,7 @@ export function DictationDock(props: Props) {
           onClick={onToggle}
           disabled={busy}
           aria-label={listening ? 'Stop recording' : 'Continue recording this session'}
-          title={`${listening ? 'Stop' : 'Continue session · adds to the end'} (${shortcutLabel('D', true)})`}
+          {...tip(listening ? 'Stop' : 'Continue session · adds to the end', shortcutLabel('D', true))}
         >
           {listening ? <StopIcon /> : <MicIcon />}
         </button>
@@ -346,7 +347,7 @@ export function DictationDock(props: Props) {
         {label ? (
           <span
             className="dock-status"
-            title={listening ? 'Say “new paragraph” to break' : undefined}
+            {...(listening ? tip('Say “new paragraph” to break') : {})}
           >
             {label}
           </span>

@@ -1,17 +1,32 @@
-import { useEffect, useState, type ReactNode } from 'react'
-import type { HotkeyAction, HotkeyStatus, Settings as SettingsValue } from '../../../shared/types'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import type { Settings as SettingsValue } from '../../../shared/types'
+import {
+  claudeKeyChanged,
+  hotkeyProblem,
+  useHotkeyStatus,
+  type SettingsIssue,
+  type SettingsTab
+} from '../hooks/useSettingsIssues'
 import { homePath } from '../lib/format'
+import { record } from '../lib/history'
+import { ConfirmDialog } from './ConfirmDialog'
 import { ScrollArea, Segmented, Select, Switch } from './Controls'
 import { HotkeyInput } from './HotkeyInput'
-import { CloseIcon, FolderIcon, GearIcon, MicSmallIcon, PeopleIcon, RecordIcon } from './Icons'
+import { CloseIcon, FolderIcon, GearIcon, PeopleIcon, RecordIcon } from './Icons'
 import { MicrophoneSelect } from './MicrophoneSelect'
 import { PeopleSettings } from './People'
+import { tip } from './Tooltip'
+
+type Update = (patch: Partial<SettingsValue>) => Promise<SettingsValue>
 
 type Props = {
   settings: SettingsValue
-  update: (patch: Partial<SettingsValue>) => Promise<SettingsValue>
+  update: Update
+  issues: SettingsIssue[]
   onClose: () => void
 }
+
+type SectionProps = Pick<Props, 'settings' | 'update'>
 
 export function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -34,31 +49,70 @@ export function Row({ label, hint, children }: { label: string; hint?: string; c
   )
 }
 
-function NotesSection({ settings, update }: Pick<Props, 'settings' | 'update'>) {
+/** What Ctrl+Z says it undid, per setting. */
+const CHANGE_LABELS: Partial<Record<keyof SettingsValue, string>> = {
+  fileFormat: 'Changed the file format',
+  micDeviceId: 'Changed the microphone',
+  hotkey: 'Changed the session shortcut',
+  launchAtLogin: 'Changed open at login',
+  captureSystemAudio: 'Changed computer audio capture',
+  audioRetentionDays: 'Changed how long audio is kept',
+  notesEngine: 'Changed session summaries',
+  micPrompt: 'Changed the microphone prompt'
+}
+
+/** `update`, recorded so Ctrl+Z (and Ctrl+Shift+Z) can take the change back. */
+function useUndoableUpdate(settings: SettingsValue, update: Update): Update {
+  const current = useRef(settings)
+  current.current = settings
+  return useCallback(
+    async (patch) => {
+      const keys = Object.keys(patch) as (keyof SettingsValue)[]
+      const before: Partial<SettingsValue> = {}
+      for (const key of keys) Object.assign(before, { [key]: current.current[key] })
+      const next = await update(patch)
+      const [first] = keys
+      record({
+        label: (first && CHANGE_LABELS[first]) ?? 'Changed a setting',
+        quiet: true,
+        run: () => void update(patch),
+        undo: () => void update(before)
+      })
+      return next
+    },
+    [update]
+  )
+}
+
+const FILE_FORMATS = [
+  { value: 'txt', label: 'Plain text' },
+  { value: 'md', label: 'Markdown' }
+] as const
+
+function StorageSection({ settings, update }: SectionProps) {
   const [notice, setNotice] = useState<string | null>(null)
+  const [moveFrom, setMoveFrom] = useState<{ from: string; to: string } | null>(null)
 
   const changeFolder = async (): Promise<void> => {
     const picked = await window.api.pickFolder()
     if (!picked || picked === settings.notesDir) return
     const previous = settings.notesDir
     await update({ notesDir: picked })
-    if (window.confirm(`Move your existing notes from\n${previous}\ninto\n${picked}?`)) {
-      const { moved, skipped } = await window.api.moveNotes(previous)
-      setNotice(
-        `Moved ${moved} ${moved === 1 ? 'note' : 'notes'}` +
-          (skipped ? ` · ${skipped} skipped (same name already there)` : '')
-      )
-    } else {
-      setNotice('Existing notes were left where they were.')
-    }
+    setMoveFrom({ from: previous, to: picked })
+  }
+
+  const move = async (from: string): Promise<void> => {
+    setMoveFrom(null)
+    const { moved, skipped } = await window.api.moveNotes(from)
+    setNotice(
+      `Moved ${String(moved)} ${moved === 1 ? 'session' : 'sessions'}` +
+        (skipped ? ` · ${String(skipped)} skipped (same name already there)` : '')
+    )
   }
 
   return (
-    <Section title="Sessions">
-      <Row label="Sessions folder" hint="Every session is a plain text file in this folder.">
-        <code className="settings-path" title={settings.notesDir}>
-          {homePath(settings.notesDir)}
-        </code>
+    <Section title="Storage">
+      <Row label="Sessions folder" hint={homePath(settings.notesDir)}>
         <div className="settings-buttons">
           <button className="btn" type="button" onClick={() => void changeFolder()}>
             Change…
@@ -67,7 +121,7 @@ function NotesSection({ settings, update }: Pick<Props, 'settings' | 'update'>) 
             className="btn"
             type="button"
             onClick={() => void window.api.revealNotesFolder()}
-            title="Open in file manager"
+            {...tip('Open in file manager')}
           >
             <FolderIcon />
             Open
@@ -83,83 +137,57 @@ function NotesSection({ settings, update }: Pick<Props, 'settings' | 'update'>) 
           onChange={(fileFormat) => void update({ fileFormat })}
         />
       </Row>
+      {moveFrom ? (
+        <ConfirmDialog
+          title="Move your existing sessions?"
+          confirm="Move sessions"
+          onConfirm={() => void move(moveFrom.from)}
+          onCancel={() => {
+            setMoveFrom(null)
+            setNotice('Existing sessions were left where they were.')
+          }}
+        >
+          From <code>{homePath(moveFrom.from)}</code> into <code>{homePath(moveFrom.to)}</code>.
+          Sessions left behind won’t show in Lyra.
+        </ConfirmDialog>
+      ) : null}
     </Section>
   )
 }
 
-const FILE_FORMATS = [
-  { value: 'txt', label: 'Plain text' },
-  { value: 'md', label: 'Markdown' }
-] as const
-
-const NOTES_ENGINES = [
+const SUMMARY_ENGINES = [
   { value: 'off', label: 'Off' },
   { value: 'local', label: 'On this computer' },
   { value: 'claude', label: 'With Claude' }
 ] as const
 
-const DEFAULT_HOTKEYS: Record<HotkeyAction, string> = {
-  session: 'CommandOrControl+Shift+Space'
-}
-const HOTKEY_SETTING: Record<HotkeyAction, 'hotkey'> = {
-  session: 'hotkey'
-}
+const DEFAULT_HOTKEY = 'CommandOrControl+Shift+Space'
 
-function HotkeyRow({
-  action,
-  label,
-  hint,
-  settings,
-  update,
-  status
-}: Pick<Props, 'settings' | 'update'> & {
-  action: HotkeyAction
-  label: string
-  hint: string
-  status: HotkeyStatus | undefined
-}) {
-  const key = HOTKEY_SETTING[action]
-  const value = settings[key]
-  const problem = status?.accelerator === value && !status.registered ? status.error : null
+function StartupSection({ settings, update }: SectionProps) {
+  const statuses = useHotkeyStatus()
+  const problem = hotkeyProblem(settings, statuses)
   return (
-    <>
-      <Row label={label} hint={hint}>
-        <HotkeyInput value={value} onChange={(next) => void update({ [key]: next })} />
-        {value !== DEFAULT_HOTKEYS[action] ? (
-          <button
-            className="btn"
-            type="button"
-            onClick={() => void update({ [key]: DEFAULT_HOTKEYS[action] })}
-          >
-            Reset
-          </button>
+    <Section title="Shortcut and startup">
+      <div className={problem ? 'settings-group has-issue' : 'settings-group'}>
+        <Row
+          label="Start or stop a session"
+          hint="Works from any app, even when Lyra is hidden."
+        >
+          <HotkeyInput value={settings.hotkey} onChange={(hotkey) => void update({ hotkey })} />
+          {settings.hotkey !== DEFAULT_HOTKEY ? (
+            <button className="btn" type="button" onClick={() => void update({ hotkey: DEFAULT_HOTKEY })}>
+              Reset
+            </button>
+          ) : null}
+        </Row>
+        {problem ? (
+          <p className="settings-issue" role="alert">
+            <span className="issue-dot" aria-hidden="true" />
+            {problem} Pick another shortcut.
+          </p>
         ) : null}
-      </Row>
-      {problem ? <p className="settings-notice is-error">{problem}</p> : null}
-    </>
-  )
-}
-
-function ShortcutsSection({ settings, update }: Pick<Props, 'settings' | 'update'>) {
-  const [statuses, setStatuses] = useState<HotkeyStatus[]>([])
-
-  useEffect(() => {
-    void window.api.getHotkeyStatus().then(setStatuses)
-    return window.api.onHotkeyStatus(setStatuses)
-  }, [])
-
-
-  return (
-    <Section title="Shortcuts">
-      <HotkeyRow
-        action="session"
-        label="Start or stop a session"
-        hint="Works from any app, even when Lyra is hidden. Starts a new session."
-        settings={settings}
-        update={update}
-        status={statuses.at(0)}
-      />
-      <Row label="Open at login" hint="Keeps the shortcuts available after a restart.">
+      </div>
+      <Row label="Open at login" hint="Keeps the shortcut available after a restart.">
         <Switch
           label="Open Lyra at login"
           checked={settings.launchAtLogin}
@@ -196,29 +224,29 @@ function parseRetention(value: string): number | null {
   return Number.isInteger(days) && days >= 0 ? days : 30
 }
 
-function MeetingsSection({ settings, update }: Pick<Props, 'settings' | 'update'>) {
+function RecordingSection({ settings, update }: SectionProps) {
   return (
-    <Section title="Meetings">
+    <Section title="Recording">
       <Row
         label="Capture computer audio"
         hint="Records the other side of calls (Zoom, Meet, Teams). On macOS this needs Screen Recording permission."
       >
         <Switch
-          label="Capture computer audio in meetings"
+          label="Capture computer audio"
           checked={settings.captureSystemAudio}
           onChange={(captureSystemAudio) => void update({ captureSystemAudio })}
         />
       </Row>
       <p className="settings-notice">
-        Recording other people usually requires their consent. Meeting audio, transcripts, and
+        Recording other people usually requires their consent. Session audio, transcripts and
         voiceprints stay on this computer.
       </p>
       <Row
-        label="Keep recordings"
+        label="Keep audio"
         hint="Audio lets you replay and re-transcribe a session. Transcripts are always kept."
       >
         <Select
-          label="Keep recordings"
+          label="Keep audio"
           value={retentionValue(settings.audioRetentionDays)}
           options={retentionChoices(settings.audioRetentionDays)}
           onChange={(value) => {
@@ -230,7 +258,7 @@ function MeetingsSection({ settings, update }: Pick<Props, 'settings' | 'update'
   )
 }
 
-function MeetingNotesSection({ settings, update }: Pick<Props, 'settings' | 'update'>) {
+function SummarySection({ settings, update }: SectionProps) {
   const [hasKey, setHasKey] = useState(false)
   const [key, setKey] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -245,62 +273,82 @@ function MeetingNotesSection({ settings, update }: Pick<Props, 'settings' | 'upd
       await window.api.setClaudeKey(value)
       setHasKey(value !== null)
       setKey('')
+      claudeKeyChanged()
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not save the key')
     }
   }
 
+  const missingKey = settings.notesEngine === 'claude' && !hasKey
+
   return (
-    <Section title="Meeting notes">
-      <Row label="Write notes after meetings" hint="A summary, decisions, action items, and open questions at the top of the note.">
+    <Section title="Summaries">
+      <Row
+        label="Summarize sessions"
+        hint="A summary, decisions, action items and open questions above your notes."
+      >
         <Segmented
-          label="Write notes after meetings"
+          label="Summarize sessions"
           value={settings.notesEngine}
-          options={NOTES_ENGINES}
+          options={SUMMARY_ENGINES}
           onChange={(notesEngine) => void update({ notesEngine })}
         />
       </Row>
       {settings.notesEngine === 'local' ? (
         <p className="settings-notice">
           Runs a small model on this computer — nothing leaves it. The first time downloads about
-          2 GB; long meetings can take a few minutes.
+          2 GB; long sessions can take a few minutes.
         </p>
       ) : null}
       {settings.notesEngine === 'claude' ? (
         <>
           <p className="settings-notice is-warning">
-            Sends the meeting transcript to Anthropic’s API to write the notes. Audio and voiceprints
-            stay on this computer. Uses your own API key and is billed to your account.
+            Sends the session’s transcript to Anthropic’s API to write the summary. Audio and
+            voiceprints stay on this computer. Uses your own API key and is billed to your account.
           </p>
-          <Row label="Claude API key" hint={hasKey ? 'Saved in your system keychain.' : 'From console.anthropic.com.'}>
-            {hasKey ? (
-              <button className="btn" type="button" onClick={() => void saveKey(null)}>
-                Remove key
-              </button>
-            ) : (
-              <>
-                <input
-                  className="settings-input"
-                  type="password"
-                  value={key}
-                  placeholder="sk-ant-…"
-                  autoComplete="off"
-                  onChange={(event) => {
-                    setKey(event.target.value)
-                  }}
-                  aria-label="Claude API key"
-                />
-                <button
-                  className="btn"
-                  type="button"
-                  disabled={!key.trim()}
-                  onClick={() => void saveKey(key)}
-                >
-                  Save
+          <div className={missingKey ? 'settings-group has-issue' : 'settings-group'}>
+            <Row
+              label="Claude API key"
+              hint={hasKey ? 'Saved in your system keychain.' : 'From console.anthropic.com.'}
+            >
+              {hasKey ? (
+                <button className="btn" type="button" onClick={() => void saveKey(null)}>
+                  Remove key
                 </button>
-              </>
-            )}
-          </Row>
+              ) : (
+                <>
+                  <input
+                    className="settings-input"
+                    type="password"
+                    value={key}
+                    placeholder="sk-ant-…"
+                    autoComplete="off"
+                    onChange={(event) => {
+                      setKey(event.target.value)
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' && key.trim()) void saveKey(key)
+                    }}
+                    aria-label="Claude API key"
+                  />
+                  <button
+                    className="btn"
+                    type="button"
+                    disabled={!key.trim()}
+                    onClick={() => void saveKey(key)}
+                  >
+                    Save
+                  </button>
+                </>
+              )}
+            </Row>
+            {missingKey ? (
+              <p className="settings-issue" role="alert">
+                <span className="issue-dot" aria-hidden="true" />
+                Summaries won’t run until you add a key.
+              </p>
+            ) : null}
+          </div>
           {error ? <p className="settings-notice is-error">{error}</p> : null}
         </>
       ) : null}
@@ -308,7 +356,7 @@ function MeetingNotesSection({ settings, update }: Pick<Props, 'settings' | 'upd
   )
 }
 
-function PromptsSection({ settings, update }: Pick<Props, 'settings' | 'update'>) {
+function PromptsSection({ settings, update }: SectionProps) {
   const { enabled, ignoredApps } = settings.micPrompt
   const setPrompt = (patch: Partial<SettingsValue['micPrompt']>): void => {
     void update({ micPrompt: { ...settings.micPrompt, ...patch } })
@@ -316,11 +364,11 @@ function PromptsSection({ settings, update }: Pick<Props, 'settings' | 'update'>
   return (
     <Section title="Prompts">
       <Row
-        label="Offer to record when the mic turns on"
-        hint="When another app (Zoom, Teams, …) starts using your microphone, ask whether to start a note."
+        label="Offer a session when the mic turns on"
+        hint="When another app (Zoom, Teams, …) starts using your microphone, ask whether to start a session."
       >
         <Switch
-          label="Offer to record when the mic turns on"
+          label="Offer a session when the mic turns on"
           checked={enabled}
           onChange={(next) => {
             setPrompt({ enabled: next })
@@ -336,11 +384,12 @@ function PromptsSection({ settings, update }: Pick<Props, 'settings' | 'update'>
                 <button
                   type="button"
                   aria-label={`Ask again for ${name}`}
+                  {...tip('Ask again')}
                   onClick={() => {
                     setPrompt({ ignoredApps: ignoredApps.filter((entry) => entry !== name) })
                   }}
                 >
-                  ×
+                  <CloseIcon />
                 </button>
               </li>
             ))}
@@ -351,22 +400,21 @@ function PromptsSection({ settings, update }: Pick<Props, 'settings' | 'update'>
   )
 }
 
-const TABS = [
+const TABS: readonly { id: SettingsTab; label: string; icon: ReactNode }[] = [
   { id: 'general', label: 'General', icon: <GearIcon /> },
-  { id: 'recording', label: 'Recording', icon: <MicSmallIcon /> },
-  { id: 'meetings', label: 'Meetings', icon: <RecordIcon /> },
+  { id: 'sessions', label: 'Sessions', icon: <RecordIcon /> },
   { id: 'people', label: 'People', icon: <PeopleIcon /> }
-] as const
+]
 
-type TabId = (typeof TABS)[number]['id']
-
-export function SettingsDialog({ settings, update, onClose }: Props) {
-  const [tab, setTab] = useState<TabId>('general')
+export function SettingsDialog({ settings, update: rawUpdate, issues, onClose }: Props) {
+  // Open on the tab with a problem, so the badge that brought the user here leads somewhere.
+  const [tab, setTab] = useState<SettingsTab>(() => issues[0]?.tab ?? 'general')
   const active = TABS.find((entry) => entry.id === tab) ?? TABS[0]
+  const update = useUndoableUpdate(settings, rawUpdate)
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') onClose()
+      if (event.key === 'Escape' && !event.defaultPrevented) onClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -383,51 +431,58 @@ export function SettingsDialog({ settings, update, onClose }: Props) {
       >
         <nav className="settings-nav" aria-label="Settings sections">
           <h2>Settings</h2>
-          {TABS.map((entry) => (
-            <button
-              key={entry.id}
-              type="button"
-              aria-current={entry.id === tab ? 'page' : undefined}
-              onClick={() => {
-                setTab(entry.id)
-              }}
-            >
-              {entry.icon}
-              {entry.label}
-            </button>
-          ))}
+          {TABS.map((entry) => {
+            const flagged = issues.some((issue) => issue.tab === entry.id)
+            return (
+              <button
+                key={entry.id}
+                type="button"
+                aria-current={entry.id === tab ? 'page' : undefined}
+                aria-label={flagged ? `${entry.label} (needs attention)` : undefined}
+                onClick={() => {
+                  setTab(entry.id)
+                }}
+              >
+                {entry.icon}
+                {entry.label}
+                {flagged ? <span className="issue-dot nav-issue" aria-hidden="true" /> : null}
+              </button>
+            )
+          })}
         </nav>
         <div className="settings-main">
           <header className="modal-header">
-            <h2>{active.label}</h2>
-            <button className="icon-btn" type="button" onClick={onClose} aria-label="Close settings">
+            <h2>{active?.label}</h2>
+            <button
+              className="icon-btn"
+              type="button"
+              onClick={onClose}
+              aria-label="Close settings"
+              {...tip('Close', 'Esc')}
+            >
               <CloseIcon />
             </button>
           </header>
           <ScrollArea className="modal-body">
             {tab === 'general' ? (
               <>
-                <NotesSection settings={settings} update={update} />
+                <StorageSection settings={settings} update={rawUpdate} />
                 <Section title="Microphone">
-                  <Row label="Input device" hint="Used for dictation and meetings.">
+                  <Row label="Input device" hint="Used for every session.">
                     <MicrophoneSelect
                       value={settings.micDeviceId}
                       onChange={(micDeviceId) => void update({ micDeviceId })}
                     />
                   </Row>
                 </Section>
+                <StartupSection settings={settings} update={update} />
               </>
             ) : null}
-            {tab === 'recording' ? (
+            {tab === 'sessions' ? (
               <>
-                <ShortcutsSection settings={settings} update={update} />
+                <RecordingSection settings={settings} update={update} />
+                <SummarySection settings={settings} update={update} />
                 <PromptsSection settings={settings} update={update} />
-              </>
-            ) : null}
-            {tab === 'meetings' ? (
-              <>
-                <MeetingsSection settings={settings} update={update} />
-                <MeetingNotesSection settings={settings} update={update} />
               </>
             ) : null}
             {tab === 'people' ? (

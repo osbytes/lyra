@@ -69,7 +69,7 @@ export async function claudeTitle(apiKey: string, text: string): Promise<string 
 /** Claude API failures as messages a person can act on. */
 function friendlyError(error: unknown): unknown {
   if (error instanceof Anthropic.AuthenticationError) {
-    return new Error('Claude rejected the API key. Check it in Settings → Meeting notes.', { cause: error })
+    return new Error('Claude rejected the API key. Check it in Settings → Sessions.', { cause: error })
   }
   if (error instanceof Anthropic.RateLimitError) {
     return new Error('Claude is rate-limiting this key. Try again in a minute.', { cause: error })

@@ -6,6 +6,7 @@ import type {
   MeetingRecording,
   MeetingStatus,
   SpeakerAssignment,
+  SpeakerIdentity,
   TranscriptWord
 } from '../../shared/types'
 import {
@@ -39,6 +40,7 @@ import {
   listPeople,
   scoreVoices,
   renamePerson,
+  restorePerson,
   selfPerson,
   setSelf,
   type VoiceMatch
@@ -414,11 +416,15 @@ async function speakerEmbedding(pageId: string, id: string): Promise<number[]> {
   return (await sessionVoiceprints(pageId)).get(id) ?? []
 }
 
-export async function assignSpeaker(
+/**
+ * Who a session's speaker is, teaching that voice the speaker's audio on the way. The caller
+ * writes the name into the session (`assignSpeaker` here; the window, so it can undo it).
+ */
+export async function resolveSpeaker(
   pageId: string,
   id: string,
   assignment: SpeakerAssignment
-): Promise<void> {
+): Promise<SpeakerIdentity> {
   const speaker = (await readSession(pageId)).speakers.find((entry) => entry.id === id)
   if (!speaker) throw new Error('This session has no such speaker')
   const embedding = await speakerEmbedding(pageId, id)
@@ -447,7 +453,16 @@ export async function assignSpeaker(
       personId = (await addPerson(name, embedding, false)).id
     }
   }
+  return { name, personId }
+}
 
+/** Names a session's speaker and writes it into the session, merging with a same-named one. */
+export async function assignSpeaker(
+  pageId: string,
+  id: string,
+  assignment: SpeakerAssignment
+): Promise<void> {
+  const { name, personId } = await resolveSpeaker(pageId, id, assignment)
   const merged = await editSession(pageId, (doc) => {
     const into = speakerToMergeInto(doc, id, name, personId)
     doc.transact(() => {
@@ -521,17 +536,24 @@ export function registerMeetingPipeline(): void {
     return renamePerson(id, name)
   })
   ipcMain.handle('people:setSelf', (_event, id: unknown) => {
-    if (typeof id !== 'string') throw new Error('Invalid input')
+    if (typeof id !== 'string' && id !== null) throw new Error('Invalid input')
     return setSelf(id)
   })
   ipcMain.handle('people:delete', (_event, id: unknown) => {
     if (typeof id !== 'string') throw new Error('Invalid input')
     return deletePerson(id)
   })
-  ipcMain.handle('meeting:assign', (_event, pageId: unknown, id: unknown, assignment: unknown) => {
-    if (typeof pageId !== 'string' || typeof id !== 'string') throw new Error('Invalid input')
-    return assignSpeaker(pageId, id, parseAssignment(assignment))
+  ipcMain.handle('people:restore', (_event, id: unknown) => {
+    if (typeof id !== 'string') throw new Error('Invalid input')
+    return restorePerson(id)
   })
+  ipcMain.handle(
+    'meeting:resolveSpeaker',
+    (_event, pageId: unknown, id: unknown, assignment: unknown) => {
+      if (typeof pageId !== 'string' || typeof id !== 'string') throw new Error('Invalid input')
+      return resolveSpeaker(pageId, id, parseAssignment(assignment))
+    }
+  )
   ipcMain.handle('sessions:audio', (_event, pageId: unknown, start: unknown, end: unknown) => {
     if (typeof pageId !== 'string' || typeof start !== 'number' || typeof end !== 'number') {
       throw new Error('Invalid input')
