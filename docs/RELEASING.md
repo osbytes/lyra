@@ -30,7 +30,7 @@ in a way older versions cannot read says so in its `**Upgrade:**` line.
 
 ## Cutting a release
 
-1. Merging to `main` runs `version.yml`, which keeps a **"Release"** pull request open. It bumps
+1. Merging to `main` runs `version.yml`, which keeps a **"Release vX.Y.Z"** pull request open. It bumps
    the version, writes `CHANGELOG.md` from the pending changesets and deletes them. Review it like
    any PR: is the changelog readable, are upgrade notes present.
 2. Before merging the release PR, build the release candidate: run `release.yml` by hand on the

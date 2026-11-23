@@ -34,7 +34,7 @@ pnpm smoke:meeting <file.wav>   # real speaker pipeline on a 16 kHz mono WAV (do
 
 Every PR carries a changeset: run `pnpm changeset` and write the note for someone using Lyra (`pnpm changeset --empty` for docs-only or internal changes). CI refuses a PR without one.
 
-Merging to `main` keeps a "Release" PR open with the next version and `CHANGELOG.md`. Merging that PR tags `vX.Y.Z`, and GitHub Actions builds the installers and publishes the GitHub Release. The full flow is in [docs/RELEASING.md](docs/RELEASING.md).
+Merging to `main` keeps a "Release vX.Y.Z" PR open with the next version and `CHANGELOG.md`. Merging that PR tags `vX.Y.Z`, and GitHub Actions builds the installers and publishes the GitHub Release. The full flow is in [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Conduct
 

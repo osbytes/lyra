@@ -1,5 +1,5 @@
 # Release flow (changesets): every merged PR carries a .changeset/*.md file. This workflow keeps a
-# "Release" pull request open that bumps the version and writes CHANGELOG.md from them.
+# "Release vX.Y.Z" pull request open that bumps the version and writes CHANGELOG.md from them.
 # Merging that PR runs `pnpm release:tag`, which pushes the vX.Y.Z tag; release.yml then builds the
 # installers and publishes the GitHub release that the in-app updater reads.
 #
@@ -36,12 +36,22 @@ jobs:
           cache: pnpm
       # only changesets and the tag script run here; skip the electron rebuild in postinstall
       - run: pnpm install --frozen-lockfile --ignore-scripts
+      # changesets/action has no version placeholder for the PR title, so read the version the
+      # pending changesets will produce. The plan goes to RUNNER_TEMP, not the checkout, so the
+      # action doesn't commit it into the Release PR. No changesets (right after a release): "Release".
+      - name: Next version
+        id: next
+        run: |
+          plan="$RUNNER_TEMP/changeset-status.json"
+          pnpm changeset status --output="$plan"
+          version=$(node -p "(require(process.argv[1]).releases.find((r) => r.name === 'lyra') || {}).newVersion || ''" "$plan" | tr -cd 'A-Za-z0-9.+-')
+          echo "title=Release${version:+ v$version}" >> "$GITHUB_OUTPUT"
       - name: Release PR or tag
         uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
           # v2 takes the token as an input and refuses a GITHUB_TOKEN env var that differs from it
           github-token: ${{ secrets.RELEASE_TOKEN }}
-          pr-title: "Release"
+          pr-title: ${{ steps.next.outputs.title }}
           commit-message: "Release"
           version-script: pnpm release:version
           publish-script: pnpm release:tag
