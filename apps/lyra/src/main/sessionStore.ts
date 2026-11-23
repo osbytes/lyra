@@ -618,7 +618,8 @@ function sidecarOf(entry: Entry, snapshot: SessionSnapshot, body: string): unkno
       confidence: segment.confidence,
       edited: segment.edited,
       text: segment.text,
-      ...(segment.edited ? { original: segment.original } : {})
+      ...(segment.edited ? { original: segment.original } : {}),
+      ...(segment.edits.length ? { edits: segment.edits } : {})
     }))
   }
 }

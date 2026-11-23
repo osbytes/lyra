@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PageSummary, UpdateStatus, WhisperStatus } from '../../shared/types'
+import type { TranscriptSegment } from '../../shared/sessionDoc'
 import { DetailsPanel } from './components/DetailsPanel'
 import { DictationDock } from './components/DictationDock'
 import { Editor } from './components/Editor'
+import { NotesEditor, type NotesHandle } from './components/NotesEditor'
 import { TagRow } from './components/TagRow'
 import { ScrollArea } from './components/Controls'
 import { Transcript } from './components/Transcript'
@@ -21,14 +23,39 @@ const OVERLAY_FRAME_MS = 80
 /** How long a deleted page can be brought back before its file is removed. */
 const UNDO_DELETE_MS = 6000
 
-/** The title field and the editor: where undo/redo means "undo my edit to this page". */
+/** Smallest share of the column either pane can be dragged down to. */
+const MIN_PANE = 0.15
+
+/**
+ * The title, meeting notes and the transcript: where undo/redo means "undo my edit to this
+ * page". The notes editor isn't here; it keeps its own history.
+ */
 function isPageField(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  // Nothing focused (a menu just closed): undo means the page, as in any editor.
+  if (target === document.body) return true
+  if (target.classList.contains('title-input') || target.classList.contains('editor')) return true
+  // Anywhere in the locked transcript, except a field with its own text history.
   return (
-    target instanceof HTMLElement &&
-    (target.classList.contains('title-input') ||
-      target.classList.contains('editor') ||
-      target.classList.contains('line-text'))
+    !!target.closest('.transcript') &&
+    !(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)
   )
+}
+
+function clockLabel(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds))
+  const m = Math.floor(total / 60)
+  const s = String(total % 60).padStart(2, '0')
+  return total >= 3600
+    ? `${String(Math.floor(m / 60))}:${String(m % 60).padStart(2, '0')}:${s}`
+    : `${String(m)}:${s}`
+}
+
+/** A quote of the transcript for the notes: the words, then who said them and when. */
+function quoteOf(text: string, who: string | null, start: number): string {
+  const said = text.replace(/\s+/g, ' ').trim()
+  const by = who ? `${who}, ${clockLabel(start)}` : clockLabel(start)
+  return `> ${said}\n>\n> — *${by}*`
 }
 
 function toMarkdown(page: OpenPage): string {
@@ -54,6 +81,7 @@ export default function App(): React.JSX.Element {
     edit,
     editSummary,
     editSegment,
+    editLineOverlay,
     assignLines,
     tag,
     untag,
@@ -74,7 +102,12 @@ export default function App(): React.JSX.Element {
   const settingsRef = useRef(settings)
   settingsRef.current = settings
   const titleInput = useRef<HTMLInputElement>(null)
+  /** The transcript pane, which follows new words while recording. */
   const scroller = useRef<HTMLElement>(null)
+  const notes = useRef<NotesHandle>(null)
+  const column = useRef<HTMLDivElement>(null)
+  /** The notes pane's share of the column, above the transcript. */
+  const [split, setSplit] = useState(0.45)
 
   useEffect(() => {
     const stopStatus = window.api.onStatus(setStatus)
@@ -89,11 +122,9 @@ export default function App(): React.JSX.Element {
     (text: string, at: { start: number; end: number }) => {
       if (!currentRef.current) return
       const view = scroller.current
-      // Keep new words in view, unless the writer has scrolled up to reread, or is typing:
-      // then their place on the page matters more than the transcriber's.
-      const typing = document.activeElement instanceof HTMLTextAreaElement
-      const follow =
-        !typing && (!view || view.scrollHeight - view.scrollTop - view.clientHeight < 160)
+      // Keep new words in view, unless the user has scrolled the transcript up to reread. The
+      // notes scroll on their own, so typing there never fights the transcript.
+      const follow = !view || view.scrollHeight - view.scrollTop - view.clientHeight < 160
       // Main voiceprints the phrase and writes it to its speaker's line; until then it's drawn
       // as unconfirmed text, so words never blink out.
       setSent((list) => [...list, text])
@@ -304,6 +335,32 @@ export default function App(): React.JSX.Element {
   const listening = dictation.phase === 'listening'
   const unplaced = sent.slice(current?.livePlaced ?? 0).join(' ')
   const liveText = toTranscript && listening ? `${unplaced}${dictation.live}`.trim() : null
+  const hasTranscript = !!current && (current.transcript.length > 0 || liveText !== null)
+
+  const quote = (line: TranscriptSegment, text: string): void => {
+    const page = currentRef.current
+    if (!page) return
+    const who = line.cluster ? (page.speakers.find((s) => s.id === line.cluster)?.name ?? null) : null
+    notes.current?.append(quoteOf(text, who, line.start))
+  }
+
+  /** Dragging the divider between the notes and the transcript. */
+  const resize = (event: React.PointerEvent<HTMLDivElement>): void => {
+    const box = column.current?.getBoundingClientRect()
+    if (!box) return
+    const handle = event.currentTarget
+    handle.setPointerCapture(event.pointerId)
+    const move = (next: PointerEvent): void => {
+      const share = (next.clientY - box.top) / box.height
+      setSplit(Math.min(1 - MIN_PANE, Math.max(MIN_PANE, share)))
+    }
+    const up = (): void => {
+      handle.removeEventListener('pointermove', move)
+      handle.removeEventListener('pointerup', up)
+    }
+    handle.addEventListener('pointermove', move)
+    handle.addEventListener('pointerup', up)
+  }
 
   return (
     <div className={`app platform-${window.api.platform}`}>
@@ -360,7 +417,11 @@ export default function App(): React.JSX.Element {
         {current ? (
           <div className="workspace-body">
           <div className="workspace-column">
-            <ScrollArea className="scroller" ref={scroller}>
+            <div className="panes" ref={column}>
+            <ScrollArea
+              className={hasTranscript ? 'scroller notes-pane' : 'scroller notes-pane is-alone'}
+              style={hasTranscript ? { flexBasis: `${String(split * 100)}%` } : undefined}
+            >
               <article className="page">
                 <input
                   ref={titleInput}
@@ -394,32 +455,61 @@ export default function App(): React.JSX.Element {
                     />
                   </section>
                 ) : null}
-                <Editor
+                <NotesEditor
+                  key={current.id}
+                  ref={notes}
                   value={current.body}
-                  ghost={toTranscript ? '' : dictation.live}
-                  listening={!toTranscript && listening}
-                  transcriberAt={current.transcriberAt}
-                  placeholder={current.transcript.length || liveText !== null ? 'Add notes…' : undefined}
-                  compact={current.transcript.length > 0 || liveText !== null}
                   onChange={(body) => edit({ body })}
+                  placeholder={
+                    hasTranscript
+                      ? 'Write your notes here. The transcript stays below, as it was heard.'
+                      : 'Start a recording, or just type. Your notes save automatically.'
+                  }
                 />
-                {current.transcript.length || liveText !== null ? (
-                  <Transcript
-                    pageId={current.id}
-                    transcript={current.transcript}
-                    speakers={current.speakers}
-                    hasSummary={!!current.summary.trim()}
-                    notesEngine={settings?.notesEngine ?? 'off'}
-                    onEditLine={editSegment}
-                    onAssign={assignLines}
-                    onUndo={() => void undo()}
-                    showSpeakersBar={!panel}
-                    pickerRequest={pickerRequest}
-                    live={liveText}
-                  />
-                ) : null}
               </article>
             </ScrollArea>
+            {hasTranscript ? (
+              <>
+                <div
+                  className="pane-divider"
+                  role="separator"
+                  aria-orientation="horizontal"
+                  aria-label="Resize notes and transcript"
+                  aria-valuenow={Math.round(split * 100)}
+                  aria-valuemin={Math.round(MIN_PANE * 100)}
+                  aria-valuemax={Math.round((1 - MIN_PANE) * 100)}
+                  tabIndex={0}
+                  onPointerDown={resize}
+                  onDoubleClick={() => setSplit(0.45)}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+                    event.preventDefault()
+                    const step = event.key === 'ArrowUp' ? -0.05 : 0.05
+                    setSplit((value) => Math.min(1 - MIN_PANE, Math.max(MIN_PANE, value + step)))
+                  }}
+                />
+                <ScrollArea className="scroller transcript-pane" ref={scroller}>
+                  <div className="page transcript-page">
+                    <Transcript
+                      pageId={current.id}
+                      transcript={current.transcript}
+                      speakers={current.speakers}
+                      hasSummary={!!current.summary.trim()}
+                      notesEngine={settings?.notesEngine ?? 'off'}
+                      onEditLine={editSegment}
+                      onEditOverlay={editLineOverlay}
+                      onQuote={quote}
+                      onAssign={assignLines}
+                      onUndo={() => void undo()}
+                      showSpeakersBar={!panel}
+                      pickerRequest={pickerRequest}
+                      live={liveText}
+                    />
+                  </div>
+                </ScrollArea>
+              </>
+            ) : null}
+            </div>
             <DictationDock
               phase={dictation.phase}
               micName={dictation.micName}
