@@ -19,6 +19,21 @@ recording and compare against what was said.
   noisy speech. Say so in the report; for those, ask the user for a real recording.
 - Never commit real user audio. `test-audio/` is synthetic, but keep it untracked unless asked.
 
+## Speaker evals
+
+For speaker, diarization or call-labeling changes, also score the pipeline and compare against a
+run from before the change (`eval-data/results/<run>/results.json`):
+
+- `pnpm eval:calls` (in `apps/lyra`): generated calls with exact ground truth. `call-speakers` has
+  the remote voice bleeding into the mic from laptop speakers; `call-speakers-loud` adds a clipped
+  system track; `call-quick-turns` / `room-quick-turns` have one-word replies; `call-crosstalk`
+  overlaps; `call-similar-voices` / `room-similar-voices` use two voices close enough to merge.
+  `--scenarios a,b` runs a subset. Similar-voice scenarios need Windows.
+- `pnpm eval:ami --mic Mix-Headset`: real four-person meetings (AMI, CC BY 4.0). Slower; run it
+  before merging diarization changes.
+- Read cpWER (words given to the wrong speaker count as errors) and the speakers found/actual
+  column first. Real recordings stay out of `eval-data/` commits and out of the repo.
+
 ## Steps
 
 1. Pick the narrowest run that exercises the change:
