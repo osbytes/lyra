@@ -8,7 +8,8 @@ import type {
   SpeakerAssignment
 } from '../../shared/types'
 import { log } from '../log'
-import { getPage, notesDir, notifyPagesChanged, resolveInNotes, savePage } from '../pages'
+import { notesDir, resolveInNotes } from '../pages'
+import { getSessionPage as getPage, saveSessionPage as savePage } from '../sessionStore'
 import { onRecordingFinished } from '../recorder'
 import { getSettings } from '../settings'
 import {
@@ -307,7 +308,6 @@ export async function processMeeting(recording: MeetingRecording): Promise<void>
   const body = lines.length ? `${peopleLine(speakers)}\n\n${lines.join('\n\n')}` : page.body
   await writeMeta(pageId, { version: 1, speakers, liveTranscript: page.body })
   await savePage({ id: pageId, title: page.title, body })
-  notifyPagesChanged()
   if (!getSettings().keepMeetingAudio) await deleteAudio(recording)
 
   status('done', 1)
@@ -382,7 +382,6 @@ export async function assignSpeaker(
   await writeMeta(pageId, { ...meta, speakers })
   const page = await getPage(pageId)
   await savePage({ id: pageId, title: page.title, body: relabel(page.body, previous, name, speakers) })
-  notifyPagesChanged()
   log('meeting', 'relabeled speaker', { pageId, cluster, remembered: personId !== null })
 }
 

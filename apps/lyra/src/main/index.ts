@@ -9,22 +9,27 @@ import {
   session,
   shell
 } from 'electron'
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { copyFile, mkdir, writeFile } from 'node:fs/promises'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { copyFile, mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import { migrateLegacyPages, moveNotes, notesDir, startWatchingNotes } from './pages'
 import {
-  createPage,
-  deletePage,
-  getPage,
-  listPages,
-  migrateLegacyPages,
-  moveNotes,
-  notesDir,
-  savePage,
-  startWatchingNotes
-} from './pages'
+  applySessionUpdate,
+  closeSessionFor,
+  createSession as createPage,
+  deleteSession as deletePage,
+  flushAllSessions,
+  getSessionPage as getPage,
+  listSessions as listPages,
+  openSessionFor,
+  readSessionFromDisk,
+  saveSessionPage as savePage,
+  sidecarPath
+} from './sessionStore'
+import * as Y from 'yjs'
+import { editDoc, ORIGIN_USER } from '../shared/sessionDoc'
 import { registerHotkeys, unregisterHotkeys } from './hotkey'
 import { registerMicPrompt, stopMicPrompt } from './micprompt'
 import { parseConsentStore } from './micwatch'
@@ -206,6 +211,17 @@ function registerIpc(): void {
     savePage(page)
   )
   ipcMain.handle('pages:delete', (_event, id: string) => deletePage(id))
+  ipcMain.handle('sessions:open', (event, id: unknown) => {
+    if (typeof id !== 'string') throw new Error('Invalid session id')
+    return openSessionFor(id, event.sender.id)
+  })
+  ipcMain.handle('sessions:update', (event, id: unknown, update: unknown) => {
+    if (typeof id !== 'string') throw new Error('Invalid session id')
+    return applySessionUpdate(id, update, event.sender.id)
+  })
+  ipcMain.on('sessions:close', (event, id: unknown) => {
+    if (typeof id === 'string') closeSessionFor(id, event.sender.id)
+  })
   ipcMain.on('log:write', (_event, scope: unknown, message: unknown, data: unknown) => {
     log(String(scope), String(message), data)
   })
@@ -384,9 +400,86 @@ async function runMeetingFixture(wavPath: string): Promise<void> {
   }
 }
 
+/** Session store: concurrent edits merge, the log persists, and the export follows. */
+async function checkSessionStore(): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`session store: ${message}`)
+  }
+  const page = await createPage({ startedAt: '2026-02-03T04:05:06' })
+  const state = await openSessionFor(page.id, -1)
+
+  // Two windows edit the same starting state; both edits must survive.
+  const replicas = [new Y.Doc(), new Y.Doc()]
+  for (const replica of replicas) Y.applyUpdate(replica, state)
+  const send = async (replica: Y.Doc, change: () => void): Promise<void> => {
+    const updates: Uint8Array[] = []
+    const collect = (update: Uint8Array): void => {
+      updates.push(update)
+    }
+    replica.on('update', collect)
+    change()
+    replica.off('update', collect)
+    for (const update of updates) await applySessionUpdate(page.id, update, -1)
+  }
+  const [a, b] = replicas
+  if (!a || !b) return fail('replicas')
+  await send(a, () => {
+    editDoc(a, { title: 'Merged', notes: 'first' }, ORIGIN_USER)
+  })
+  await send(b, () => {
+    editDoc(b, { notes: 'second' }, ORIGIN_USER)
+  })
+  const merged = await getPage(page.id)
+  if (merged.title !== 'Merged' || !merged.body.includes('first') || !merged.body.includes('second')) {
+    fail(`concurrent edits did not merge: ${JSON.stringify(merged)}`)
+  }
+  closeSessionFor(page.id, -1)
+
+  // The log on disk rebuilds the same document.
+  const fromDisk = await readSessionFromDisk(page.id)
+  if (fromDisk.notes !== merged.body || fromDisk.title !== 'Merged') fail('log did not persist')
+
+  // The export and its metadata follow the document.
+  await flushAllSessions()
+  const exported = await readFile(join(notesDir(), page.id), 'utf8')
+  if (!exported.startsWith('Merged\n\n') || !exported.endsWith(merged.body)) {
+    fail(`export is wrong: ${JSON.stringify(exported)}`)
+  }
+  const sidecar: unknown = JSON.parse(await readFile(sidecarPath(page.id), 'utf8'))
+  const meta = sidecar as { schema?: unknown; title?: unknown; editable?: unknown; export?: unknown }
+  if (meta.schema !== 'lyra.session/1' || meta.title !== 'Merged' || meta.editable !== false || meta.export !== page.id) {
+    fail(`metadata is wrong: ${JSON.stringify(sidecar)}`)
+  }
+
+  // An outside edit to the export is kept as a copy before Lyra overwrites it.
+  await writeFile(join(notesDir(), page.id), 'edited by another tool', 'utf8')
+  await savePage({ id: page.id, title: 'Merged', body: `${merged.body} again` })
+  const backups = await readdir(join(notesDir(), '.sessions', page.id, 'external')).catch(() => [])
+  if (backups.length !== 1) fail(`outside edit was not backed up (${String(backups.length)})`)
+
+  // A note dropped into the folder becomes a session without its file changing.
+  const dropped = 'Dropped note\n\nwritten elsewhere\r\nwith CRLF'
+  await writeFile(join(notesDir(), 'dropped-smoke.txt'), dropped, 'utf8')
+  const list = await listPages()
+  if (list.find((entry) => entry.id === 'dropped-smoke.txt')?.title !== 'Dropped note') {
+    fail('dropped note was not listed')
+  }
+  if ((await readFile(join(notesDir(), 'dropped-smoke.txt'), 'utf8')) !== dropped) {
+    fail('migration rewrote the note file')
+  }
+
+  for (const id of [page.id, 'dropped-smoke.txt']) {
+    await deletePage(id)
+    if (existsSync(join(notesDir(), id)) || existsSync(join(notesDir(), '.sessions', id))) {
+      fail(`delete left files behind for ${id}`)
+    }
+  }
+}
+
 async function runUiSmoke(win: BrowserWindow): Promise<void> {
   try {
     checkConsentParser()
+    await checkSessionStore()
     const result: unknown = await win.webContents.executeJavaScript(`
       (async () => {
         const fail = (message) => { throw new Error(message) }
@@ -417,6 +510,14 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
           }
           await window.api.deletePage(created.id)
         }
+
+        const session = await window.api.createPage()
+        const state = await window.api.openSession(session.id)
+        if (!(state instanceof Uint8Array) || state.byteLength === 0) fail('openSession returned no state')
+        const badUpdate = await window.api.updateSession(session.id, 'not an update').then(() => false, () => true)
+        if (!badUpdate) fail('updateSession accepted a non-binary update')
+        window.api.closeSession(session.id)
+        await window.api.deletePage(session.id)
 
         const meetingPage = await window.api.createPage()
         await window.api.startRecording(meetingPage.id, false)
@@ -508,8 +609,16 @@ void app.whenReady().then(() => {
   })
 })
 
-app.on('before-quit', () => {
+let flushed = false
+app.on('before-quit', (event) => {
   quitting = true
+  // Write pending exports and compact session logs before the process goes away.
+  if (flushed) return
+  event.preventDefault()
+  void flushAllSessions().finally(() => {
+    flushed = true
+    app.quit()
+  })
 })
 
 app.on('will-quit', () => {

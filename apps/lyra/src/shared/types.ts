@@ -127,6 +127,9 @@ export type UpdateStatus =
   | { state: 'ready'; version: string }
   | { state: 'error'; message: string }
 
+/** A Yjs update to an open session, made outside this window. */
+export type SessionUpdate = { id: string; update: Uint8Array }
+
 export type VoicePagesApi = {
   listPages: () => Promise<PageSummary[]>
   getPage: (id: string) => Promise<Page>
@@ -134,8 +137,18 @@ export type VoicePagesApi = {
   createPage: (options?: { startedAt?: string }) => Promise<Page>
   savePage: (page: Pick<Page, 'id' | 'title' | 'body'>) => Promise<Page>
   deletePage: (id: string) => Promise<void>
-  /** Fires when files in the notes folder change outside of `savePage`. */
+  /** Fires when the list of pages, or a page's title or preview, may have changed. */
   onPagesChanged: (callback: () => void) => () => void
+  /**
+   * Opens a session's Yjs document for this window: resolves to its full state as one update,
+   * and `onSessionUpdate` then delivers changes made elsewhere. See docs/SESSION-MODEL.md.
+   */
+  openSession: (id: string) => Promise<Uint8Array>
+  /** Sends a Yjs update made in this window; resolves once main has persisted it. */
+  updateSession: (id: string, update: Uint8Array) => Promise<void>
+  /** Stops receiving updates for a session this window no longer shows. */
+  closeSession: (id: string) => void
+  onSessionUpdate: (callback: (change: SessionUpdate) => void) => () => void
   getSettings: () => Promise<Settings>
   updateSettings: (patch: Partial<Settings>) => Promise<Settings>
   onSettingsChanged: (callback: (settings: Settings) => void) => () => void

@@ -8,6 +8,7 @@ import type {
   Page,
   SessionCommand,
   SessionState,
+  SessionUpdate,
   Settings,
   UpdateStatus,
   VoicePagesApi,
@@ -35,6 +36,12 @@ const api: VoicePagesApi = {
   onPagesChanged: (callback) => subscribe('pages:changed', () => {
       callback()
     }),
+  openSession: (id) => ipcRenderer.invoke('sessions:open', id),
+  updateSession: (id, update) => ipcRenderer.invoke('sessions:update', id, update),
+  closeSession: (id) => {
+    ipcRenderer.send('sessions:close', id)
+  },
+  onSessionUpdate: (callback) => subscribe<SessionUpdate>('sessions:update', callback),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   updateSettings: (patch) => ipcRenderer.invoke('settings:update', patch),
   onSettingsChanged: (callback) => subscribe<Settings>('settings:changed', callback),

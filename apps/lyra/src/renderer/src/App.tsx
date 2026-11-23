@@ -25,13 +25,33 @@ const MEETING_TITLE_FORMAT: Intl.DateTimeFormatOptions = {
   minute: '2-digit'
 }
 
+/** The title field and the editor: where undo/redo means "undo my edit to this page". */
+function isPageField(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLElement &&
+    (target.classList.contains('title-input') || target.classList.contains('editor'))
+  )
+}
+
 function toMarkdown(title: string, body: string): string {
   return title && title !== 'Untitled' ? `# ${title}\n\n${body}` : body
 }
 
 export default function App(): React.JSX.Element {
-  const { pages, current, currentRef, saveState, edit, open, close, create, remove, flush } =
-    usePages()
+  const {
+    pages,
+    current,
+    currentRef,
+    saveState,
+    edit,
+    undo,
+    redo,
+    open,
+    close,
+    create,
+    remove,
+    flush
+  } = usePages()
   const [status, setStatus] = useState<WhisperStatus>({ state: 'idle' })
   const [update, setUpdate] = useState<UpdateStatus>({ state: 'idle' })
   const [copied, setCopied] = useState(false)
@@ -223,6 +243,14 @@ export default function App(): React.JSX.Element {
     const onKey = (event: KeyboardEvent): void => {
       if (!(event.metaKey || event.ctrlKey)) return
       const key = event.key.toLowerCase()
+      // The page's text lives in a shared document, so undo goes through it (and skips text
+      // that arrived from elsewhere) instead of the textarea's own history.
+      if ((key === 'z' || key === 'y') && isPageField(event.target)) {
+        event.preventDefault()
+        if (key === 'y' || event.shiftKey) redo()
+        else undo()
+        return
+      }
       if (key === 'd' && event.shiftKey) {
         event.preventDefault()
         toggleDictation()
@@ -239,9 +267,10 @@ export default function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [toggleDictation, newPage, startSession])
+  }, [toggleDictation, newPage, startSession, undo, redo])
 
   const words = current ? wordCount(current.body) : 0
+  const editedAt = current ? pages.find((page) => page.id === current.id)?.updatedAt : undefined
 
   return (
     <div className={`app platform-${window.api.platform}`}>
@@ -299,7 +328,7 @@ export default function App(): React.JSX.Element {
                     {words} {words === 1 ? 'word' : 'words'}
                   </span>
                   {words > 0 ? <span>{readingMinutes(words)} min read</span> : null}
-                  <span>Edited {relativeTime(current.updatedAt).toLowerCase()}</span>
+                  {editedAt ? <span>Edited {relativeTime(editedAt).toLowerCase()}</span> : null}
                 </p>
                 <MeetingSpeakers
                   pageId={current.id}
