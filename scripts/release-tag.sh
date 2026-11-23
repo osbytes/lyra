@@ -4,7 +4,7 @@
 # the "version" workflow after a "Release" PR merges, or by hand after `pnpm release:version` on main.
 set -eu
 cd "$(dirname "$0")/.."
-version=$(node -p "require('./package.json').version")
+version=$(node -p "require('./apps/lyra/package.json').version")
 tag="v$version"
 if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
   echo "tag $tag already exists; nothing to do"

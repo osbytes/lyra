@@ -9,4 +9,4 @@ pnpm changeset --empty  # docs-only or internal change
 ```
 
 CI refuses a PR without one. The "Release" pull request turns the pending changesets into
-`CHANGELOG.md` and the next version. See [docs/RELEASING.md](../docs/RELEASING.md).
+`apps/lyra/CHANGELOG.md` and the next version. See [docs/RELEASING.md](../docs/RELEASING.md).
