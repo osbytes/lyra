@@ -145,7 +145,7 @@ export function buildTurns(segments: readonly DiarizedSegment[]): Turn[] {
 }
 
 /** Names each cluster: a saved voice, else "you" when it's mostly the mic track, else Speaker N. */
-async function nameSpeakers(result: DiarizeResult, hasSystemTrack: boolean): Promise<NamedSpeaker[]> {
+export async function nameSpeakers(result: DiarizeResult, hasSystemTrack: boolean): Promise<NamedSpeaker[]> {
   const me = await selfPerson()
   const order = [...new Set([...result.segments].sort((a, b) => a.start - b.start).map((s) => s.speaker))]
 
@@ -297,7 +297,7 @@ async function lineConfidence(
   return out
 }
 
-async function nextPassId(pageId: string): Promise<string> {
+export async function nextPassId(pageId: string): Promise<string> {
   const manifest = await readManifestOf(pageId)
   const n = manifest.passes.filter((pass) => pass.kind === 'diarized').length + 1
   return `pass-${String(n)}`

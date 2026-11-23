@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { MicPrompt, SessionState } from '../../../shared/types'
 import { formatDuration } from '../lib/format'
-import { StopIcon } from './Icons'
+import { GripIcon, StopIcon } from './Icons'
 
 const BAR_COUNT = 16
 const LIVE_CHARS = 60
@@ -111,6 +111,9 @@ function RecordingPill() {
 
   return (
     <div className="overlay-pill" role="status">
+      <span className="overlay-grip" title="Drag to move" aria-hidden="true">
+        <GripIcon />
+      </span>
       <button
         type="button"
         className="overlay-body"

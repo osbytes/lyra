@@ -16,8 +16,9 @@ Roadmap: [docs/PLAN.md](docs/PLAN.md). Human contributor guide: [CONTRIBUTING.md
 | UI smoke test | `pnpm smoke:ui` (builds, launches Electron headless, exercises the IPC bridge) |
 | Native addon smoke | `pnpm smoke` (only needed when touching `src/main/whisper.ts` or native deps) |
 | QA with real audio | `powershell -File scripts/make-demo-audio.ps1` makes `test-audio/meeting.wav` (two synthetic voices); see the `qa-test` skill |
-| Meeting pipeline smoke | `pnpm smoke:meeting <file.wav>`: real diarization, Whisper, and relabeling; `LYRA_NOTES_ENGINE=local` adds notes; `LYRA_MODELS_DIR` reuses downloads |
-| Speaker evals | `pnpm eval:calls` (in `apps/lyra`): synthetic call/room scenarios with exact ground truth (speaker bleed, clipping, quick turns, crosstalk, similar voices); `pnpm eval:ami` scores real AMI meetings (`--meetings`, `--minutes`, `--mic`). WER, cpWER, DER; data and results go to `eval-data/` |
+| Meeting pipeline smoke | `pnpm smoke:meeting <file.wav> [system.wav]`: replays the audio as a live recording (streaming Whisper, live speakers, relabel after stop); `LYRA_MEETING_PIPELINE=offline` runs diarize-then-transcribe instead; `LYRA_NOTES_ENGINE=local` adds notes; `LYRA_MODELS_DIR` reuses downloads |
+| Speaker evals | `pnpm eval:calls` (in `apps/lyra`): synthetic call/room scenarios with exact ground truth (speaker bleed, clipping, quick turns, crosstalk, similar voices); `pnpm eval:ami` scores real AMI meetings (`--meetings`, `--minutes`, `--mic`). WER, cpWER, DER; data and results go to `eval-data/`. `--pipeline live` (default: what the app runs), `stream` (live identification alone) or `offline` |
+| Debug a mislabeled session | `pnpm replay:session <session id or folder>` (in `apps/lyra`): re-runs its kept audio through each pipeline and prints who spoke each line; `--reference ref.json` scores it. A session's `raw/live.json` `trace` has every live speaker decision |
 | Package (Windows dir build) | `pnpm build:unpack`; runs `prepare:llama`, which ships node-llama-cpp as its own npm install |
 
 ## Layout

@@ -2,6 +2,7 @@ import type { PageSummary, Settings } from '../../../shared/types'
 import { LOW_CONFIDENCE, SURE_MATCH } from '../../../shared/sessionDoc'
 import type { OpenPage } from '../hooks/usePages'
 import { formatDuration, readingMinutes, relativeTime } from '../lib/format'
+import { speakerTone } from '../lib/speakerTone'
 import { CopyIcon, FolderIcon, PeopleIcon } from './Icons'
 import { ScrollArea } from './Controls'
 import { TagRow } from './TagRow'
@@ -134,7 +135,11 @@ export function DetailsPanel({
                     aria-haspopup="dialog"
                     onClick={(event) => onSpeaker(speaker.id, event.currentTarget)}
                   >
-                    <span className="speaker-avatar" aria-hidden="true">
+                    <span
+                      className="speaker-avatar"
+                      data-tone={speakerTone(page.speakers, speaker.id)}
+                      aria-hidden="true"
+                    >
                       {state === 'unknown' ? '?' : (speaker.name[0] ?? '?').toUpperCase()}
                     </span>
                     <span className="details-speaker-name">

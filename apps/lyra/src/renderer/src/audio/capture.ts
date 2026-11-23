@@ -1,5 +1,5 @@
 import { log } from '../lib/log'
-import { SAMPLE_RATE } from './vad'
+import { SAMPLE_RATE } from '../../../shared/audio/vad'
 
 /** 32 ms frames: small enough for a responsive VAD, large enough to keep messaging cheap. */
 const FRAME_SIZE = 512

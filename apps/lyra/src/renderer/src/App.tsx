@@ -8,13 +8,14 @@ import { NotesEditor, type NotesHandle } from './components/NotesEditor'
 import { TagRow } from './components/TagRow'
 import { ScrollArea } from './components/Controls'
 import { Transcript } from './components/Transcript'
-import { CheckIcon, CopyIcon, FolderIcon, MicIcon, PanelIcon } from './components/Icons'
+import { CheckIcon, CopyIcon, FolderIcon, GearIcon, MicIcon, PanelIcon, PlusIcon } from './components/Icons'
 import { SettingsDialog } from './components/Settings'
+import { CommandPalette } from './components/CommandPalette'
 import { Sidebar } from './components/Sidebar'
 import { useDictation } from './hooks/useDictation'
 import { usePages, type OpenPage } from './hooks/usePages'
 import { useSettings } from './hooks/useSettings'
-import { homePath, readingMinutes, relativeTime, shortcutLabel, wordCount } from './lib/format'
+import { clockLabel, homePath, readingMinutes, relativeTime, shortcutLabel, wordCount } from './lib/format'
 import { promptFor } from './text/transcript'
 
 /** The overlay pill doesn't need every audio frame; ~12 updates a second look smooth. */
@@ -42,20 +43,27 @@ function isPageField(target: EventTarget | null): boolean {
   )
 }
 
-function clockLabel(seconds: number): string {
-  const total = Math.max(0, Math.floor(seconds))
-  const m = Math.floor(total / 60)
-  const s = String(total % 60).padStart(2, '0')
-  return total >= 3600
-    ? `${String(Math.floor(m / 60))}:${String(m % 60).padStart(2, '0')}:${s}`
-    : `${String(m)}:${s}`
-}
-
 /** A quote of the transcript for the notes: the words, then who said them and when. */
 function quoteOf(text: string, who: string | null, start: number): string {
   const said = text.replace(/\s+/g, ' ').trim()
   const by = who ? `${who}, ${clockLabel(start)}` : clockLabel(start)
   return `> ${said}\n>\n> — *${by}*`
+}
+
+/** How long to wait for an opened session's transcript to render before giving up. */
+const REVEAL_FRAMES = 60
+
+/** Scrolls a transcript line into view and flashes it, once the opened session renders it. */
+function revealLine(lineId: string, frame = 0): void {
+  const text = document.querySelector(`[data-line="${CSS.escape(lineId)}"]`)
+  const line = text?.closest('.line')
+  if (!line) {
+    if (frame < REVEAL_FRAMES) requestAnimationFrame(() => revealLine(lineId, frame + 1))
+    return
+  }
+  line.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  line.classList.add('search-flash')
+  line.addEventListener('animationend', () => line.classList.remove('search-flash'), { once: true })
 }
 
 function toMarkdown(page: OpenPage): string {
@@ -99,6 +107,7 @@ export default function App(): React.JSX.Element {
   const { settings, update: updateSettings } = useSettings()
   const [showSettings, setShowSettings] = useState(false)
   const closeSettings = useCallback(() => setShowSettings(false), [])
+  const [showSearch, setShowSearch] = useState(false)
   const settingsRef = useRef(settings)
   settingsRef.current = settings
   const titleInput = useRef<HTMLInputElement>(null)
@@ -319,6 +328,9 @@ export default function App(): React.JSX.Element {
       } else if (key === ',') {
         event.preventDefault()
         setShowSettings(true)
+      } else if (key === 'k' && !event.shiftKey) {
+        event.preventDefault()
+        setShowSearch((open) => !open)
       }
     }
     window.addEventListener('keydown', onKey)
@@ -372,6 +384,7 @@ export default function App(): React.JSX.Element {
         onCreate={() => void startSession()}
         onDelete={(page) => void deletePage(page)}
         onSettings={() => setShowSettings(true)}
+        onSearch={() => setShowSearch(true)}
         tags={knownTags}
         tagFilter={tagFilter}
         onTagFilter={setTagFilter}
@@ -520,7 +533,6 @@ export default function App(): React.JSX.Element {
               onMicChange={(micDeviceId) => void updateSettings({ micDeviceId })}
               systemAudio={systemAudio}
               onSystemAudioChange={(captureSystemAudio) => void updateSettings({ captureSystemAudio })}
-              compact={panel}
               subscribeLevel={dictation.subscribeLevel}
               onToggle={toggleDictation}
             >
@@ -583,6 +595,60 @@ export default function App(): React.JSX.Element {
           </div>
         )}
       </main>
+
+      {showSearch ? (
+        <CommandPalette
+          pages={trashed ? pages.filter((page) => page.id !== trashed.id) : pages}
+          activeId={current?.id}
+          onOpen={(id, line) => void openPage(id).then(() => line && revealLine(line))}
+          onClose={() => setShowSearch(false)}
+          commands={[
+            {
+              id: 'new',
+              label: 'New session',
+              keywords: 'create record start',
+              shortcut: shortcutLabel('N'),
+              icon: <PlusIcon />,
+              run: () => void startSession()
+            },
+            ...(current
+              ? [
+                  {
+                    id: 'dictate',
+                    label: recording ? 'Stop recording' : 'Continue recording',
+                    keywords: 'dictate microphone record',
+                    shortcut: shortcutLabel('D', true),
+                    icon: <MicIcon />,
+                    run: toggleDictation
+                  },
+                  {
+                    id: 'copy',
+                    label: 'Copy as Markdown',
+                    keywords: 'clipboard export',
+                    icon: <CopyIcon />,
+                    run: copy
+                  },
+                  {
+                    id: 'panel',
+                    label: panel ? 'Hide details panel' : 'Show details panel',
+                    keywords: 'layout sidebar',
+                    shortcut: shortcutLabel('.'),
+                    icon: <PanelIcon />,
+                    run: toggleLayout
+                  }
+                ]
+              : []),
+            {
+              id: 'settings',
+              label: 'Settings',
+              keywords: 'preferences options',
+              shortcut: shortcutLabel(','),
+              icon: <GearIcon />,
+              run: () => setShowSettings(true)
+            }
+          ]}
+        />
+      ) : null}
 
       {showSettings && settings ? (
         <SettingsDialog settings={settings} update={updateSettings} onClose={closeSettings} />

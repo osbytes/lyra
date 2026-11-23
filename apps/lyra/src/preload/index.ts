@@ -29,6 +29,7 @@ function subscribe<T = undefined>(channel: string, callback: (value: T) => void)
 
 const api: VoicePagesApi = {
   listPages: () => ipcRenderer.invoke('pages:list'),
+  searchPages: (query) => ipcRenderer.invoke('pages:search', query),
   getPage: (id) => ipcRenderer.invoke('pages:get', id),
   createPage: (options) => ipcRenderer.invoke('pages:create', options ?? {}),
   savePage: (page) => ipcRenderer.invoke('pages:save', page),

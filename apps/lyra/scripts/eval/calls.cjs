@@ -10,6 +10,10 @@
 // - Two people who sound alike. The two stock TTS voices differ so much that clustering always
 //   splits them, so the `similar` scenarios voice both people with one voice, pitch-shifted.
 //
+// - One far-field mic in a room (a webcam on the desk): both people are reverberant, the far one
+//   quieter and more so, and the session runs for minutes. Live identification that drifts merges
+//   everyone into one speaker over a long session even when the first minute looked right.
+//
 // Voice 0 is the local person (mic), voice 1 the remote person (system track) or, in the
 // in-room scenario, a second person at the same mic. The audio is generated, never recorded,
 // so scenarios are safe to share. Written to <dataDir>/calls/<scenario>/.
@@ -66,6 +70,9 @@ const CROSSTALK = [
   [R, 'Agreed.', { overlap: 0.5 }]
 ]
 
+/** Several minutes of mixed talk: long turns, quick replies and crosstalk, repeated. */
+const LONG = [...LOPSIDED, ...QUICK, ...CROSSTALK, ...LOPSIDED.slice(0, 6), ...QUICK.slice(0, 8), ...CROSSTALK.slice(2)]
+
 /**
  * Each scenario: a script and how the two voices reach the two tracks.
  * `remote: 'system'` puts voice 1 on the system track; `'mic'` puts it at the same mic (in-room).
@@ -81,7 +88,10 @@ const SCENARIOS = {
   'call-crosstalk': { script: CROSSTALK, remote: 'system', bleed: 0.9, systemGain: 1 },
   'room-quick-turns': { script: QUICK, remote: 'mic', bleed: 0, systemGain: 1 },
   'call-similar-voices': { script: LOPSIDED, remote: 'system', bleed: 0.9, systemGain: 3, similar: { pitch: '+15%', rate: '+10%' } },
-  'room-similar-voices': { script: QUICK, remote: 'mic', bleed: 0, systemGain: 1, similar: { pitch: '+15%', rate: '+10%' } }
+  'room-similar-voices': { script: QUICK, remote: 'mic', bleed: 0, systemGain: 1, similar: { pitch: '+15%', rate: '+10%' } },
+  'room-far-field': { script: LONG, remote: 'mic', bleed: 0, systemGain: 1, room: { near: 0.25, far: 0.5, farGain: 0.45 } },
+  'room-far-similar': { script: LONG, remote: 'mic', bleed: 0, systemGain: 1, room: { near: 0.25, far: 0.5, farGain: 0.45 }, similar: { pitch: '+15%', rate: '+10%' } },
+  'call-speakers-long': { script: LONG, remote: 'system', bleed: 0.9, systemGain: 1, room: { near: 0.2 } }
 }
 
 const GAP = 0.6
@@ -117,6 +127,37 @@ function speakerBleed(remote, gain) {
   return out
 }
 
+/** Reverberation time of a furnished office or meeting room, in seconds. */
+const RT60 = 0.5
+
+/**
+ * A small Schroeder reverb (four combs into two all-passes): what a room adds between a talker
+ * and a desk mic. `wet` is how much of the sound is room rather than direct path. Each comb's
+ * feedback is set so its echoes fall 60 dB in RT60.
+ */
+function reverb(dry, wet) {
+  const combs = [1557, 1617, 1491, 1422].map((delay) => [delay, 10 ** ((-3 * delay) / RATE / RT60)])
+  const out = new Float32Array(dry.length)
+  for (const [delay, feedback] of combs) {
+    const line = new Float32Array(delay)
+    for (let i = 0, j = 0; i < dry.length; i++, j = (j + 1) % delay) {
+      const echo = line[j]
+      line[j] = dry[i] + echo * feedback
+      out[i] += echo / combs.length
+    }
+  }
+  for (const [delay, gain] of [[225, 0.5], [556, 0.5]]) {
+    const line = new Float32Array(delay)
+    for (let i = 0, j = 0; i < out.length; i++, j = (j + 1) % delay) {
+      const delayed = line[j]
+      const input = out[i]
+      line[j] = input + delayed * gain
+      out[i] = delayed - input * gain
+    }
+  }
+  return dry.map((value, i) => value * (1 - wet) + out[i] * wet * 2)
+}
+
 /** Builds one scenario's mic.wav, system.wav (when it has one) and reference. */
 function prepare(dataDir, name) {
   const scenario = SCENARIOS[name]
@@ -141,14 +182,21 @@ function prepare(dataDir, name) {
   })
   const length = Math.ceil((cursor + 1) * RATE)
 
-  const local = new Float32Array(length)
-  const remote = new Float32Array(length)
+  let local = new Float32Array(length)
+  let remote = new Float32Array(length)
   for (const line of placed) addAt(line.who === L ? local : remote, line.clip, Math.round(line.start * RATE))
+  if (scenario.room) {
+    local = reverb(local, scenario.room.near)
+    // On a call the remote voice reaches the mic through the speakers (`bleed`), not the room.
+    if (scenario.remote === 'mic') remote = reverb(remote, scenario.room.far).map((value) => value * scenario.room.farGain)
+  }
 
   // A faint noise floor: real mics are never digital silence, and VAD behaves differently on zeros.
   const noise = random(name.length * 7919)
   const mic = new Float32Array(length)
-  for (let i = 0; i < length; i++) mic[i] = local[i] + (noise() - 0.5) * 0.002
+  // A room is noisier than a headset: fans, the laptop, the street.
+  const hiss = scenario.room ? 0.006 : 0.002
+  for (let i = 0; i < length; i++) mic[i] = local[i] + (noise() - 0.5) * hiss
   let systemPath = null
   if (scenario.remote === 'mic') {
     addAt(mic, remote, 0)

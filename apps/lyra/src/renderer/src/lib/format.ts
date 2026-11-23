@@ -39,6 +39,16 @@ export function homePath(path: string): string {
   return path.replace(/^(\/Users\/[^/]+|\/home\/[^/]+|[A-Za-z]:\\Users\\[^\\]+)/, '~')
 }
 
+/** A recording position as `m:ss`, or `h:mm:ss` past an hour. */
+export function clockLabel(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds))
+  const m = Math.floor(total / 60)
+  const s = String(total % 60).padStart(2, '0')
+  return total >= 3600
+    ? `${String(Math.floor(m / 60))}:${String(m % 60).padStart(2, '0')}:${s}`
+    : `${String(m)}:${s}`
+}
+
 export function formatDuration(ms: number): string {
   const total = Math.floor(ms / 1000)
   const minutes = Math.floor(total / 60)

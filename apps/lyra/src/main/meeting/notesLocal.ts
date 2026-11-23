@@ -1,8 +1,9 @@
 import { app, utilityProcess, type UtilityProcess } from 'electron'
 import { join } from 'node:path'
 import { log } from '../log'
-import { ensureDownload, type DownloadProgress } from '../models'
-import { chunkTranscript, parseNotes, type MeetingNotes } from './notesFormat'
+import { existsSync } from 'node:fs'
+import { ensureDownload, modelsDir, type DownloadProgress } from '../models'
+import { chunkTranscript, parseNotes, parseTitle, type MeetingNotes } from './notesFormat'
 import type { NotesWorkerRequest, NotesWorkerResponse } from './notesWorker'
 
 const MODEL = {
@@ -41,11 +42,11 @@ function getWorker(): UtilityProcess {
   return child
 }
 
-function ask(modelPath: string, prompts: string[]): Promise<unknown[]> {
+function ask(modelPath: string, prompts: string[], task: NotesWorkerRequest['task'] = 'notes'): Promise<unknown[]> {
   const id = nextId++
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject })
-    const request: NotesWorkerRequest = { id, modelPath, prompts }
+    const request: NotesWorkerRequest = { id, modelPath, prompts, task }
     getWorker().postMessage(request)
   })
 }
@@ -74,6 +75,18 @@ export async function localNotes(transcript: string, onDownload?: DownloadProgre
       JSON.stringify(partials)
   ])
   return parseNotes(merged)
+}
+
+/** The local model is on disk already (a title alone never starts its ~2 GB download). */
+export function hasLocalNotesModel(): boolean {
+  return existsSync(join(modelsDir(), MODEL.name))
+}
+
+/** A title suggestion from the local model; null if it gave nothing usable. */
+export async function localTitle(text: string): Promise<string | null> {
+  const modelPath = await ensureDownload(MODEL.name, MODEL.url, MODEL.minBytes)
+  const [result] = await ask(modelPath, [`Note:\n\n${text}`], 'title')
+  return parseTitle(result)
 }
 
 export function stopNotesWorker(): void {

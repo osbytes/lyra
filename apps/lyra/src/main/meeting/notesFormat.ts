@@ -46,6 +46,43 @@ export const NOTES_SYSTEM_PROMPT = [
   'Use only what the transcript says. Be brief.'
 ].join('\n')
 
+/** A session title suggestion: the schema both engines fill. */
+export const TITLE_SCHEMA = {
+  type: 'object',
+  properties: { title: { type: 'string' } },
+  required: ['title'],
+  additionalProperties: false
+} as const
+
+export const TITLE_SYSTEM_PROMPT = [
+  'You title a note from a voice notebook. It holds what was said (lines may look like',
+  '"Name: what they said") and anything the person typed.',
+  'Return title: a short heading of 2-6 plain words, separated by spaces, naming the main topic',
+  '("Q3 budget review", "Ideas for the garden"). Start with a capital letter. No quotes, no',
+  'hyphens between words, no trailing period, no dates or times. Use only what the note says.'
+].join('\n')
+
+/** Longest title kept from a model; anything past it is cut at a word. */
+const MAX_TITLE = 80
+
+/** Validates a title suggestion; null when there is nothing usable in it. */
+export function parseTitle(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null
+  const { title } = value as Record<string, unknown>
+  if (typeof title !== 'string') return null
+  let clean = title
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^["'“‘]+|["'”’]+$/g, '')
+    .replace(/[.。]+$/, '')
+    .trim()
+  // Small models sometimes answer with a slug ("meeting-planning"): read it as words.
+  if (!clean.includes(' ') && /[a-z][-_][a-z]/i.test(clean)) clean = clean.replace(/[-_]+/g, ' ')
+  clean = clean.charAt(0).toUpperCase() + clean.slice(1)
+  if (clean.length > MAX_TITLE) clean = clean.slice(0, MAX_TITLE).replace(/\s+\S*$/, '')
+  return clean || null
+}
+
 /** Separates generated notes (above) from the labeled transcript (below) in the export. */
 export const TRANSCRIPT_DIVIDER = '──── Transcript ────'
 

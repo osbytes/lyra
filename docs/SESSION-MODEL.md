@@ -268,16 +268,24 @@ from the plan above:
   starts.
 - **One kind of session.** There is no dictation/meeting switch: every session records the
   mic, plus the computer's audio when that setting is on.
-- **Speakers are identified live** (`src/main/meeting/live.ts`); there is no labeling step after
-  a recording stops. Each phrase the streaming transcriber commits is split at sentence ends,
+- **Speakers are identified live, then settled when the recording stops.** Live
+  (`src/main/meeting/live.ts`): each phrase the streaming transcriber commits is split at sentence ends,
   voiceprinted from its own audio and clustered online against the voices heard so far (cosine
   ≥ 0.5 joins a voice). Short phrases ("Yes.") are voiceprinted together with their neighbours
   or take the speaker of the phrase after them, since they often open a turn. Two voices whose
   running voiceprints converge (≥ 0.68) are merged back into one. Each phrase becomes a
   transcript line for its speaker; lines only grow at the end, so nothing on the page moves.
   With one voice the window shows the lines as plain paragraphs, with no speaker labels.
-  `processMeeting` (offline diarization of a whole recording) remains for `pnpm smoke:meeting`
-  and the eval.
+  Live identification alone collapses long sessions into one speaker: Whisper's streaming word
+  times leave many phrases with almost no audio to voiceprint, and running voiceprints absorb
+  phrases that span a turn until every voice looks alike. So once a recording stops,
+  `meeting/relabel.ts` diarizes the whole session's audio and moves each live word to the speaker
+  diarized at its time (as WhisperX assigns words), rebuilding lines by turn. The words stay
+  exactly as transcribed; edited lines keep their text; a speaker the user named keeps its name
+  on the diarized voice it shares the most talk with. The live pass's decisions are kept in
+  `raw/live.json` (`trace`) and the relabeled lines as `raw/pass-N.json`, so `pnpm replay:session`
+  can re-run a session that came out wrong. `processMeeting` (diarize, then transcribe each turn)
+  remains for `LYRA_MEETING_PIPELINE=offline` and the eval.
 - **Notes are only what the user types.** Earlier versions wrote live text into the notes and
   replaced it with the labeled transcript afterwards (`meta.liveRanges`, `removeLiveNotes`); that
   path remains for documents made that way. A live range now also counts the phrases placed so

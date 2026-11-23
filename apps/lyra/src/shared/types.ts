@@ -111,6 +111,22 @@ export type PageSummary = {
   seconds: number | null
 }
 
+/** Where in a session a search matched. */
+export type SearchField = 'title' | 'tags' | 'summary' | 'notes' | 'transcript'
+
+/** One matched paragraph or transcript line, split into matched and unmatched runs. */
+export type SearchMatch = {
+  field: SearchField
+  parts: { text: string; hit: boolean }[]
+  /** Transcript lines only: who said it, when (seconds), and the line's id to jump to. */
+  speaker: string | null
+  start: number | null
+  line: string | null
+}
+
+/** A session that matched a search, best match first; `score` is 0 (exact) to 1. */
+export type SearchHit = PageSummary & { score: number; matches: SearchMatch[] }
+
 export type WhisperStatus =
   | { state: 'idle' }
   | { state: 'downloading'; received: number; total: number }
@@ -135,6 +151,8 @@ export type SessionUpdate = { id: string; update: Uint8Array }
 
 export type VoicePagesApi = {
   listPages: () => Promise<PageSummary[]>
+  /** Full-text search across every session's title, notes, transcript and tags. */
+  searchPages: (query: string) => Promise<SearchHit[]>
   getPage: (id: string) => Promise<Page>
   /** `startedAt` (ISO) names the file after a session's start time; defaults to now. */
   createPage: (options?: { startedAt?: string }) => Promise<Page>

@@ -24,13 +24,23 @@ recording and compare against what was said.
 For speaker, diarization or call-labeling changes, also score the pipeline and compare against a
 run from before the change (`eval-data/results/<run>/results.json`):
 
+- `--pipeline live` (the default) replays each scenario as a recording, exactly as the app runs it:
+  streaming Whisper, live speaker identification, then the relabel pass after stop. `stream` scores
+  live identification alone (what the window shows while recording), `offline` the
+  diarize-then-transcribe pipeline. Compare the same pipeline before and after a change.
 - `pnpm eval:calls` (in `apps/lyra`): generated calls with exact ground truth. `call-speakers` has
   the remote voice bleeding into the mic from laptop speakers; `call-speakers-loud` adds a clipped
   system track; `call-quick-turns` / `room-quick-turns` have one-word replies; `call-crosstalk`
-  overlaps; `call-similar-voices` / `room-similar-voices` use two voices close enough to merge.
-  `--scenarios a,b` runs a subset. Similar-voice scenarios need Windows.
+  overlaps; `call-similar-voices` / `room-similar-voices` use two voices close enough to merge;
+  `room-far-field` / `room-far-similar` are minutes of talk at one reverberant desk mic (a webcam
+  in a room) and `call-speakers-long` a long call on laptop speakers, where live voiceprints drift
+  together. `--scenarios a,b` runs a subset. Similar-voice scenarios need Windows.
 - `pnpm eval:ami --mic Mix-Headset`: real four-person meetings (AMI, CC BY 4.0). Slower; run it
   before merging diarization changes.
+- A real session that came out wrong: `pnpm replay:session <id>` re-runs its kept audio (never
+  changing it) and prints each pipeline's lines by speaker; its `raw/live.json` `trace` shows each
+  live decision (scores against every voice, join/new/reuse, merges). Hand-label a few minutes into
+  a reference file to score it with `--reference`. Real audio never goes into the repo.
 - Read cpWER (words given to the wrong speaker count as errors) and the speakers found/actual
   column first. Real recordings stay out of `eval-data/` commits and out of the repo.
 
