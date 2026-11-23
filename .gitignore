@@ -15,4 +15,5 @@ models
 !build/**
 build/helpers/
 build/llama/
+test-audio/
 .turbo
