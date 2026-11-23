@@ -702,6 +702,13 @@ async function checkTranscriptModel(): Promise<void> {
   if (!exported.includes('[00:00:04] Ben: Hi Ana, good morning.') || !exported.startsWith('Weekly sync')) {
     fail(`export after a line edit: ${JSON.stringify(exported)}`)
   }
+  // Naming a speaker the same as another merges them: one speaker, all their lines.
+  // Even when the name also saves a new voice (remember), the same name still merges.
+  await assignSpeaker(id, 'c1', { name: 'ana', remember: true })
+  const merged = await readSession(id)
+  if (merged.speakers.length !== 1 || merged.transcript.some((line) => line.cluster !== 'c0')) {
+    fail(`speakers did not merge: ${JSON.stringify(merged.speakers)}`)
+  }
   await deletePage(id)
 }
 

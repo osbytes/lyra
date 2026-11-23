@@ -14,8 +14,8 @@ import {
 } from '../../../shared/sessionDoc'
 import type { NewSpeaker } from '../hooks/usePages'
 import { log } from '../lib/log'
-import { Floating, Switch } from './Controls'
-import { CloseIcon, PlayIcon, PlusIcon } from './Icons'
+import { Floating, ScrollArea, Switch } from './Controls'
+import { CloseIcon, PlayIcon, PlusIcon, StopIcon } from './Icons'
 import { usePeople } from './People'
 
 /**
@@ -79,12 +79,35 @@ function Signal({ confidence }: { confidence: number | null }) {
   )
 }
 
-let playing: { context: AudioContext; source: AudioBufferSourceNode } | null = null
+/**
+ * One clip plays at a time, app-wide. `key` says which button started it (a line id, or the
+ * picker), so that button can show Stop; every Listen button reads this through `usePlayback`.
+ */
+type Playing = { key: string; context: AudioContext; source: AudioBufferSourceNode }
+let playing: Playing | null = null
+const playbackListeners = new Set<(key: string | null) => void>()
+
+function setPlaying(next: Playing | null): void {
+  playing = next
+  for (const listener of playbackListeners) listener(next?.key ?? null)
+}
+
+function stopPlayback(): void {
+  const current = playing
+  if (!current) return
+  setPlaying(null)
+  current.source.onended = null
+  try {
+    current.source.stop()
+  } catch {
+    // Already finished.
+  }
+  void current.context.close()
+}
 
 /** Plays a stretch of the session's audio, stopping anything already playing. */
-async function listen(pageId: string, start: number, end: number): Promise<boolean> {
-  playing?.source.stop()
-  playing = null
+async function listen(key: string, pageId: string, start: number, end: number): Promise<boolean> {
+  stopPlayback()
   const pcm = await window.api.sessionAudio(pageId, start, end)
   if (!pcm.length) return false
   const context = new AudioContext({ sampleRate: 16000 })
@@ -94,12 +117,26 @@ async function listen(pageId: string, start: number, end: number): Promise<boole
   const source = context.createBufferSource()
   source.buffer = buffer
   source.connect(context.destination)
+  const entry: Playing = { key, context, source }
   source.onended = () => {
+    if (playing === entry) setPlaying(null)
     void context.close()
   }
   source.start()
-  playing = { context, source }
+  setPlaying(entry)
   return true
+}
+
+/** Which clip is playing (by key), kept in sync across every Listen button. */
+function usePlayback(): string | null {
+  const [key, setKey] = useState<string | null>(playing?.key ?? null)
+  useEffect(() => {
+    playbackListeners.add(setKey)
+    return () => {
+      playbackListeners.delete(setKey)
+    }
+  }, [])
+  return key
 }
 
 // --- Speaker picker --------------------------------------------------------------------
@@ -131,6 +168,7 @@ function SpeakerPicker({
   onSplit: () => void
 }) {
   const [query, setQuery] = useState('')
+  const nowPlaying = usePlayback()
   const [highlight, setHighlight] = useState(0)
   const [scope, setScope] = useState<'line' | 'all'>(picker.line ? 'line' : 'all')
   const [remember, setRemember] = useState(true)
@@ -224,7 +262,7 @@ function SpeakerPicker({
 
   return (
     <div className="picker-layer" onMouseDown={onClose}>
-      <div
+      <ScrollArea
         className="picker"
         role="dialog"
         aria-label={title}
@@ -247,16 +285,21 @@ function SpeakerPicker({
             <button
               type="button"
               className="chip-btn"
+              aria-pressed={nowPlaying === 'picker'}
               onClick={() => {
-                void listen(pageId, sample.start, Math.min(sample.end, sample.start + 8)).then(
+                if (nowPlaying === 'picker') {
+                  stopPlayback()
+                  return
+                }
+                void listen('picker', pageId, sample.start, Math.min(sample.end, sample.start + 8)).then(
                   (ok) => {
                     if (!ok) setError('This session’s audio is no longer kept.')
                   }
                 )
               }}
             >
-              <PlayIcon />
-              Listen
+              {nowPlaying === 'picker' ? <StopIcon /> : <PlayIcon />}
+              {nowPlaying === 'picker' ? 'Stop' : 'Listen'}
             </button>
           ) : null}
           <button type="button" className="icon-btn" aria-label="Close" onClick={onClose}>
@@ -388,7 +431,7 @@ function SpeakerPicker({
             </button>
           ) : null}
         </div>
-      </div>
+      </ScrollArea>
     </div>
   )
 }
@@ -429,7 +472,7 @@ function SplitDialog({
 
   return (
     <div className="picker-layer" onMouseDown={onCancel}>
-      <div
+      <ScrollArea
         className="picker split"
         role="dialog"
         aria-label={`Split ${speaker.name}`}
@@ -446,7 +489,7 @@ function SplitDialog({
           Tick the lines someone else said. Lyra ticked the ones whose voice is furthest from the
           rest.
         </p>
-        <ul className="split-list">
+        <ScrollArea as="ul" className="split-list">
           {own.map((line) => (
             <li key={line.id}>
               <label className={picked.has(line.id) ? 'split-row on' : 'split-row'}>
@@ -470,7 +513,7 @@ function SplitDialog({
               </label>
             </li>
           ))}
-        </ul>
+        </ScrollArea>
         <div className="picker-foot">
           <span className="split-count">
             {picked.size
@@ -489,7 +532,7 @@ function SplitDialog({
             Split
           </button>
         </div>
-      </div>
+      </ScrollArea>
     </div>
   )
 }
@@ -550,7 +593,10 @@ export function Transcript({
   pickerRequest
 }: Props) {
   const people = usePeople()
+  const nowPlaying = usePlayback()
   const status = useMeetingStatus(pageId)
+  // Leaving the session (or closing it) stops whatever is playing from it.
+  useEffect(() => stopPlayback, [pageId])
   const [picker, setPicker] = useState<Picker | null>(null)
   const [split, setSplit] = useState<{ speaker: string; anchor: DOMRect } | null>(null)
   const [toast, setToast] = useState<string | null>(null)
@@ -673,7 +719,8 @@ export function Transcript({
                 'line',
                 continues ? 'continues' : '',
                 level === 1 ? 'low' : '',
-                picker?.line === line.id ? 'picked' : ''
+                picker?.line === line.id ? 'picked' : '',
+                nowPlaying === line.id ? 'playing' : ''
               ].join(' ')}
             >
               <div className="gutter">
@@ -696,11 +743,17 @@ export function Transcript({
                   <button
                     type="button"
                     className="line-play"
-                    aria-label={`Listen from ${clock(line.start)}`}
-                    title="Listen"
-                    onClick={() => void listen(pageId, line.start, line.end)}
+                    aria-pressed={nowPlaying === line.id}
+                    aria-label={
+                      nowPlaying === line.id ? 'Stop playback' : `Listen from ${clock(line.start)}`
+                    }
+                    title={nowPlaying === line.id ? 'Stop' : 'Listen'}
+                    onClick={() => {
+                      if (nowPlaying === line.id) stopPlayback()
+                      else void listen(line.id, pageId, line.start, line.end)
+                    }}
                   >
-                    <PlayIcon />
+                    {nowPlaying === line.id ? <StopIcon /> : <PlayIcon />}
                     {clock(line.start)}
                   </button>
                   {line.cluster ? <Signal confidence={line.confidence} /> : null}

@@ -441,6 +441,37 @@ export function removeTag(doc: Y.Doc, tag: string, origin: unknown): void {
   }, origin)
 }
 
+/**
+ * The speaker that `id` should merge into once it's named: another speaker who is the same saved
+ * person, or (with no saved voice) has the same name. Diarization often splits one person into
+ * two clusters; naming both the same is how the user says so.
+ */
+export function speakerToMergeInto(
+  doc: Y.Doc,
+  id: string,
+  name: string,
+  personId: string | null
+): string | null {
+  const key = name.trim().toLowerCase()
+  const other = readSpeakers(doc).find(
+    (speaker) =>
+      speaker.id !== id &&
+      ((personId !== null && speaker.personId === personId) ||
+        speaker.name.trim().toLowerCase() === key)
+  )
+  return other?.id ?? null
+}
+
+/** Moves every line of speaker `from` to `into`, then removes `from`. */
+export function mergeSpeakers(doc: Y.Doc, from: string, into: string, origin: unknown): void {
+  doc.transact(() => {
+    for (const entry of docTranscript(doc).toArray()) {
+      if (entry.get('cluster') === from) entry.set('cluster', into)
+    }
+    speakersOf(doc)?.delete(from)
+  }, origin)
+}
+
 /** A speaker id not used yet in this document. */
 export function newSpeakerId(doc: Y.Doc): string {
   const taken = new Set<string>()

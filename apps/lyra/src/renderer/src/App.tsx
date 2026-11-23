@@ -4,6 +4,7 @@ import { DetailsPanel } from './components/DetailsPanel'
 import { DictationDock } from './components/DictationDock'
 import { Editor } from './components/Editor'
 import { TagRow } from './components/TagRow'
+import { ScrollArea } from './components/Controls'
 import { Transcript } from './components/Transcript'
 import { CheckIcon, CopyIcon, FolderIcon, MicIcon, PanelIcon } from './components/Icons'
 import { SettingsDialog } from './components/Settings'
@@ -73,7 +74,7 @@ export default function App(): React.JSX.Element {
   const settingsRef = useRef(settings)
   settingsRef.current = settings
   const titleInput = useRef<HTMLInputElement>(null)
-  const scroller = useRef<HTMLDivElement>(null)
+  const scroller = useRef<HTMLElement>(null)
 
   useEffect(() => {
     const stopStatus = window.api.onStatus(setStatus)
@@ -349,7 +350,7 @@ export default function App(): React.JSX.Element {
         {current ? (
           <div className="workspace-body">
           <div className="workspace-column">
-            <div className="scroller" ref={scroller}>
+            <ScrollArea className="scroller" ref={scroller}>
               <article className="page">
                 <input
                   ref={titleInput}
@@ -405,7 +406,7 @@ export default function App(): React.JSX.Element {
                   />
                 ) : null}
               </article>
-            </div>
+            </ScrollArea>
             <DictationDock
               phase={dictation.phase}
               micName={dictation.micName}
