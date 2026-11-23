@@ -3,17 +3,20 @@ import type { PageSummary, SessionKind, UpdateStatus, WhisperStatus } from '../.
 import { DictationDock } from './components/DictationDock'
 import { Editor } from './components/Editor'
 import { MeetingSpeakers } from './components/MeetingSpeakers'
-import { CheckIcon, CopyIcon, PlusIcon } from './components/Icons'
+import { CheckIcon, CopyIcon, FolderIcon, MicIcon, PlusIcon } from './components/Icons'
 import { SettingsDialog } from './components/Settings'
 import { Sidebar } from './components/Sidebar'
 import { useDictation } from './hooks/useDictation'
 import { usePages } from './hooks/usePages'
 import { useSettings } from './hooks/useSettings'
-import { readingMinutes, relativeTime, wordCount } from './lib/format'
+import { homePath, readingMinutes, relativeTime, shortcutLabel, wordCount } from './lib/format'
 import { appendTranscript, promptFor } from './text/transcript'
 
 /** The overlay pill doesn't need every audio frame; ~12 updates a second look smooth. */
 const OVERLAY_FRAME_MS = 80
+
+/** How long a deleted page can be brought back before its file is removed. */
+const UNDO_DELETE_MS = 6000
 
 const MEETING_TITLE_FORMAT: Intl.DateTimeFormatOptions = {
   month: 'short',
@@ -27,7 +30,8 @@ function toMarkdown(title: string, body: string): string {
 }
 
 export default function App(): React.JSX.Element {
-  const { pages, current, currentRef, saveState, edit, open, create, remove, flush } = usePages()
+  const { pages, current, currentRef, saveState, edit, open, close, create, remove, flush } =
+    usePages()
   const [status, setStatus] = useState<WhisperStatus>({ state: 'idle' })
   const [update, setUpdate] = useState<UpdateStatus>({ state: 'idle' })
   const [copied, setCopied] = useState(false)
@@ -158,11 +162,50 @@ export default function App(): React.JSX.Element {
     requestAnimationFrame(() => titleInput.current?.select())
   }, [stop, create])
 
+  // Deleting hides the page at once and removes its file after a few seconds, so the user can
+  // undo instead of answering a confirm dialog. If Lyra quits first, the note simply survives.
+  const [trashed, setTrashed] = useState<PageSummary | null>(null)
+  const trashTimer = useRef<{ id: string; timer: ReturnType<typeof setTimeout> } | null>(null)
+
+  const commitTrash = useCallback(async () => {
+    const pending = trashTimer.current
+    if (!pending) return
+    clearTimeout(pending.timer)
+    trashTimer.current = null
+    setTrashed(null)
+    await remove(pending.id)
+  }, [remove])
+
   const deletePage = async (page: PageSummary): Promise<void> => {
-    if (!window.confirm(`Delete “${page.title || 'Untitled'}”? This cannot be undone.`)) return
-    if (page.id === current?.id) await stop()
-    await remove(page.id)
+    await commitTrash()
+    if (page.id === current?.id) {
+      await stop()
+      const next = pages.find((other) => other.id !== page.id)
+      if (next) await open(next.id)
+      else await close()
+    }
+    const timer = setTimeout(() => void commitTrash(), UNDO_DELETE_MS)
+    trashTimer.current = { id: page.id, timer }
+    setTrashed(page)
   }
+
+  const undoDelete = (): void => {
+    const pending = trashTimer.current
+    if (!pending) return
+    clearTimeout(pending.timer)
+    trashTimer.current = null
+    setTrashed(null)
+    void open(pending.id)
+  }
+
+  const undoToast = trashed ? (
+    <div className="toast" role="status">
+      <span>Deleted “{trashed.title || 'Untitled'}”</span>
+      <button type="button" onClick={undoDelete}>
+        Undo
+      </button>
+    </div>
+  ) : null
 
   const copy = (): void => {
     if (!current?.body) return
@@ -203,7 +246,7 @@ export default function App(): React.JSX.Element {
   return (
     <div className={`app platform-${window.api.platform}`}>
       <Sidebar
-        pages={pages}
+        pages={trashed ? pages.filter((page) => page.id !== trashed.id) : pages}
         activeId={current?.id}
         update={update}
         onOpen={(id) => void openPage(id)}
@@ -216,10 +259,8 @@ export default function App(): React.JSX.Element {
         <header className="topbar drag">
           {current ? (
             <>
-              <span className="topbar-meta">
-                {saveState === 'saving'
-                  ? 'Saving…'
-                  : `Saved ${relativeTime(current.updatedAt).toLowerCase()}`}
+              <span className={`save-state${saveState === 'saving' ? ' is-saving' : ''}`}>
+                {saveState === 'saving' ? 'Saving…' : 'Saved'}
               </span>
               <button
                 className="btn no-drag"
@@ -254,8 +295,11 @@ export default function App(): React.JSX.Element {
                   aria-label="Page title"
                 />
                 <p className="page-stats">
-                  {words} {words === 1 ? 'word' : 'words'}
-                  {words > 0 ? ` · ${readingMinutes(words)} min read` : ''}
+                  <span>
+                    {words} {words === 1 ? 'word' : 'words'}
+                  </span>
+                  {words > 0 ? <span>{readingMinutes(words)} min read</span> : null}
+                  <span>Edited {relativeTime(current.updatedAt).toLowerCase()}</span>
                 </p>
                 <MeetingSpeakers
                   pageId={current.id}
@@ -270,18 +314,6 @@ export default function App(): React.JSX.Element {
                 />
               </article>
             </div>
-            {dictation.recording && sessionKind.current === 'meeting' && settings && !settings.meetingNoticeSeen ? (
-              <div className="consent-banner" role="status">
-                Recording this meeting. Make sure everyone is OK with being recorded.
-                <button
-                  className="btn"
-                  type="button"
-                  onClick={() => void updateSettings({ meetingNoticeSeen: true })}
-                >
-                  Got it
-                </button>
-              </div>
-            ) : null}
             <DictationDock
               phase={dictation.phase}
               micName={dictation.micName}
@@ -293,21 +325,48 @@ export default function App(): React.JSX.Element {
               onMicChange={(micDeviceId) => void updateSettings({ micDeviceId })}
               subscribeLevel={dictation.subscribeLevel}
               onToggle={toggleDictation}
-            />
+              onMeeting={() => void startSession('meeting')}
+            >
+              {dictation.recording &&
+              sessionKind.current === 'meeting' &&
+              settings &&
+              !settings.meetingNoticeSeen ? (
+                <div className="banner" role="status">
+                  <span className="banner-dot" aria-hidden="true" />
+                  Recording this meeting. Make sure everyone is OK with being recorded.
+                  <button
+                    className="btn"
+                    type="button"
+                    onClick={() => void updateSettings({ meetingNoticeSeen: true })}
+                  >
+                    Got it
+                  </button>
+                </div>
+              ) : null}
+              {undoToast}
+            </DictationDock>
           </>
         ) : (
           <div className="empty">
-            <h2>Talk your next post into existence</h2>
-            <p>
-              Create a page and start dictating. Everything is transcribed on this computer and
-              saved as files in{' '}
-              <code>{settings?.notesDir ?? 'your notes folder'}</code>. The first session
-              downloads a ~150 MB speech model.
-            </p>
-            <button className="btn primary" type="button" onClick={() => void newPage()}>
-              <PlusIcon />
-              New page
-            </button>
+            <div className="empty-inner">
+              <span className="empty-icon" aria-hidden="true">
+                <MicIcon />
+              </span>
+              <h2>Start your first note</h2>
+              <p>Talk or type. Lyra transcribes on this computer and saves plain files you own.</p>
+              <button className="btn primary" type="button" onClick={() => void newPage()}>
+                <PlusIcon />
+                New page
+                <kbd>{shortcutLabel('N')}</kbd>
+              </button>
+              {settings ? (
+                <span className="empty-folder" title={settings.notesDir}>
+                  <FolderIcon />
+                  Saved to <code>{homePath(settings.notesDir)}</code>
+                </span>
+              ) : null}
+            </div>
+            {undoToast ? <div className="dock-area">{undoToast}</div> : null}
           </div>
         )}
       </main>

@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { SessionKind, WhisperStatus } from '../../../shared/types'
 import type { DictationPhase } from '../hooks/useDictation'
 import { formatDuration, shortcutLabel } from '../lib/format'
-import { MicIcon, StopIcon } from './Icons'
+import { ChevronDownIcon, MicIcon, MicSmallIcon, RecordIcon, StopIcon } from './Icons'
 import { MicrophoneSelect } from './MicrophoneSelect'
 
 const BAR_COUNT = 28
@@ -18,8 +18,11 @@ type Props = {
   kind: SessionKind
   subscribeLevel: SubscribeLevel
   onToggle: () => void
+  onMeeting: () => void
   micDeviceId: string | null
   onMicChange: (deviceId: string | null) => void
+  /** Banners and toasts that float above the dock. */
+  children?: ReactNode
 }
 
 /**
@@ -65,7 +68,6 @@ function useElapsed(running: boolean): number {
 function statusText(
   phase: DictationPhase,
   status: WhisperStatus,
-  micName: string,
   kind: SessionKind
 ): string {
   if (status.state === 'downloading') {
@@ -75,8 +77,8 @@ function statusText(
   if (phase === 'starting') return 'Warming up…'
   if (phase === 'finishing') return 'Finishing up…'
   if (phase === 'listening' && kind === 'meeting') return 'Recording meeting'
-  if (phase === 'listening') return micName ? `Listening · ${micName}` : 'Listening'
-  return 'Start dictating'
+  if (phase === 'listening') return 'Listening'
+  return 'Dictate'
 }
 
 export function DictationDock(props: Props) {
@@ -94,6 +96,7 @@ export function DictationDock(props: Props) {
 
   return (
     <div className="dock-area">
+      {props.children}
       {error ? (
         <p className="dock-error" role="alert">
           {error}
@@ -118,9 +121,11 @@ export function DictationDock(props: Props) {
         </button>
 
         <div className="dock-body">
-          <span className="dock-status">{statusText(phase, status, micName, props.kind)}</span>
+          <span className="dock-status">{statusText(phase, status, props.kind)}</span>
           {listening ? (
-            <span className="dock-hint">Say “new paragraph” to break</span>
+            <span className="dock-hint">
+              {props.kind === 'meeting' ? micName || 'Microphone' : 'Say “new paragraph” to break'}
+            </span>
           ) : (
             <span className="dock-hint">
               <kbd>{shortcutLabel('D', true)}</kbd>
@@ -134,12 +139,29 @@ export function DictationDock(props: Props) {
             <span className="dock-timer">{formatDuration(elapsed)}</span>
           </>
         ) : (
-          <MicrophoneSelect
-            className="dock-mic"
-            value={props.micDeviceId}
-            onChange={props.onMicChange}
-            disabled={busy}
-          />
+          <>
+            <span className="dock-divider" aria-hidden="true" />
+            <button
+              type="button"
+              className="dock-action"
+              onClick={props.onMeeting}
+              disabled={busy}
+              title="Record a meeting: your mic and the computer’s audio, labeled by speaker"
+            >
+              <RecordIcon />
+              Meeting
+            </button>
+            <label className="dock-mic" title="Microphone">
+              <MicSmallIcon />
+              <MicrophoneSelect
+                className="dock-mic-select"
+                value={props.micDeviceId}
+                onChange={props.onMicChange}
+                disabled={busy}
+              />
+              <ChevronDownIcon />
+            </label>
+          </>
         )}
       </div>
     </div>

@@ -75,6 +75,12 @@ export function usePages() {
     [flush]
   )
 
+  /** Leaves the open page without picking another (e.g. it is about to be deleted). */
+  const close = useCallback(async () => {
+    await flush()
+    show(null)
+  }, [flush])
+
   const create = useCallback(async (options?: { startedAt?: string }) => {
     await flush()
     const page = await window.api.createPage(options)
@@ -125,5 +131,5 @@ export function usePages() {
     [refreshList]
   )
 
-  return { pages, current, currentRef, saveState, edit, open, create, remove, flush }
+  return { pages, current, currentRef, saveState, edit, open, close, create, remove, flush }
 }

@@ -1,7 +1,9 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import type { HotkeyAction, HotkeyStatus, Settings as SettingsValue } from '../../../shared/types'
+import { homePath } from '../lib/format'
+import { Segmented, Switch } from './Controls'
 import { HotkeyInput } from './HotkeyInput'
-import { CloseIcon, FolderIcon } from './Icons'
+import { CloseIcon, FolderIcon, GearIcon, MicSmallIcon, PeopleIcon, RecordIcon } from './Icons'
 import { MicrophoneSelect } from './MicrophoneSelect'
 import { PeopleSettings } from './People'
 
@@ -15,7 +17,7 @@ export function Section({ title, children }: { title: string; children: ReactNod
   return (
     <section className="settings-section">
       <h3>{title}</h3>
-      {children}
+      <div className="settings-card">{children}</div>
     </section>
   )
 }
@@ -55,7 +57,7 @@ function NotesSection({ settings, update }: Pick<Props, 'settings' | 'update'>) 
     <Section title="Notes">
       <Row label="Notes folder" hint="Every note is a file in this folder.">
         <code className="settings-path" title={settings.notesDir}>
-          {settings.notesDir}
+          {homePath(settings.notesDir)}
         </code>
         <div className="settings-buttons">
           <button className="btn" type="button" onClick={() => void changeFolder()}>
@@ -74,20 +76,27 @@ function NotesSection({ settings, update }: Pick<Props, 'settings' | 'update'>) 
       </Row>
       {notice ? <p className="settings-notice">{notice}</p> : null}
       <Row label="File format" hint="For new notes. Existing .txt and .md files keep working.">
-        <select
-          className="settings-select"
+        <Segmented
+          label="File format"
           value={settings.fileFormat}
-          onChange={(event) =>
-            void update({ fileFormat: event.target.value as SettingsValue['fileFormat'] })
-          }
-        >
-          <option value="txt">Plain text (.txt)</option>
-          <option value="md">Markdown (.md)</option>
-        </select>
+          options={FILE_FORMATS}
+          onChange={(fileFormat) => void update({ fileFormat })}
+        />
       </Row>
     </Section>
   )
 }
+
+const FILE_FORMATS = [
+  { value: 'txt', label: 'Plain text' },
+  { value: 'md', label: 'Markdown' }
+] as const
+
+const NOTES_ENGINES = [
+  { value: 'off', label: 'Off' },
+  { value: 'local', label: 'On this computer' },
+  { value: 'claude', label: 'With Claude' }
+] as const
 
 const DEFAULT_HOTKEYS: Record<HotkeyAction, string> = {
   dictation: 'CommandOrControl+Shift+Space',
@@ -163,12 +172,10 @@ function ShortcutsSection({ settings, update }: Pick<Props, 'settings' | 'update
         status={statusOf('meeting')}
       />
       <Row label="Open at login" hint="Keeps the shortcuts available after a restart.">
-        <input
-          type="checkbox"
-          className="settings-toggle"
+        <Switch
+          label="Open Lyra at login"
           checked={settings.launchAtLogin}
-          onChange={(event) => void update({ launchAtLogin: event.target.checked })}
-          aria-label="Open Lyra at login"
+          onChange={(launchAtLogin) => void update({ launchAtLogin })}
         />
       </Row>
     </Section>
@@ -182,12 +189,10 @@ function MeetingsSection({ settings, update }: Pick<Props, 'settings' | 'update'
         label="Capture computer audio"
         hint="Records the other side of calls (Zoom, Meet, Teams). On macOS this needs Screen Recording permission."
       >
-        <input
-          type="checkbox"
-          className="settings-toggle"
+        <Switch
+          label="Capture computer audio in meetings"
           checked={settings.captureSystemAudio}
-          onChange={(event) => void update({ captureSystemAudio: event.target.checked })}
-          aria-label="Capture computer audio in meetings"
+          onChange={(captureSystemAudio) => void update({ captureSystemAudio })}
         />
       </Row>
       <p className="settings-notice">
@@ -198,12 +203,10 @@ function MeetingsSection({ settings, update }: Pick<Props, 'settings' | 'update'
         label="Keep meeting audio"
         hint="Otherwise the recording is deleted once the transcript is labeled."
       >
-        <input
-          type="checkbox"
-          className="settings-toggle"
+        <Switch
+          label="Keep meeting audio"
           checked={settings.keepMeetingAudio}
-          onChange={(event) => void update({ keepMeetingAudio: event.target.checked })}
-          aria-label="Keep meeting audio"
+          onChange={(keepMeetingAudio) => void update({ keepMeetingAudio })}
         />
       </Row>
     </Section>
@@ -233,18 +236,12 @@ function MeetingNotesSection({ settings, update }: Pick<Props, 'settings' | 'upd
   return (
     <Section title="Meeting notes">
       <Row label="Write notes after meetings" hint="A summary, decisions, action items, and open questions at the top of the note.">
-        <select
-          className="settings-select"
+        <Segmented
+          label="Write notes after meetings"
           value={settings.notesEngine}
-          onChange={(event) => {
-            const value = event.target.value
-            if (value === 'off' || value === 'local' || value === 'claude') void update({ notesEngine: value })
-          }}
-        >
-          <option value="off">Off</option>
-          <option value="local">On this computer</option>
-          <option value="claude">With Claude</option>
-        </select>
+          options={NOTES_ENGINES}
+          onChange={(notesEngine) => void update({ notesEngine })}
+        />
       </Row>
       {settings.notesEngine === 'local' ? (
         <p className="settings-notice">
@@ -305,14 +302,12 @@ function PromptsSection({ settings, update }: Pick<Props, 'settings' | 'update'>
         label="Offer to record when the mic turns on"
         hint="When another app (Zoom, Teams, …) starts using your microphone, ask whether to start a note."
       >
-        <input
-          type="checkbox"
-          className="settings-toggle"
+        <Switch
+          label="Offer to record when the mic turns on"
           checked={enabled}
-          onChange={(event) => {
-            setPrompt({ enabled: event.target.checked })
+          onChange={(next) => {
+            setPrompt({ enabled: next })
           }}
-          aria-label="Offer to record when the mic turns on"
         />
       </Row>
       {ignoredApps.length ? (
@@ -339,7 +334,19 @@ function PromptsSection({ settings, update }: Pick<Props, 'settings' | 'update'>
   )
 }
 
+const TABS = [
+  { id: 'general', label: 'General', icon: <GearIcon /> },
+  { id: 'recording', label: 'Recording', icon: <MicSmallIcon /> },
+  { id: 'meetings', label: 'Meetings', icon: <RecordIcon /> },
+  { id: 'people', label: 'People', icon: <PeopleIcon /> }
+] as const
+
+type TabId = (typeof TABS)[number]['id']
+
 export function SettingsDialog({ settings, update, onClose }: Props) {
+  const [tab, setTab] = useState<TabId>('general')
+  const active = TABS.find((entry) => entry.id === tab) ?? TABS[0]
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') onClose()
@@ -357,29 +364,61 @@ export function SettingsDialog({ settings, update, onClose }: Props) {
         aria-label="Settings"
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <header className="modal-header">
+        <nav className="settings-nav" aria-label="Settings sections">
           <h2>Settings</h2>
-          <button className="icon-btn" type="button" onClick={onClose} aria-label="Close settings">
-            <CloseIcon />
-          </button>
-        </header>
-        <div className="modal-body">
-          <NotesSection settings={settings} update={update} />
-          <Section title="Microphone">
-            <Row label="Input device" hint="Used for dictation and meetings.">
-              <MicrophoneSelect
-                value={settings.micDeviceId}
-                onChange={(micDeviceId) => void update({ micDeviceId })}
-              />
-            </Row>
-          </Section>
-          <ShortcutsSection settings={settings} update={update} />
-          <MeetingsSection settings={settings} update={update} />
-          <MeetingNotesSection settings={settings} update={update} />
-          <Section title="People">
-            <PeopleSettings micDeviceId={settings.micDeviceId} />
-          </Section>
-          <PromptsSection settings={settings} update={update} />
+          {TABS.map((entry) => (
+            <button
+              key={entry.id}
+              type="button"
+              aria-current={entry.id === tab ? 'page' : undefined}
+              onClick={() => {
+                setTab(entry.id)
+              }}
+            >
+              {entry.icon}
+              {entry.label}
+            </button>
+          ))}
+        </nav>
+        <div className="settings-main">
+          <header className="modal-header">
+            <h2>{active.label}</h2>
+            <button className="icon-btn" type="button" onClick={onClose} aria-label="Close settings">
+              <CloseIcon />
+            </button>
+          </header>
+          <div className="modal-body">
+            {tab === 'general' ? (
+              <>
+                <NotesSection settings={settings} update={update} />
+                <Section title="Microphone">
+                  <Row label="Input device" hint="Used for dictation and meetings.">
+                    <MicrophoneSelect
+                      value={settings.micDeviceId}
+                      onChange={(micDeviceId) => void update({ micDeviceId })}
+                    />
+                  </Row>
+                </Section>
+              </>
+            ) : null}
+            {tab === 'recording' ? (
+              <>
+                <ShortcutsSection settings={settings} update={update} />
+                <PromptsSection settings={settings} update={update} />
+              </>
+            ) : null}
+            {tab === 'meetings' ? (
+              <>
+                <MeetingsSection settings={settings} update={update} />
+                <MeetingNotesSection settings={settings} update={update} />
+              </>
+            ) : null}
+            {tab === 'people' ? (
+              <Section title="Saved voices">
+                <PeopleSettings micDeviceId={settings.micDeviceId} />
+              </Section>
+            ) : null}
+          </div>
         </div>
       </div>
     </div>
