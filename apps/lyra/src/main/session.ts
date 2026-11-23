@@ -1,5 +1,5 @@
 import { ipcMain, type BrowserWindow } from 'electron'
-import type { OverlayFrame, SessionCommand, SessionKind, SessionPhase, SessionState } from '../shared/types'
+import type { OverlayFrame, SessionCommand, SessionPhase, SessionState } from '../shared/types'
 import { log } from './log'
 
 /**
@@ -9,10 +9,9 @@ import { log } from './log'
  */
 
 const PHASES: readonly SessionPhase[] = ['idle', 'starting', 'listening', 'finishing']
-const KINDS: readonly SessionKind[] = ['dictation', 'meeting']
 
 let mainWindow: BrowserWindow | null = null
-let state: SessionState = { phase: 'idle', kind: 'dictation', startedAt: null, micName: '' }
+let state: SessionState = { phase: 'idle', startedAt: null, micName: '' }
 const listeners = new Set<(state: SessionState) => void>()
 const frameListeners = new Set<(frame: OverlayFrame) => void>()
 
@@ -62,19 +61,17 @@ export function sendSessionCommand(command: SessionCommand): void {
   win.webContents.send('session:command', command)
 }
 
-export function toggleSession(kind: SessionKind): void {
-  sendSessionCommand({ type: 'toggle', kind })
+export function toggleSession(): void {
+  sendSessionCommand({ type: 'toggle' })
 }
 
 function parseState(value: unknown): SessionState | null {
   if (!value || typeof value !== 'object') return null
   const raw = value as Record<string, unknown>
   const phase = PHASES.find((p) => p === raw.phase)
-  const kind = KINDS.find((k) => k === raw.kind)
-  if (!phase || !kind) return null
+  if (!phase) return null
   return {
     phase,
-    kind,
     startedAt: typeof raw.startedAt === 'number' ? raw.startedAt : null,
     micName: typeof raw.micName === 'string' ? raw.micName : ''
   }
@@ -92,9 +89,9 @@ export function registerSessionIpc(): void {
     if (event.sender !== getMainWindow()?.webContents) return
     const next = parseState(value)
     if (!next) return
-    const changed = next.phase !== state.phase || next.kind !== state.kind
+    const changed = next.phase !== state.phase
     state = next
-    if (changed) log('session', `phase ${next.phase}`, { kind: next.kind })
+    if (changed) log('session', `phase ${next.phase}`)
     for (const listener of listeners) listener(state)
   })
   ipcMain.on('overlay:frame', (event, value: unknown) => {

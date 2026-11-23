@@ -2,11 +2,24 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import * as Y from 'yjs'
 import type { PageSummary } from '../../../shared/types'
 import {
+  addTag,
+  appendLiveNotes,
   docNotes,
+  docSummary,
   docTitle,
+  docTranscript,
+  docMeta,
   editDoc,
+  newSpeakerId,
   ORIGIN_REMOTE,
-  ORIGIN_USER
+  ORIGIN_USER,
+  removeTag,
+  setSegmentsCluster,
+  setSegmentText,
+  snapshotOf,
+  upsertSpeaker,
+  type SpeakerEntry,
+  type TranscriptSegment
 } from '../../../shared/sessionDoc'
 import { log } from '../lib/log'
 
@@ -16,8 +29,18 @@ export type SaveState = 'saved' | 'saving'
 export type OpenPage = {
   id: string
   title: string
+  /** The user's notes. */
   body: string
+  /** Generated meeting notes, above the user's notes. */
+  summary: string
+  tags: string[]
+  transcript: TranscriptSegment[]
+  speakers: SpeakerEntry[]
 }
+
+/** A speaker made from the transcript: named by the user, or a blank one to name after a split. */
+export type NewSpeaker = { name: string; personId: string | null; confirmed: boolean }
+
 
 type Edit = { title?: string; body?: string }
 
@@ -75,7 +98,16 @@ export function usePages() {
       const title = docTitle(doc)
       const notes = docNotes(doc)
       const render = (): void => {
-        show({ id, title: title.toJSON(), body: notes.toJSON() })
+        const snapshot = snapshotOf(doc)
+        show({
+          id,
+          title: snapshot.title,
+          body: snapshot.notes,
+          summary: snapshot.summary,
+          tags: snapshot.tags,
+          transcript: snapshot.transcript,
+          speakers: snapshot.speakers
+        })
       }
 
       const onUpdate = (update: Uint8Array, origin: unknown): void => {
@@ -96,7 +128,7 @@ export function usePages() {
         if (change.id === id) Y.applyUpdate(doc, change.update, ORIGIN_REMOTE)
       })
       // Undo covers this window's own edits only, never text that arrived from elsewhere.
-      const undo = new Y.UndoManager([title, notes], {
+      const undo = new Y.UndoManager([title, notes, docSummary(doc), docTranscript(doc), docMeta(doc)], {
         trackedOrigins: new Set([ORIGIN_USER]),
         captureTimeout: 600
       })
@@ -122,6 +154,60 @@ export function usePages() {
     if (!open) return
     editDoc(open.doc, { title: changes.title, notes: changes.body }, ORIGIN_USER)
   }, [])
+
+  /** Runs a change on the open document as the user's own (undoable) edit. */
+  const change = useCallback((apply: (doc: Y.Doc) => void) => {
+    const open = replica.current
+    if (open) apply(open.doc)
+  }, [])
+
+  const editSummary = useCallback(
+    (summary: string) => change((doc) => editDoc(doc, { summary }, ORIGIN_USER)),
+    [change]
+  )
+  const editSegment = useCallback(
+    (id: string, text: string) => change((doc) => setSegmentText(doc, id, text, ORIGIN_USER)),
+    [change]
+  )
+  /** Moves lines to a speaker, creating it first when given a name. Returns the speaker's id. */
+  const assignLines = useCallback(
+    (ids: readonly string[], speaker: string | NewSpeaker): string | null => {
+      const open = replica.current
+      if (!open) return null
+      const id = typeof speaker === 'string' ? speaker : newSpeakerId(open.doc)
+      open.doc.transact(() => {
+        if (typeof speaker !== 'string') {
+          upsertSpeaker(open.doc, id, {
+            name: speaker.name,
+            personId: speaker.personId,
+            confirmed: speaker.confirmed,
+            confidence: null,
+            matches: []
+          }, ORIGIN_USER)
+        }
+        setSegmentsCluster(open.doc, ids, id, ORIGIN_USER)
+      }, ORIGIN_USER)
+      return id
+    },
+    []
+  )
+  /**
+   * Live dictation into the notes. `fresh` starts a new range (a new recording), so labeling
+   * can later swap untouched live text for the speaker-labeled transcript.
+   */
+  const appendDictation = useCallback(
+    (next: string, fresh: boolean) =>
+      change((doc) => appendLiveNotes(doc, next, fresh, ORIGIN_USER)),
+    [change]
+  )
+  const tag = useCallback(
+    (name: string) => change((doc) => addTag(doc, name, ORIGIN_USER)),
+    [change]
+  )
+  const untag = useCallback(
+    (name: string) => change((doc) => removeTag(doc, name, ORIGIN_USER)),
+    [change]
+  )
 
   const undo = useCallback(() => replica.current?.undo.undo() !== null, [])
   const redo = useCallback(() => replica.current?.undo.redo() !== null, [])
@@ -192,6 +278,12 @@ export function usePages() {
     currentRef,
     saveState,
     edit,
+    editSummary,
+    editSegment,
+    assignLines,
+    appendDictation,
+    tag,
+    untag,
     undo,
     redo,
     open,

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { openMicrophone, openSystemAudio, startCapture } from '../audio/capture'
-import { MeetingRecorder } from '../audio/meetingRecorder'
+import { SessionRecorder } from '../audio/sessionRecorder'
 import { StreamingTranscriber } from '../audio/streaming'
-import { VoiceDetector } from '../audio/vad'
+import { SAMPLE_RATE, VoiceDetector } from '../audio/vad'
+import type { TranscriptWord } from '../../../shared/types'
 import { log } from '../lib/log'
 import { holdBackCommand } from '../text/transcript'
 
@@ -16,14 +17,48 @@ const HEARTBEAT_MS = 3000
 type Options = {
   /** Text that precedes the dictation (title + end of page), read when recording starts. */
   getContext: () => string
-  /** Called with each piece of confirmed text, in order. */
-  onCommit: (text: string) => void
+  /**
+   * Called with each piece of confirmed text, in order, and roughly where it was said
+   * (seconds on the session's timeline).
+   */
+  onCommit: (text: string, at: Span) => void
   /** Microphone to open, read when recording starts; `null` = system default. */
   getDeviceId: () => string | null
 }
 
-/** Extra work for a meeting: record the audio to disk, optionally with system audio. */
-export type MeetingOptions = { pageId: string; systemAudio: boolean }
+/** What to record: the session's mic, and the computer's audio when that setting is on. */
+export type RecordOptions = { pageId: string; systemAudio: boolean }
+
+export type Span = { start: number; end: number }
+
+/**
+ * The transcriber only hears speech (the voice detector drops silence), so its timestamps
+ * skip the pauses. Each time speech starts, note where the transcriber's clock and the
+ * recording's clock were, and map word times back onto the recording.
+ */
+class Timeline {
+  private anchors: { heard: number; recorded: number }[] = []
+  /** Where this recording starts on the session's timeline, in seconds. */
+  offset = 0
+  /** Samples of audio captured so far. */
+  recorded = 0
+  /** Samples fed to the transcriber so far. */
+  heard = 0
+
+  speechStarted(prerollSamples: number): void {
+    this.anchors.push({ heard: this.heard, recorded: Math.max(0, this.recorded - prerollSamples) })
+  }
+
+  toRecording(seconds: number): number {
+    const at = seconds * SAMPLE_RATE
+    let anchor = this.anchors[0] ?? { heard: 0, recorded: 0 }
+    for (const next of this.anchors) {
+      if (next.heard > at) break
+      anchor = next
+    }
+    return +(this.offset + (at - anchor.heard + anchor.recorded) / SAMPLE_RATE).toFixed(3)
+  }
+}
 
 type Session = {
   stop: () => Promise<void>
@@ -63,7 +98,7 @@ export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
     }
   }, [])
 
-  const start = useCallback(async (meeting?: MeetingOptions): Promise<void> => {
+  const start = useCallback(async (record: RecordOptions): Promise<void> => {
     if (session.current || starting.current) return
     // Stop can arrive while the model warms up; this lets it cancel the start.
     const attempt = { cancelled: false }
@@ -78,6 +113,19 @@ export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
     // A trailing "new"/"next" is held until we know whether "paragraph" follows.
     let held = ''
     let tentative = ''
+    const timeline = new Timeline()
+    let lastSpan: Span = { start: 0, end: 0 }
+    const onWords = (words: TranscriptWord[]): void => {
+      const mapped = words.map((word) => ({
+        text: word.text,
+        start: timeline.toRecording(word.start),
+        end: timeline.toRecording(word.end)
+      }))
+      const first = mapped[0]
+      const last = mapped.at(-1)
+      if (first && last) lastSpan = { start: first.start, end: last.end }
+      window.api.appendRecordingWords(mapped)
+    }
     const showLive = (): void => setLive(held + tentative)
     const fail = (caught: unknown): void => {
       log('dictation', 'error', String(caught))
@@ -86,11 +134,11 @@ export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
     const commit = (text: string): void => {
       const [ready, rest] = holdBackCommand(held + text)
       held = rest
-      if (ready) options.current.onCommit(ready)
+      if (ready) options.current.onCommit(ready, lastSpan)
       showLive()
     }
     const release = (): void => {
-      if (held) options.current.onCommit(held)
+      if (held) options.current.onCommit(held, lastSpan)
       held = ''
       showLive()
     }
@@ -117,27 +165,24 @@ export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
       }
       if (usedFallback) setNotice('Your chosen microphone isn’t available — using the default.')
 
-      let system: MediaStream | null = null
-      let recorder: MeetingRecorder | null = null
-      if (meeting) {
-        system = meeting.systemAudio ? await openSystemAudio() : null
-        if (cancelled()) {
-          system?.getTracks().forEach((track) => {
-            track.stop()
-          })
-          releaseMic()
-          return
-        }
-        if (meeting.systemAudio && !system) {
-          setNotice('Couldn’t capture computer audio — recording your microphone only.')
-        }
-        recorder = await MeetingRecorder.start(meeting.pageId, system !== null)
+      const system = record.systemAudio ? await openSystemAudio() : null
+      if (cancelled()) {
+        system?.getTracks().forEach((track) => {
+          track.stop()
+        })
+        releaseMic()
+        return
       }
-      const activeRecorder = recorder
+      if (record.systemAudio && !system) {
+        setNotice('Couldn’t capture computer audio — recording your microphone only.')
+      }
+      const activeRecorder = await SessionRecorder.start(record.pageId, system !== null)
+      timeline.offset = activeRecorder.offset
       const streamer = new StreamingTranscriber(
         transcribe,
         {
           onCommit: commit,
+          onWords,
           onLive: (text) => {
             tentative = text
             showLive()
@@ -146,12 +191,17 @@ export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
         },
         options.current.getContext()
       )
+      const hear = (frame: Float32Array): void => {
+        timeline.heard += frame.length
+        streamer.append(frame)
+      }
       const voice = new VoiceDetector({
         onStart: (frames) => {
           log('vad', 'speech started', voice.stats())
-          frames.forEach((frame) => streamer.append(frame))
+          timeline.speechStarted(frames.reduce((sum, frame) => sum + frame.length, 0))
+          frames.forEach(hear)
         },
-        onFrame: (frame) => streamer.append(frame),
+        onFrame: hear,
         onEnd: () => {
           log('vad', 'speech ended', voice.stats())
           void streamer.finalize().then(release, fail)
@@ -164,6 +214,7 @@ export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
       const capture = await startCapture(
         stream,
         (frame) => {
+          timeline.recorded += frame.length
           const rms = voice.push(frame)
           frames++
           peak = Math.max(peak, rms)
@@ -177,13 +228,9 @@ export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
         },
         {
           ...(system ? { system } : {}),
-          ...(activeRecorder
-            ? {
-                onTracks: (mic: Float32Array, other: Float32Array | null) => {
-                  activeRecorder.push(mic, other)
-                }
-              }
-            : {})
+          onTracks: (mic: Float32Array, other: Float32Array | null) => {
+            activeRecorder.push(mic, other)
+          }
         }
       )
 
@@ -209,11 +256,12 @@ export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
         stop: async () => {
           clearInterval(heartbeat)
           capture.stop()
-          await activeRecorder?.stop()
           voice.flush()
           levelListeners.current.forEach((listener) => listener(0))
           await streamer.idle()
           release()
+          // After the last words, so they're saved with this recording.
+          await activeRecorder.stop()
         }
       }
       setMicName(capture.micName)

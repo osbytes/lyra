@@ -10,11 +10,11 @@ import {
   shell
 } from 'electron'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
-import { copyFile, mkdir, readdir, readFile, unlink, utimes, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile, utimes, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import { migrateLegacyPages, moveNotes, notesDir, startWatchingNotes } from './pages'
+import { migrateLegacyPages, moveNotes, notesDir, resolveInNotes, startWatchingNotes } from './pages'
 import {
   applySessionUpdate,
   closeSessionFor,
@@ -23,13 +23,29 @@ import {
   flushAllSessions,
   getSessionPage as getPage,
   listSessions as listPages,
+  editSession,
   openSessionFor,
+  readSession,
   readSessionFromDisk,
+  sessionAudioDir,
+  sessionRawDir,
+  updateManifest,
   saveSessionPage as savePage,
   sidecarPath
 } from './sessionStore'
 import * as Y from 'yjs'
-import { editDoc, ORIGIN_USER } from '../shared/sessionDoc'
+import {
+  appendLiveNotes,
+  editDoc,
+  ORIGIN_USER,
+  readSegment,
+  removeLiveNotes,
+  replaceTranscript,
+  addTag,
+  setSegmentText,
+  snapshotOf,
+  upsertSpeaker
+} from '../shared/sessionDoc'
 import { registerHotkeys, unregisterHotkeys } from './hotkey'
 import { registerMicPrompt, stopMicPrompt } from './micprompt'
 import { parseConsentStore } from './micwatch'
@@ -42,11 +58,11 @@ import {
 } from './session'
 import { getSettings, onSettingsChanged, overrideSettings, updateSettings } from './settings'
 import { assignSpeaker, processMeeting, registerMeetingPipeline } from './meeting/pipeline'
-import { listPeople } from './voices'
+import { addPerson, listPeople } from './voices'
 import { generateNotes, registerMeetingNotes } from './meeting/notes'
 import { stopNotesWorker } from './meeting/notesLocal'
 import { stopSpeakerWorker } from './meeting/speakers'
-import { audioDir, registerRecorderIpc, trackPath } from './recorder'
+import { registerRecorderIpc, trackPath } from './recorder'
 import { startAudioRetention, sweepAudio } from './audioRetention'
 import { createTray } from './tray'
 import { registerUpdater } from './updater'
@@ -212,6 +228,9 @@ function registerIpc(): void {
     savePage(page)
   )
   ipcMain.handle('pages:delete', (_event, id: string) => deletePage(id))
+  ipcMain.handle('pages:reveal', (_event, id: unknown) => {
+    shell.showItemInFolder(resolveInNotes(id))
+  })
   ipcMain.handle('sessions:open', (event, id: unknown) => {
     if (typeof id !== 'string') throw new Error('Invalid session id')
     return openSessionFor(id, event.sender.id)
@@ -232,7 +251,43 @@ function registerIpc(): void {
   )
 }
 
+/** A labeled meeting, as the speaker pipeline would leave it, for reviewing the transcript UI. */
+async function seedScreenshotMeeting(): Promise<void> {
+  const meeting = await createPage({ startedAt: '2026-11-23T10:30:00' })
+  const sam = await addPerson('Sam', [0.1, 0.2, 0.3], false)
+  const alex = await addPerson('Alex', [0.3, 0.2, 0.1], false)
+  await editSession(meeting.id, (doc) => {
+    doc.transact(() => {
+      addTag(doc, 'design', 'seed')
+      addTag(doc, 'team', 'seed')
+      editDoc(doc, {
+        title: 'Design review',
+        summary:
+          'Summary\nAgreed to ship the dock redesign first, then settings.\n\nAction items\n- [ ] Dana: port tokens into styles.css\n- [ ] Sam: check contrast in dark mode'
+      }, 'seed')
+      upsertSpeaker(doc, 'c0', { name: 'Dana', personId: null, confirmed: true, confidence: 0.96, matches: [] }, 'seed')
+      upsertSpeaker(doc, 'c1', {
+        name: 'Sam',
+        personId: sam.id,
+        confirmed: false,
+        confidence: 0.71,
+        matches: [{ personId: sam.id, score: 0.71 }, { personId: alex.id, score: 0.38 }]
+      }, 'seed')
+      upsertSpeaker(doc, 'c2', { name: 'Speaker 3', personId: null, confirmed: false, confidence: null, matches: [] }, 'seed')
+      replaceTranscript(doc, [
+        { id: 's0', rawId: 's0', start: 2, end: 7, cluster: 'c0', confidence: 0.97, text: 'I think the dock is the thing people see first, so let’s start there.' },
+        { id: 's1', rawId: 's1', start: 9, end: 14, cluster: 'c1', confidence: 0.81, text: 'Agreed. I can check the contrast numbers in dark mode this afternoon.' },
+        { id: 's2', rawId: 's2', start: 15, end: 21, cluster: 'c2', confidence: null, text: 'Does the meeting button need its own shortcut in the dock, or is the hotkey enough?' },
+        { id: 's3', rawId: 's3', start: 22, end: 27, cluster: 'c0', confidence: 0.95, text: 'Show the shortcut on hover. One primary action, one secondary.' },
+        { id: 's4', rawId: 's4', start: 31, end: 38, cluster: 'c1', confidence: 0.52, text: 'From the support side, people mostly ask where their recordings went.' },
+        { id: 's5', rawId: 's5', start: 40, end: 45, cluster: 'c1', confidence: 0.78, text: 'Then the folder chip on first run should help with that.' }
+      ], 'seed')
+    }, 'seed')
+  })
+}
+
 async function seedScreenshotPages(): Promise<void> {
+  if (process.env.LYRA_SCREENSHOT_DIR) await seedScreenshotMeeting()
   const team = await createPage()
   await savePage({
     id: team.id,
@@ -305,7 +360,8 @@ async function captureScreenshot(win: BrowserWindow): Promise<void> {
     await seedScreenshotPages()
     nativeTheme.themeSource = 'light'
     await reload()
-    await save(join(__dirname, '../../docs'), 'screenshot.png')
+    // out/main → the repository's docs/ folder, which the README links to.
+    await save(join(__dirname, '../../../../docs'), 'screenshot.png')
     if (reviewDir) {
       for (const theme of ['light', 'dark'] as const) {
         nativeTheme.themeSource = theme
@@ -321,6 +377,34 @@ async function captureScreenshot(win: BrowserWindow): Promise<void> {
           await save(reviewDir, `settings-${tab}-${theme}.png`)
         }
       }
+      // The labeled meeting: transcript, then the speaker picker on a guessed speaker.
+      for (const theme of ['light', 'dark'] as const) {
+        nativeTheme.themeSource = theme
+        await reload()
+        await click('.page-row:last-child .page-item')
+        await settle()
+        await win.webContents.executeJavaScript(`document.querySelector('.transcript')?.scrollIntoView()`)
+        await settle()
+        await save(reviewDir, `meeting-${theme}.png`)
+        await click('.speaker-chip.likely')
+        await settle()
+        await save(reviewDir, `picker-${theme}.png`)
+        // The same session in the side-panel layout.
+        await pressShortcut('.')
+        await settle()
+        await save(reviewDir, `panel-${theme}.png`)
+        await pressShortcut('.')
+        await settle()
+      }
+      // What the session records, and an open themed select.
+      nativeTheme.themeSource = 'light'
+      await reload()
+      await click('.dock-sources')
+      await settle()
+      await save(reviewDir, 'sources-light.png')
+      await click('.picker.sources .select')
+      await settle()
+      await save(reviewDir, 'select-light.png')
       // Deleting shows the Undo toast; the page comes back on reload since the file stays.
       nativeTheme.themeSource = 'light'
       await reload()
@@ -371,16 +455,30 @@ async function runMeetingFixture(wavPath: string): Promise<void> {
     if (systemFixture && systemPath) await copyFile(systemFixture, systemPath)
     const started = Date.now()
     await processMeeting({ pageId: page.id, micPath, systemPath, seconds: 0 })
-    const labeled = await getPage(page.id)
+    await flushAllSessions()
+    const exported = await readFile(join(notesDir(), page.id), 'utf8')
     const took = ((Date.now() - started) / 1000).toFixed(1)
-    process.stdout.write(`meeting-fixture (${took} s):\n${labeled.body}\n`)
+    process.stdout.write(`meeting-fixture (${took} s):\n${exported}\n`)
+    const labeled = await readSession(page.id)
+    const confidence = labeled.transcript.map((segment) =>
+      segment.confidence === null ? '-' : segment.confidence.toFixed(2)
+    )
+    process.stdout.write(`meeting-fixture line confidence: ${confidence.join(' ')}\n`)
 
-    // Name the first speaker and save their voice, as the speakers bar does.
-    await assignSpeaker(page.id, 0, { name: 'Fixture Person', remember: true })
-    const renamed = await getPage(page.id)
+    // Name the first speaker and save their voice, as the speaker picker does.
+    const first = labeled.speakers[0]
+    if (!first) {
+      // One voice: the session stays notes, so there's nothing to name.
+      process.stdout.write('meeting-fixture: one voice, kept as notes\n')
+      app.exit(0)
+      return
+    }
+    await assignSpeaker(page.id, first.id, { name: 'Fixture Person', remember: true })
+    await flushAllSessions()
+    const renamed = await readFile(join(notesDir(), page.id), 'utf8')
     const people = await listPeople()
-    if (!renamed.body.includes('] Fixture Person: ') || people.length !== 1) {
-      throw new Error('relabel did not update the note or save the voice')
+    if (!renamed.includes('] Fixture Person: ') || people.length !== 1) {
+      throw new Error('naming did not update the export or save the voice')
     }
     process.stdout.write('meeting-fixture: relabel ok\n')
 
@@ -390,9 +488,9 @@ async function runMeetingFixture(wavPath: string): Promise<void> {
       overrideSettings({ notesEngine: engine })
       const notesStarted = Date.now()
       await generateNotes(page.id)
-      const withNotes = await getPage(page.id)
+      const withNotes = await readSession(page.id)
       const notesTook = ((Date.now() - notesStarted) / 1000).toFixed(1)
-      process.stdout.write(`meeting-fixture notes (${engine}, ${notesTook} s):\n${withNotes.body}\n`)
+      process.stdout.write(`meeting-fixture notes (${engine}, ${notesTook} s):\n${withNotes.summary}\n`)
     }
     app.exit(0)
   } catch (error) {
@@ -479,22 +577,118 @@ async function checkSessionStore(): Promise<void> {
 
 /** Retention deletes only audio older than the setting, and nothing when set to forever. */
 async function checkAudioRetention(): Promise<void> {
-  await mkdir(audioDir(), { recursive: true })
-  const old = join(audioDir(), 'retention-old.mic.wav')
-  const fresh = join(audioDir(), 'retention-fresh.mic.wav')
-  await writeFile(old, 'x')
-  await writeFile(fresh, 'x')
+  const fail = (message: string): never => {
+    throw new Error(`retention: ${message}`)
+  }
+  const make = async (endedDaysAgo: number): Promise<string> => {
+    const page = await createPage()
+    await mkdir(sessionAudioDir(page.id), { recursive: true })
+    await writeFile(trackPath(page.id, 'mic'), 'x')
+    const endedAt = new Date(Date.now() - endedDaysAgo * 86_400_000).toISOString()
+    await updateManifest(page.id, (manifest) => ({
+      ...manifest,
+      endedAt,
+      audio: 'kept',
+      tracks: [{ name: 'mic', file: 'mic.wav', sampleRate: 16000, seconds: 1 }]
+    }))
+    return page.id
+  }
+  const old = await make(40)
+  const fresh = await make(1)
+  // Lyra 0.2 kept audio beside the notes; an old file there goes too.
+  const legacyDir = join(notesDir(), '.audio')
+  await mkdir(legacyDir, { recursive: true })
+  const legacy = join(legacyDir, 'retention-legacy.mic.wav')
+  await writeFile(legacy, 'x')
   const fortyDaysAgo = new Date(Date.now() - 40 * 86_400_000)
-  await utimes(old, fortyDaysAgo, fortyDaysAgo)
+  await utimes(legacy, fortyDaysAgo, fortyDaysAgo)
 
   overrideSettings({ audioRetentionDays: null })
-  if ((await sweepAudio()) !== 0 || !existsSync(old)) throw new Error('retention: forever deleted audio')
+  if ((await sweepAudio()) !== 0 || !existsSync(trackPath(old, 'mic'))) fail('forever deleted audio')
   overrideSettings({ audioRetentionDays: 30 })
   const deleted = await sweepAudio()
-  if (deleted !== 1 || existsSync(old) || !existsSync(fresh)) {
-    throw new Error(`retention: 30 days deleted ${String(deleted)} file(s)`)
+  if (deleted !== 2 || existsSync(trackPath(old, 'mic')) || existsSync(legacy) || !existsSync(trackPath(fresh, 'mic'))) {
+    fail(`30 days deleted ${String(deleted)}`)
   }
-  await unlink(fresh)
+  await flushAllSessions()
+  const sidecar = JSON.parse(await readFile(sidecarPath(old), 'utf8')) as { audioStatus?: unknown; audio?: unknown }
+  if (sidecar.audioStatus !== 'deleted' || !Array.isArray(sidecar.audio) || sidecar.audio.length) {
+    fail(`metadata still lists deleted audio: ${JSON.stringify(sidecar)}`)
+  }
+  for (const id of [old, fresh]) await deletePage(id)
+}
+
+/** Transcript edits survive a new pass, live text accumulates, and old meetings migrate. */
+async function checkTranscriptModel(): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`transcript: ${message}`)
+  }
+  const doc = new Y.Doc()
+  // Live text lands in the notes; once labeled, untouched live text comes back out.
+  editDoc(doc, { notes: 'Agenda' }, ORIGIN_USER)
+  appendLiveNotes(doc, 'Agenda\n\nHello', true, ORIGIN_USER)
+  appendLiveNotes(doc, 'Agenda\n\nHello there.', false, ORIGIN_USER)
+  editDoc(doc, { notes: `My notes: ${snapshotOf(doc).notes}` }, ORIGIN_USER)
+  removeLiveNotes(doc, 'pipeline')
+  if (snapshotOf(doc).notes !== 'My notes: Agenda') fail(`live notes: ${JSON.stringify(snapshotOf(doc).notes)}`)
+  appendLiveNotes(doc, 'My notes: Agenda kept', true, ORIGIN_USER)
+  editDoc(doc, { notes: 'My notes: Agenda KEPT' }, ORIGIN_USER)
+  removeLiveNotes(doc, 'pipeline')
+  if (snapshotOf(doc).notes !== 'My notes: Agenda KEPT') fail('edited live text was removed')
+  replaceTranscript(doc, [
+    { id: 'a', rawId: 'a', start: 0, end: 4, cluster: 'c0', confidence: 0.9, text: 'Hello there.' },
+    { id: 'b', rawId: 'b', start: 4, end: 8, cluster: 'c1', confidence: 0.4, text: 'Hi.' }
+  ], 'pipeline')
+  setSegmentText(doc, 'b', 'Hi, all.', ORIGIN_USER)
+  replaceTranscript(doc, [
+    { id: 'a2', rawId: 'a2', start: 0, end: 4.2, cluster: 'c0', confidence: 0.9, text: 'Hello there.' },
+    { id: 'b2', rawId: 'b2', start: 4.1, end: 8, cluster: 'c1', confidence: 0.5, text: 'Hi' }
+  ], 'pipeline')
+  const kept = snapshotOf(doc).transcript.find((segment) => segment.id === 'b2')
+  if (kept?.text !== 'Hi, all.' || !kept.edited || kept.original !== 'Hi') {
+    fail(`an edit did not survive a new pass: ${JSON.stringify(kept)}`)
+  }
+  doc.destroy()
+
+  // A Lyra 0.2 meeting: labeled lines in the note, speakers in .meta, audio in .audio.
+  const id = 'legacy-meeting-smoke.txt'
+  await mkdir(join(notesDir(), '.meta'), { recursive: true })
+  await mkdir(join(notesDir(), '.audio'), { recursive: true })
+  await writeFile(join(notesDir(), '.meta', 'legacy-meeting-smoke.json'), JSON.stringify({
+    version: 1,
+    speakers: [
+      { cluster: 0, name: 'Ana', personId: null, embedding: [0.1, 0.2] },
+      { cluster: 1, name: 'Ben', personId: null, embedding: [0.3, 0.4] }
+    ],
+    liveTranscript: 'rough live text'
+  }))
+  await writeFile(join(notesDir(), '.audio', 'legacy-meeting-smoke.mic.wav'), Buffer.alloc(44 + 32000))
+  await writeFile(join(notesDir(), id), [
+    'Weekly sync', '', 'Summary', 'We planned.', '', '──── Transcript ────', '',
+    'People: Ana, Ben', '', '[00:00:00] Ana: Morning.', '', '[00:00:04] Ben: Hi Ana.'
+  ].join('\n'))
+  const listed = await listPages()
+  if (!listed.some((entry) => entry.id === id)) fail('legacy meeting not listed')
+  const migrated = await readSession(id)
+  const lines = migrated.transcript.map((segment) => `${segment.cluster ?? '?'}:${segment.text}`)
+  if (lines.join('|') !== 'c0:Morning.|c1:Hi Ana.' || !migrated.summary.includes('We planned.')) {
+    fail(`legacy meeting migrated wrong: ${JSON.stringify(migrated)}`)
+  }
+  if (!existsSync(trackPath(id, 'mic')) || existsSync(join(notesDir(), '.audio', 'legacy-meeting-smoke.mic.wav'))) {
+    fail('legacy audio was not moved into the session')
+  }
+  if (!existsSync(join(sessionRawDir(id), 'legacy.json'))) fail('legacy pass was not kept')
+  // Editing a line through the document reaches the export.
+  await editSession(id, (session) => {
+    const segment = session.getArray<Y.Map<unknown>>('transcript').get(1)
+    const segmentId = readSegment(segment).id
+    setSegmentText(session, segmentId, 'Hi Ana, good morning.', ORIGIN_USER)
+  })
+  const exported = await readFile(join(notesDir(), id), 'utf8')
+  if (!exported.includes('[00:00:04] Ben: Hi Ana, good morning.') || !exported.startsWith('Weekly sync')) {
+    fail(`export after a line edit: ${JSON.stringify(exported)}`)
+  }
+  await deletePage(id)
 }
 
 async function runUiSmoke(win: BrowserWindow): Promise<void> {
@@ -502,6 +696,7 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
     checkConsentParser()
     await checkSessionStore()
     await checkAudioRetention()
+    await checkTranscriptModel()
     const result: unknown = await win.webContents.executeJavaScript(`
       (async () => {
         const fail = (message) => { throw new Error(message) }
@@ -544,15 +739,28 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         const meetingPage = await window.api.createPage()
         await window.api.startRecording(meetingPage.id, false)
         window.api.appendRecording('mic', new Int16Array(16000).fill(1000))
+        window.api.appendRecordingWords([{ text: ' Hello', start: 0.2, end: 0.6 }])
         const recording = await window.api.stopRecording()
         if (!recording || Math.abs(recording.seconds - 1) > 0.01 || recording.systemPath !== null) {
-          fail('meeting recording was wrong: ' + JSON.stringify(recording))
+          fail('recording was wrong: ' + JSON.stringify(recording))
         }
+        // Recording again continues the same timeline, with the computer's audio padded in.
+        await window.api.startRecording(meetingPage.id, true)
+        window.api.appendRecording('mic', new Int16Array(8000).fill(500))
+        window.api.appendRecording('system', new Int16Array(8000).fill(500))
+        const second = await window.api.stopRecording()
+        if (!second || Math.abs(second.seconds - 1.5) > 0.01 || !second.systemPath) {
+          fail('continued recording was wrong: ' + JSON.stringify(second))
+        }
+        const heard = await window.api.sessionAudio(meetingPage.id, 0.5, 1.0)
+        if (!(heard instanceof Int16Array) || heard.length !== 8000) fail('session audio length ' + heard.length)
         await window.api.deletePage(meetingPage.id)
 
         for (const bad of ['../escape.txt', '..\\\\escape.txt', '.hidden.txt', 'x/y.txt', 'note.exe']) {
           const rejected = await window.api.getPage(bad).then(() => false, () => true)
           if (!rejected) fail('path guard let through ' + bad)
+          const revealRejected = await window.api.revealPage(bad).then(() => false, () => true)
+          if (!revealRejected) fail('reveal let through ' + bad)
         }
         return 'ok'
       })()

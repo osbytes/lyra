@@ -1,38 +1,41 @@
 import { useMicrophones } from '../hooks/useMicrophones'
+import { Select, type SelectOption } from './Controls'
+import { MicSmallIcon } from './Icons'
 
 type Props = {
   value: string | null
   onChange: (deviceId: string | null) => void
   disabled?: boolean
-  className?: string
+  /** `ghost` for the dock, `field` for Settings. */
+  variant?: 'field' | 'ghost'
 }
 
-const DEFAULT = ''
+// Not a real deviceId: Chromium's own "default" pseudo-device is filtered out of the list.
+const DEFAULT = '__system_default__'
 
-/** Picks an input device; the empty option means "follow the system default". */
-export function MicrophoneSelect({ value, onChange, disabled = false, className }: Props) {
+/** Picks an input device; "System default" follows the OS choice. */
+export function MicrophoneSelect({ value, onChange, disabled = false, variant = 'field' }: Props) {
   const { microphones, refresh } = useMicrophones()
-  const missing =
-    value !== null && !microphones.some((mic) => mic.deviceId === value) ? value : null
+  const options: SelectOption<string>[] = [
+    { value: DEFAULT, label: 'System default' },
+    ...microphones.map((mic) => ({ value: mic.deviceId, label: mic.label }))
+  ]
+  if (value !== null && !microphones.some((mic) => mic.deviceId === value)) {
+    options.push({ value, label: 'Unavailable microphone', hint: 'Plug it back in, or pick another' })
+  }
 
   return (
-    <select
-      className={className ?? 'settings-select'}
+    <Select
+      label="Microphone"
+      variant={variant}
+      icon={variant === 'ghost' ? <MicSmallIcon /> : undefined}
       value={value ?? DEFAULT}
+      options={options}
       disabled={disabled}
-      aria-label="Microphone"
-      onFocus={() => void refresh()}
-      onChange={(event) => {
-        onChange(event.target.value === DEFAULT ? null : event.target.value)
+      onOpen={() => void refresh()}
+      onChange={(next) => {
+        onChange(next === DEFAULT ? null : next)
       }}
-    >
-      <option value={DEFAULT}>System default</option>
-      {microphones.map((mic) => (
-        <option key={mic.deviceId} value={mic.deviceId}>
-          {mic.label}
-        </option>
-      ))}
-      {missing === null ? null : <option value={missing}>Unavailable microphone</option>}
-    </select>
+    />
   )
 }

@@ -8,7 +8,7 @@ import {
   renameSync,
   writeFileSync
 } from 'node:fs'
-import { copyFile, mkdir, readdir, readFile, rm, stat, unlink, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { extname, join } from 'node:path'
 import * as Y from 'yjs'
 import type { Page, PageSummary } from '../shared/types'
@@ -16,9 +16,13 @@ import {
   asUpdate,
   editDoc,
   initDoc,
+  replaceTranscript,
   snapshotOf,
+  upsertSpeaker,
+  type NewSegment,
   type SessionSnapshot
 } from '../shared/sessionDoc'
+import { splitNotes, TRANSCRIPT_DIVIDER as TRANSCRIPT_HEADING } from './meeting/notesFormat'
 import { log } from './log'
 import {
   ensurePagesDir,
@@ -67,6 +71,9 @@ type Manifest = {
   /** Cached for the list view, so it never has to load documents. */
   title: string
   preview: string
+  tags: string[]
+  /** Distinct speakers in the transcript; 0 without one. */
+  speakers: number
   /** sha256 of the export as last written, to spot edits made outside Lyra. */
   exportHash: string | null
   /** The document changed since the last export (e.g. Lyra quit mid-debounce). */
@@ -101,6 +108,28 @@ function sessionDir(id: string): string {
 
 const manifestPath = (id: string): string => join(sessionDir(id), 'session.json')
 const docPath = (id: string): string => join(sessionDir(id), 'doc.yjs')
+export const sessionAudioDir = (id: string): string => join(sessionDir(id), 'audio')
+export const sessionRawDir = (id: string): string => join(sessionDir(id), 'raw')
+
+/** One model pass over a session's audio, kept as it was produced (docs/SESSION-MODEL.md). */
+export type RawPass = {
+  id: string
+  kind: 'live' | 'diarized'
+  model: string
+  createdAt: string
+  segments: {
+    id: string
+    start: number
+    end: number
+    track: 'mic' | 'system' | 'mix'
+    cluster: string | null
+    confidence: number | null
+    words: { text: string; start: number; end: number }[]
+  }[]
+  clusters: { id: string; embedding: number[]; matches: { personId: string; score: number }[] }[]
+}
+
+export type TrackInfo = Manifest['tracks'][number]
 
 const stemOf = (id: string): string => id.slice(0, -extname(id).length)
 
@@ -134,6 +163,8 @@ function readManifest(id: string): Manifest | null {
       audio: m.audio === 'kept' || m.audio === 'deleted' ? m.audio : 'none',
       title: isString(m.title) ? m.title : 'Untitled',
       preview: isString(m.preview) ? m.preview : '',
+      tags: Array.isArray(m.tags) ? m.tags.filter(isString) : [],
+      speakers: typeof m.speakers === 'number' ? m.speakers : 0,
       exportHash: isString(m.exportHash) ? m.exportHash : null,
       dirty: m.dirty === true
     }
@@ -188,7 +219,7 @@ const sha256 = (text: string): string => createHash('sha256').update(text).diges
 
 function previewOf(text: string): string {
   const line = text.replace(/\s+/g, ' ').trim()
-  if (!line) return 'Empty page'
+  if (!line) return ''
   return line.length > PREVIEW_CHARS ? `${line.slice(0, PREVIEW_CHARS)}…` : line
 }
 
@@ -201,28 +232,155 @@ function startedAtFromId(id: string, fallback: Date): string {
   return Number.isNaN(date.getTime()) ? fallback.toISOString() : date.toISOString()
 }
 
+const LEGACY_LINE = /^\[(\d{2}):(\d{2}):(\d{2})\] (.+?): (.*)$/
+const BYTES_PER_SECOND = 16000 * 2
+
+type LegacyMeta = {
+  speakers: { cluster: number; name: string; personId: string | null; embedding: number[] }[]
+  liveTranscript: string
+}
+
+async function readLegacyMeta(id: string): Promise<LegacyMeta | null> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(join(notesDir(), '.meta', `${stemOf(id)}.json`), 'utf8'))
+    if (!parsed || typeof parsed !== 'object') return null
+    const meta = parsed as Record<string, unknown>
+    if (meta.version !== 1 || !Array.isArray(meta.speakers)) return null
+    const speakers = (meta.speakers as unknown[]).flatMap((value) => {
+      if (!value || typeof value !== 'object') return []
+      const s = value as Record<string, unknown>
+      if (typeof s.cluster !== 'number' || typeof s.name !== 'string') return []
+      return [{
+        cluster: s.cluster,
+        name: s.name,
+        personId: typeof s.personId === 'string' ? s.personId : null,
+        embedding: Array.isArray(s.embedding) ? s.embedding.filter((n): n is number => typeof n === 'number') : []
+      }]
+    })
+    return { speakers, liveTranscript: typeof meta.liveTranscript === 'string' ? meta.liveTranscript : '' }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * A meeting labeled by Lyra 0.2: `[hh:mm:ss] Name: text` lines in the note, speakers in
+ * `.meta/<stem>.json`, audio in `.audio/`. Rebuilds the transcript, speakers and raw passes.
+ */
+async function migrateLegacyMeeting(id: string, doc: Y.Doc, body: string, meta: LegacyMeta): Promise<{
+  notes: string
+  tracks: TrackInfo[]
+  passes: Manifest['passes']
+}> {
+  const { notes: summary, transcript } = splitNotes(body)
+  const hasDivider = transcript !== body
+  const byName = new Map(meta.speakers.map((speaker) => [speaker.name, `c${String(speaker.cluster)}`]))
+  const segments: NewSegment[] = []
+  const leftover: string[] = []
+  for (const line of (hasDivider ? transcript : body).split(/\r?\n/)) {
+    const match = LEGACY_LINE.exec(line)
+    if (!match) {
+      if (line.trim() && !line.startsWith('People: ')) leftover.push(line)
+      continue
+    }
+    const [, h, m, sec, name = 'Speaker', text = ''] = match
+    const start = Number(h) * 3600 + Number(m) * 60 + Number(sec)
+    let cluster = byName.get(name)
+    if (!cluster) {
+      cluster = `c${String(byName.size + meta.speakers.length)}`
+      byName.set(name, cluster)
+    }
+    const previous = segments.at(-1)
+    if (previous) previous.end = Math.max(previous.start, start)
+    segments.push({ id: `s${String(segments.length)}`, rawId: null, start, end: start, cluster, confidence: null, text })
+  }
+  const last = segments.at(-1)
+  if (last) last.end = last.start + 5
+
+  for (const speaker of meta.speakers) {
+    upsertSpeaker(doc, `c${String(speaker.cluster)}`, {
+      name: speaker.name,
+      personId: speaker.personId,
+      // Lyra 0.2 named unknown voices "Speaker N"; any other name was the user's choice.
+      confirmed: speaker.personId !== null || !/^Speaker \d+$/.test(speaker.name),
+      confidence: null,
+      matches: []
+    }, ORIGIN_LOAD)
+  }
+  for (const [name, cluster] of byName) {
+    if (!meta.speakers.some((speaker) => `c${String(speaker.cluster)}` === cluster)) {
+      upsertSpeaker(doc, cluster, { name, personId: null, confirmed: true, confidence: null, matches: [] }, ORIGIN_LOAD)
+    }
+  }
+  replaceTranscript(doc, segments, ORIGIN_LOAD)
+  if (hasDivider) editDoc(doc, { summary }, ORIGIN_LOAD)
+
+  const raw = sessionRawDir(id)
+  await mkdir(raw, { recursive: true })
+  const now = new Date().toISOString()
+  const pass: RawPass = {
+    id: 'legacy',
+    kind: 'diarized',
+    model: 'Lyra 0.2 meeting labels',
+    createdAt: now,
+    segments: segments.map((segment) => ({
+      id: segment.id, start: segment.start, end: segment.end, track: 'mix', cluster: segment.cluster,
+      confidence: null, words: [{ text: segment.text, start: segment.start, end: segment.end }]
+    })),
+    clusters: meta.speakers.map((speaker) => ({ id: `c${String(speaker.cluster)}`, embedding: speaker.embedding, matches: [] }))
+  }
+  await writeFile(join(raw, 'legacy.json'), JSON.stringify(pass), 'utf8')
+  const passes: Manifest['passes'] = [{ id: 'legacy', kind: 'diarized', createdAt: now, model: pass.model }]
+  if (meta.liveTranscript) {
+    await writeFile(join(raw, 'live.json'), JSON.stringify({ id: 'live', kind: 'live', model: 'whisper (streaming)', createdAt: now, text: meta.liveTranscript, segments: [], clusters: [] }), 'utf8')
+    passes.push({ id: 'live', kind: 'live', createdAt: now, model: 'whisper (streaming)' })
+  }
+
+  // Move the recording, if it was kept, into the session folder.
+  const tracks: TrackInfo[] = []
+  for (const name of ['mic', 'system'] as const) {
+    const from = join(notesDir(), '.audio', `${stemOf(id)}.${name}.wav`)
+    if (!existsSync(from)) continue
+    await mkdir(sessionAudioDir(id), { recursive: true })
+    const to = join(sessionAudioDir(id), `${name}.wav`)
+    await copyFile(from, to)
+    await unlink(from)
+    const size = (await stat(to)).size
+    tracks.push({ name, file: `${name}.wav`, sampleRate: 16000, seconds: Math.max(0, size - 44) / BYTES_PER_SECOND })
+  }
+  await rename(join(notesDir(), '.meta', `${stemOf(id)}.json`), join(notesDir(), '.meta', `${stemOf(id)}.json.migrated`)).catch(() => undefined)
+  log('sessions', 'migrated a labeled meeting', { id, segments: segments.length, tracks: tracks.length })
+  return { notes: leftover.join('\n').trim(), tracks, passes }
+}
+
 /** A note file with no session yet (older Lyra, or dropped in from outside) becomes one. */
 async function migrateNote(id: string): Promise<Entry> {
   const path = resolveInNotes(id)
   const [raw, info] = await Promise.all([readFile(path, 'utf8'), stat(path)])
   const page = parsePage(raw, id, info.mtime.toISOString())
   const doc = new Y.Doc()
-  initDoc(doc, { title: page.title === 'Untitled' ? '' : page.title, notes: page.body }, ORIGIN_LOAD)
+  initDoc(doc, { title: page.title === 'Untitled' ? '' : page.title, notes: '' }, ORIGIN_LOAD)
   mkdirSync(sessionDir(id), { recursive: true })
+  const legacy = await readLegacyMeta(id)
+  const meeting = legacy ? await migrateLegacyMeeting(id, doc, page.body, legacy) : null
+  editDoc(doc, { notes: meeting ? meeting.notes : page.body }, ORIGIN_LOAD)
   const manifest: Manifest = {
     version: MANIFEST_VERSION,
     id,
     startedAt: startedAtFromId(id, info.birthtime),
     endedAt: null,
     updatedAt: page.updatedAt,
-    tracks: [],
-    passes: [],
-    audio: 'none',
+    tracks: meeting?.tracks ?? [],
+    passes: meeting?.passes ?? [],
+    audio: meeting?.tracks.length ? 'kept' : 'none',
     title: page.title,
     preview: previewOf(page.body),
+    tags: [],
+    speakers: 0,
     // The file is already what the document says; leave it byte-for-byte as it is.
     exportHash: sha256(raw),
-    dirty: false
+    // A migrated meeting's export gains the metadata file; plain notes stay untouched.
+    dirty: meeting !== null
   }
   writeFileSync(docPath(id), frame(Y.encodeStateAsUpdate(doc)))
   writeManifest(manifest)
@@ -263,8 +421,12 @@ async function load(id: string): Promise<Entry> {
 
 const loading = new Map<string, Promise<Entry>>()
 
+/** Sessions whose note file exists but whose folder is still being written. */
+const creating = new Map<string, Promise<void>>()
+
 async function acquire(id: string): Promise<Entry> {
   resolveInNotes(id)
+  await creating.get(id)
   let entry = open.get(id)
   if (!entry) {
     let pending = loading.get(id)
@@ -273,7 +435,9 @@ async function acquire(id: string): Promise<Entry> {
       loading.set(id, pending)
     }
     try {
-      entry = await pending
+      const loaded = await pending
+      // Someone else opened it meanwhile (e.g. it was just created): theirs wins.
+      entry = open.get(id) ?? loaded
     } finally {
       loading.delete(id)
     }
@@ -350,7 +514,7 @@ async function flushExport(entry: Entry): Promise<void> {
 
 // --- Export ---------------------------------------------------------------------
 
-const TRANSCRIPT_HEADING = '──── Transcript ────'
+
 
 function clock(seconds: number): string {
   const total = Math.max(0, Math.floor(seconds))
@@ -358,20 +522,37 @@ function clock(seconds: number): string {
   return `${pad(Math.floor(total / 3600))}:${pad(Math.floor((total % 3600) / 60))}:${pad(total % 60)}`
 }
 
-/** Notes, then the transcript (once there is one) as `[hh:mm:ss] Name: text` lines. */
+/**
+ * Generated notes, the user's notes, then the transcript (once there is one) as
+ * `[hh:mm:ss] Name: text` lines under a People line. With no summary or transcript, the
+ * export is exactly the notes, so a plain note reads like it always has.
+ */
 function exportBody(snapshot: SessionSnapshot): string {
-  if (!snapshot.transcript.length) return snapshot.notes
+  if (!snapshot.transcript.length && !snapshot.summary.trim()) return snapshot.notes
   const names = new Map(snapshot.speakers.map((speaker) => [speaker.id, speaker.name]))
-  const lines = snapshot.transcript.map((segment) => {
-    const who = segment.cluster ? (names.get(segment.cluster) ?? segment.cluster) : 'Speaker'
-    return `[${clock(segment.start)}] ${who}: ${segment.text}`
-  })
-  const notes = snapshot.notes.trim()
-  return `${notes ? `${notes}\n\n` : ''}${TRANSCRIPT_HEADING}\n\n${lines.join('\n\n')}`
+  const nameOf = (cluster: string | null): string =>
+    cluster ? (names.get(cluster) ?? cluster) : 'Speaker'
+  const parts = [snapshot.summary.trim(), snapshot.notes.trim()].filter(Boolean)
+  if (snapshot.transcript.length) {
+    const people = [...new Set(snapshot.transcript.map((segment) => nameOf(segment.cluster)))]
+    const lines = snapshot.transcript.map(
+      (segment) => `[${clock(segment.start)}] ${nameOf(segment.cluster)}: ${segment.text}`
+    )
+    parts.push(`${TRANSCRIPT_HEADING}\n\nPeople: ${people.join(', ')}\n\n${lines.join('\n\n')}`)
+  }
+  return parts.join('\n\n')
 }
 
 function wordCount(text: string): number {
   return text.match(/\S+/g)?.length ?? 0
+}
+
+/** When retention will delete this session's audio; null if kept forever. */
+function retainedUntil(manifest: Manifest): string | null {
+  const days = getSettings().audioRetentionDays
+  if (days === null) return null
+  const from = new Date(manifest.endedAt ?? manifest.updatedAt).getTime()
+  return new Date(from + days * 86_400_000).toISOString().slice(0, 10)
 }
 
 function sidecarOf(entry: Entry, snapshot: SessionSnapshot, body: string): unknown {
@@ -406,7 +587,8 @@ function sidecarOf(entry: Entry, snapshot: SessionSnapshot, body: string): unkno
             track: track.name,
             path: rel(`audio/${track.file}`),
             sampleRate: track.sampleRate,
-            seconds: track.seconds
+            seconds: +track.seconds.toFixed(2),
+            retainedUntil: retainedUntil(manifest)
           }))
         : [],
     audioStatus: manifest.audio,
@@ -422,6 +604,8 @@ function sidecarOf(entry: Entry, snapshot: SessionSnapshot, body: string): unkno
       name: speaker.name,
       personId: speaker.personId,
       confirmed: speaker.confirmed,
+      confidence: speaker.confidence,
+      matches: speaker.matches,
       talkSeconds: +(talk.get(speaker.id)?.seconds ?? 0).toFixed(1),
       segments: talk.get(speaker.id)?.segments ?? 0
     })),
@@ -431,8 +615,10 @@ function sidecarOf(entry: Entry, snapshot: SessionSnapshot, body: string): unkno
       start: segment.start,
       end: segment.end,
       speaker: segment.cluster,
+      confidence: segment.confidence,
       edited: segment.edited,
-      text: segment.text
+      text: segment.text,
+      ...(segment.edited ? { original: segment.original } : {})
     }))
   }
 }
@@ -462,7 +648,9 @@ async function writeExport(entry: Entry): Promise<void> {
     ...entry.manifest,
     updatedAt,
     title: snapshot.title.trim() || 'Untitled',
-    preview: previewOf(body),
+    preview: previewOf(snapshot.notes.trim() || snapshot.summary.trim() || body),
+    tags: snapshot.tags,
+    speakers: new Set(snapshot.transcript.flatMap((line) => (line.cluster ? [line.cluster] : []))).size,
     exportHash: sha256(text),
     dirty: false
   }
@@ -495,6 +683,7 @@ export async function listSessions(): Promise<PageSummary[]> {
   const out: PageSummary[] = []
   for (const file of entries) {
     if (!file.isFile() || !isNoteName(file.name)) continue
+    await creating.get(file.name)
     try {
       const live = open.get(file.name)
       let manifest = live?.manifest ?? readManifest(file.name)
@@ -507,7 +696,11 @@ export async function listSessions(): Promise<PageSummary[]> {
         id: file.name,
         title: manifest.title,
         updatedAt: manifest.updatedAt,
-        preview: manifest.preview
+        preview: manifest.preview,
+        tags: manifest.tags,
+        speakers: manifest.speakers,
+        startedAt: manifest.startedAt,
+        seconds: manifest.tracks.find((track) => track.name === 'mic')?.seconds ?? null
       })
     } catch (error) {
       log('sessions', 'skipped unreadable note', { name: file.name, error: String(error) })
@@ -555,37 +748,53 @@ export async function createSession(options: CreateSessionOptions = {}): Promise
   for (let n = 1; n < 1000; n++) {
     const id = n === 1 ? `${stem}.${ext}` : `${stem}-${n}.${ext}`
     const text = serializePage({ id, title: 'Untitled', body: '', updatedAt: now })
+    // Until the session folder exists, listing and loading wait instead of mistaking the new
+    // file for a note dropped in from outside.
+    let done = (): void => undefined
+    creating.set(id, new Promise<void>((resolve) => {
+      done = resolve
+    }))
     try {
       markOwnWrite(id)
       // `wx` claims the name, so two sessions started in the same second can't collide.
       await writeFile(resolveInNotes(id), text, { encoding: 'utf8', flag: 'wx' })
     } catch (error) {
+      creating.delete(id)
+      done()
       if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue
       throw error
     }
-    const doc = new Y.Doc()
-    initDoc(doc, { title: '', notes: '' }, ORIGIN_LOAD)
-    await mkdir(sessionDir(id), { recursive: true })
-    writeFileSync(docPath(id), frame(Y.encodeStateAsUpdate(doc)))
-    const manifest: Manifest = {
-      version: MANIFEST_VERSION,
-      id,
-      startedAt: startedAt.toISOString(),
-      endedAt: null,
-      updatedAt: now,
-      tracks: [],
-      passes: [],
-      audio: 'none',
-      title: 'Untitled',
-      preview: previewOf(''),
-      exportHash: sha256(text),
-      dirty: false
+    try {
+      const doc = new Y.Doc()
+      initDoc(doc, { title: '', notes: '' }, ORIGIN_LOAD)
+      // Synchronous from here on, so the session is complete before anyone else runs.
+      mkdirSync(sessionDir(id), { recursive: true })
+      writeFileSync(docPath(id), frame(Y.encodeStateAsUpdate(doc)))
+      const manifest: Manifest = {
+        version: MANIFEST_VERSION,
+        id,
+        startedAt: startedAt.toISOString(),
+        endedAt: null,
+        updatedAt: now,
+        tracks: [],
+        passes: [],
+        audio: 'none',
+        title: 'Untitled',
+        preview: previewOf(''),
+        tags: [],
+        speakers: 0,
+        exportHash: sha256(text),
+        dirty: false
+      }
+      writeManifest(manifest)
+      const entry = makeEntry(id, doc, manifest, 1)
+      open.set(id, entry)
+      release(entry)
+      return pageOf(entry)
+    } finally {
+      creating.delete(id)
+      done()
     }
-    writeManifest(manifest)
-    const entry = makeEntry(id, doc, manifest, 1)
-    open.set(id, entry)
-    release(entry)
-    return pageOf(entry)
   }
   throw new Error('Could not find a free file name for the new session')
 }
@@ -636,6 +845,64 @@ export async function applySessionUpdate(
   } finally {
     release(entry)
   }
+}
+
+/**
+ * Runs `change` on a session's document as a main-process writer (meeting pipeline, notes,
+ * speaker naming) and writes the export once it's done.
+ */
+export async function editSession<T>(id: string, change: (doc: Y.Doc) => T): Promise<T> {
+  const entry = await acquire(id)
+  try {
+    const result = change(entry.doc)
+    await flushExport(entry)
+    return result
+  } finally {
+    release(entry)
+  }
+}
+
+export async function readSession(id: string): Promise<SessionSnapshot> {
+  const entry = await acquire(id)
+  try {
+    return snapshotOf(entry.doc)
+  } finally {
+    release(entry)
+  }
+}
+
+/** Updates a session's manifest (recording finished, pass added, audio deleted). */
+export async function updateManifest(id: string, change: (manifest: Manifest) => Manifest): Promise<void> {
+  const entry = await acquire(id)
+  try {
+    entry.manifest = change(entry.manifest)
+    writeManifest(entry.manifest)
+    scheduleExport(entry, EXPORT_DELAY_MS)
+  } finally {
+    release(entry)
+  }
+}
+
+export type { Manifest as SessionManifest }
+
+export async function readManifestOf(id: string): Promise<Manifest> {
+  const entry = await acquire(id)
+  try {
+    return entry.manifest
+  } finally {
+    release(entry)
+  }
+}
+
+/** A session's manifest straight from disk, without loading its document. */
+export function peekManifest(id: string): Manifest | null {
+  return open.get(id)?.manifest ?? readManifest(id)
+}
+
+/** Ids of every session folder, whether or not its note still exists (retention sweep). */
+export async function sessionIds(): Promise<string[]> {
+  const entries = await readdir(sessionsRoot(), { withFileTypes: true }).catch(() => [])
+  return entries.filter((entry) => entry.isDirectory() && isNoteName(entry.name)).map((entry) => entry.name)
 }
 
 /** Rebuilds a session from its log on disk, bypassing memory (checks and debugging). */

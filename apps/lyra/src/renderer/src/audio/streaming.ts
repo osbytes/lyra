@@ -43,6 +43,8 @@ type Transcribe = (pcm: Float32Array, prompt: string) => Promise<TranscriptWord[
 export type StreamEvents = {
   /** Text that is now final, to append to the document. */
   onCommit: (text: string) => void
+  /** The committed words with timings (seconds of audio fed to this transcriber). */
+  onWords?: (words: TranscriptWord[]) => void
   /** The unconfirmed tail; replaces the previous live text. */
   onLive: (text: string) => void
   onError: (error: unknown) => void
@@ -216,6 +218,7 @@ export class StreamingTranscriber {
     // Whisper can stretch the last word's end far past the audio (to the end of its
     // 30 s window). Unclamped, that would hide every later word from the timestamp fallback.
     this.lastCommittedEnd = Math.min(lastWord.end, (this.offset + this.length) / SAMPLE_RATE)
+    this.events.onWords?.(words.map((word) => ({ ...word })))
     this.events.onCommit(joinWords(words))
   }
 

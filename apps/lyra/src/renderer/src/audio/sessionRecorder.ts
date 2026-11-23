@@ -35,18 +35,22 @@ class TrackBuffer {
   }
 }
 
-/** Streams a meeting's mic and system tracks to main, which writes them as WAV files. */
-export class MeetingRecorder {
+/** Streams a session's mic (and for meetings, system) audio to main, which writes WAV files. */
+export class SessionRecorder {
   private readonly mic = new TrackBuffer('mic')
   private readonly system: TrackBuffer | null
 
-  private constructor(withSystem: boolean) {
+  private constructor(
+    withSystem: boolean,
+    /** Where this recording starts on the session's timeline, in seconds. */
+    readonly offset: number
+  ) {
     this.system = withSystem ? new TrackBuffer('system') : null
   }
 
-  static async start(pageId: string, withSystem: boolean): Promise<MeetingRecorder> {
-    await window.api.startRecording(pageId, withSystem)
-    return new MeetingRecorder(withSystem)
+  static async start(pageId: string, withSystem: boolean): Promise<SessionRecorder> {
+    const offset = await window.api.startRecording(pageId, withSystem)
+    return new SessionRecorder(withSystem, offset)
   }
 
   push(mic: Float32Array, system: Float32Array | null): void {

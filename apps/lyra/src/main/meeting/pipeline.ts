@@ -1,16 +1,32 @@
-import { BrowserWindow, ipcMain } from 'electron'
-import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
+import { ipcMain, BrowserWindow } from 'electron'
+import { existsSync } from 'node:fs'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type {
   MeetingRecording,
-  MeetingSpeaker,
   MeetingStatus,
-  SpeakerAssignment
+  SpeakerAssignment,
+  TranscriptWord
 } from '../../shared/types'
+import {
+  removeLiveNotes,
+  replaceTranscript,
+  SURE_MATCH,
+  upsertSpeaker,
+  type NewSegment,
+  type SpeakerMatch
+} from '../../shared/sessionDoc'
 import { log } from '../log'
-import { notesDir, resolveInNotes } from '../pages'
-import { getSessionPage as getPage, saveSessionPage as savePage } from '../sessionStore'
-import { onRecordingFinished } from '../recorder'
+import { resolveInNotes } from '../pages'
+import { deleteSessionAudio, onRecordingFinished, trackPath } from '../recorder'
+import {
+  editSession,
+  readManifestOf,
+  readSession,
+  sessionRawDir,
+  updateManifest,
+  type RawPass
+} from '../sessionStore'
 import { getSettings } from '../settings'
 import {
   addPerson,
@@ -26,8 +42,7 @@ import {
   type VoiceMatch
 } from '../voices'
 import { transcribePcm } from '../whisper'
-import { splitNotes, TRANSCRIPT_DIVIDER } from './notesFormat'
-import type { DiarizeResult, DiarizedSegment } from './protocol'
+import type { DiarizeResult, DiarizedSegment, SpeakerModels } from './protocol'
 import { diarize, embedVoice, ensureSpeakerModels } from './speakers'
 import { mixTracks, readWav } from './wav'
 
@@ -50,11 +65,28 @@ const MIN_SPEAKER_SECONDS = 2
 /** Clustering distance threshold for diarization. */
 const CLUSTER_THRESHOLD = 0.5
 const PROMPT_CHARS = 200
-const LINE = /^(\[\d{2}:\d{2}:\d{2}\] )(.+?): /
+/** Saved voices kept per speaker, ranked, for the speaker picker. */
+const MAX_MATCHES = 5
+/** Lines shorter than this give too little audio for a meaningful voiceprint. */
+const MIN_LINE_SECONDS = 1.5
+/** Listen plays at most this much of a line. */
+const MAX_LISTEN_SECONDS = 30
+const ORIGIN_PIPELINE = 'pipeline'
+/** Recorded in raw passes; matches the model `whisper.ts` downloads. */
+const WHISPER_MODEL = 'whisper ggml-base.en'
 
-type StoredSpeaker = MeetingSpeaker & { embedding: number[] }
-type MeetingMeta = { version: 1; speakers: StoredSpeaker[]; liveTranscript: string }
 type Turn = { start: number; end: number; speaker: number }
+type NamedSpeaker = {
+  id: string
+  cluster: number
+  name: string
+  personId: string | null
+  confidence: number | null
+  matches: SpeakerMatch[]
+  embedding: number[]
+}
+
+const speakerId = (cluster: number): string => `c${String(cluster)}`
 
 const completedListeners = new Set<(pageId: string) => void>()
 
@@ -66,31 +98,6 @@ export function onMeetingLabeled(listener: (pageId: string) => void): () => void
 
 function broadcast(status: MeetingStatus): void {
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send('meeting:status', status)
-}
-
-function metaPath(pageId: string): string {
-  resolveInNotes(pageId)
-  return join(notesDir(), '.meta', `${pageId.replace(/\.(txt|md)$/i, '')}.json`)
-}
-
-async function readMeta(pageId: string): Promise<MeetingMeta | null> {
-  try {
-    const parsed: unknown = JSON.parse(await readFile(metaPath(pageId), 'utf8'))
-    if (!parsed || typeof parsed !== 'object') return null
-    const meta = parsed as Partial<MeetingMeta>
-    return meta.version === 1 && Array.isArray(meta.speakers)
-      ? { version: 1, speakers: meta.speakers, liveTranscript: meta.liveTranscript ?? '' }
-      : null
-  } catch {
-    return null
-  }
-}
-
-async function writeMeta(pageId: string, meta: MeetingMeta): Promise<void> {
-  const path = metaPath(pageId)
-  await mkdir(join(notesDir(), '.meta'), { recursive: true })
-  await writeFile(`${path}.tmp`, JSON.stringify(meta), 'utf8')
-  await rename(`${path}.tmp`, path)
 }
 
 /**
@@ -151,7 +158,7 @@ export function buildTurns(segments: readonly DiarizedSegment[]): Turn[] {
 }
 
 /** Names each cluster: a saved voice, else "you" when it's mostly the mic track, else Speaker N. */
-async function nameSpeakers(result: DiarizeResult, hasSystemTrack: boolean): Promise<StoredSpeaker[]> {
+async function nameSpeakers(result: DiarizeResult, hasSystemTrack: boolean): Promise<NamedSpeaker[]> {
   const me = await selfPerson()
   const order = [...new Set([...result.segments].sort((a, b) => a.start - b.start).map((s) => s.speaker))]
 
@@ -195,7 +202,7 @@ async function nameSpeakers(result: DiarizeResult, hasSystemTrack: boolean): Pro
   // The mic-track hint can't override a voice match that already found "me".
   let selfAssigned = me ? taken.has(me.id) : false
   let unknown = 0
-  const speakers: StoredSpeaker[] = []
+  const speakers: NamedSpeaker[] = []
   for (const speaker of order) {
     const cluster = result.clusters.find((entry) => entry.speaker === speaker)
     const match = assigned.get(speaker)
@@ -204,72 +211,112 @@ async function nameSpeakers(result: DiarizeResult, hasSystemTrack: boolean): Pro
     const micShare = duration
       ? own.reduce((sum, s) => sum + s.micShare * (s.end - s.start), 0) / duration
       : 0
+    const matches = (scored.find((entry) => entry.speaker === speaker)?.scores ?? [])
+      .slice(0, MAX_MATCHES)
+      .map((entry) => ({ personId: entry.person.id, score: +entry.score.toFixed(3) }))
 
     let name: string
     let personId: string | null = null
+    let confidence: number | null = null
     if (match) {
       name = match.person.name
       personId = match.person.id
+      confidence = +match.score.toFixed(3)
     } else if (hasSystemTrack && micShare >= SELF_MIC_SHARE && !selfAssigned) {
       selfAssigned = true
       name = selfName
       personId = me?.id ?? null
     } else {
       unknown++
-      name = `Speaker ${unknown}`
+      name = `Speaker ${String(unknown)}`
     }
-    speakers.push({ cluster: speaker, name, personId, embedding: cluster?.embedding ?? [] })
+    speakers.push({
+      id: speakerId(speaker),
+      cluster: speaker,
+      name,
+      personId,
+      confidence,
+      matches,
+      embedding: cluster?.embedding ?? []
+    })
   }
   return speakers
 }
 
-function clock(seconds: number): string {
-  const total = Math.max(0, Math.floor(seconds))
-  const pad = (n: number): string => String(n).padStart(2, '0')
-  return `${pad(Math.floor(total / 3600))}:${pad(Math.floor((total % 3600) / 60))}:${pad(total % 60)}`
-}
+type Line = { turn: Turn; words: TranscriptWord[]; text: string }
 
-function peopleLine(speakers: readonly MeetingSpeaker[]): string {
-  return `People: ${speakers.map((speaker) => speaker.name).join(', ')}`
+async function turnAudio(recording: MeetingRecording, turn: { start: number; end: number }): Promise<Float32Array> {
+  const mic = await readWav(recording.micPath, turn.start, turn.end)
+  const system = recording.systemPath ? await readWav(recording.systemPath, turn.start, turn.end) : null
+  return mixTracks(mic, system)
 }
 
 async function transcribeTurns(
   recording: MeetingRecording,
   turns: Turn[],
-  speakers: StoredSpeaker[],
   onProgress: (done: number) => void
-): Promise<string[]> {
-  const lines: string[] = []
+): Promise<Line[]> {
+  const lines: Line[] = []
   let context = ''
   for (const [index, turn] of turns.entries()) {
-    const mic = await readWav(recording.micPath, turn.start, turn.end)
-    const system = recording.systemPath
-      ? await readWav(recording.systemPath, turn.start, turn.end)
-      : null
-    const words = await transcribePcm(mixTracks(mic, system), context.slice(-PROMPT_CHARS))
-    const text = words.map((word) => word.text).join('').trim()
+    const heard = await transcribePcm(await turnAudio(recording, turn), context.slice(-PROMPT_CHARS))
     onProgress(index + 1)
+    const words = heard.map((word) => ({
+      text: word.text,
+      start: +(word.start + turn.start).toFixed(3),
+      end: +(word.end + turn.start).toFixed(3)
+    }))
+    const text = words.map((word) => word.text).join('').trim()
     if (!text) continue
     context += ` ${text}`
-    const name = speakers.find((speaker) => speaker.cluster === turn.speaker)?.name ?? 'Speaker'
     const previous = lines.at(-1)
-    // Consecutive turns by the same speaker read better as one paragraph.
-    if (previous?.includes(`] ${name}: `)) {
-      lines[lines.length - 1] = `${previous} ${text}`
+    // Consecutive turns by the same speaker read better as one line.
+    if (previous?.turn.speaker === turn.speaker) {
+      previous.turn = { ...previous.turn, end: turn.end }
+      previous.words.push(...words)
+      previous.text = `${previous.text} ${text}`
     } else {
-      lines.push(`[${clock(turn.start)}] ${name}: ${text}`)
+      lines.push({ turn: { ...turn }, words, text })
     }
   }
   return lines
 }
 
-async function deleteAudio(recording: MeetingRecording): Promise<void> {
-  for (const path of [recording.micPath, recording.systemPath]) {
-    if (path) await unlink(path).catch(() => undefined)
+/**
+ * How much each line sounds like the rest of its speaker: the line's own voiceprint against
+ * the speaker's. Low scores flag a line that may be someone else (the UI's "Split").
+ */
+async function lineConfidence(
+  recording: MeetingRecording,
+  lines: Line[],
+  speakers: NamedSpeaker[],
+  models: SpeakerModels
+): Promise<(number | null)[]> {
+  const out: (number | null)[] = []
+  for (const line of lines) {
+    const speaker = speakers.find((entry) => entry.cluster === line.turn.speaker)
+    if (!speaker?.embedding.length || line.turn.end - line.turn.start < MIN_LINE_SECONDS) {
+      out.push(null)
+      continue
+    }
+    try {
+      const embedding = await embedVoice(await turnAudio(recording, line.turn), models)
+      out.push(+Math.max(0, Math.min(1, cosine(embedding, speaker.embedding))).toFixed(3))
+    } catch (error) {
+      log('meeting', 'line confidence failed', String(error))
+      out.push(null)
+    }
   }
+  return out
 }
 
-/** Labels a finished recording: diarize, name speakers, transcribe turns, rewrite the note. */
+async function nextPassId(pageId: string): Promise<string> {
+  const manifest = await readManifestOf(pageId)
+  const n = manifest.passes.filter((pass) => pass.kind === 'diarized').length + 1
+  return `pass-${String(n)}`
+}
+
+/** Labels a finished recording: diarize, name speakers, transcribe turns, fill the document. */
 export async function processMeeting(recording: MeetingRecording): Promise<void> {
   const { pageId } = recording
   const status = (state: MeetingStatus['state'], progress: number, message?: string): void => {
@@ -297,21 +344,81 @@ export async function processMeeting(recording: MeetingRecording): Promise<void>
   })
 
   const merged = mergeTinySpeakers(result)
+  // One voice: a dictation, not a conversation. It stays as notes; no transcript, no notes.
+  if (merged.clusters.length < 2 && !(await readSession(pageId)).transcript.length) {
+    if (getSettings().audioRetentionDays === 0) await deleteSessionAudio(pageId)
+    status('done', 1)
+    log('meeting', 'one voice; kept as notes', { pageId })
+    return
+  }
   const speakers = await nameSpeakers(merged, recording.systemPath !== null)
   const turns = buildTurns(merged.segments)
   status('transcribing', 0)
-  const lines = await transcribeTurns(recording, turns, speakers, (done) => {
+  const lines = await transcribeTurns(recording, turns, (done) => {
     status('transcribing', done / Math.max(1, turns.length))
   })
+  const confidence = await lineConfidence(recording, lines, speakers, models)
 
-  const page = await getPage(pageId)
-  const body = lines.length ? `${peopleLine(speakers)}\n\n${lines.join('\n\n')}` : page.body
-  await writeMeta(pageId, { version: 1, speakers, liveTranscript: page.body })
-  await savePage({ id: pageId, title: page.title, body })
-  if (getSettings().audioRetentionDays === 0) await deleteAudio(recording)
+  const passId = await nextPassId(pageId)
+  const segments: NewSegment[] = lines.map((line, index) => ({
+    id: `${passId}-s${String(index)}`,
+    rawId: `${passId}-s${String(index)}`,
+    start: line.turn.start,
+    end: line.turn.end,
+    cluster: speakerId(line.turn.speaker),
+    confidence: confidence[index] ?? null,
+    text: line.text
+  }))
+  const pass: RawPass = {
+    id: passId,
+    kind: 'diarized',
+    model: `sherpa-onnx diarization + ${WHISPER_MODEL}`,
+    createdAt: new Date().toISOString(),
+    segments: lines.map((line, index) => ({
+      id: segments[index]?.id ?? '',
+      start: line.turn.start,
+      end: line.turn.end,
+      track: recording.systemPath ? 'mix' : 'mic',
+      cluster: speakerId(line.turn.speaker),
+      confidence: confidence[index] ?? null,
+      words: line.words
+    })),
+    clusters: speakers.map((speaker) => ({
+      id: speaker.id,
+      embedding: speaker.embedding,
+      matches: speaker.matches
+    }))
+  }
+  await mkdir(sessionRawDir(pageId), { recursive: true })
+  await writeFile(join(sessionRawDir(pageId), `${passId}.json`), JSON.stringify(pass), 'utf8')
+
+  if (segments.length) {
+    await editSession(pageId, (doc) => {
+      doc.transact(() => {
+        for (const speaker of speakers) {
+          upsertSpeaker(doc, speaker.id, {
+            name: speaker.name,
+            personId: speaker.personId,
+            // A strong voice match needs no confirming; anything else is Lyra's guess.
+            confirmed: (speaker.confidence ?? 0) >= SURE_MATCH,
+            confidence: speaker.confidence,
+            matches: speaker.matches
+          }, ORIGIN_PIPELINE)
+        }
+        replaceTranscript(doc, segments, ORIGIN_PIPELINE)
+        // The labeled transcript supersedes the rough live text of the same audio.
+        removeLiveNotes(doc, ORIGIN_PIPELINE)
+      }, ORIGIN_PIPELINE)
+    })
+  }
+  await updateManifest(pageId, (manifest) => ({
+    ...manifest,
+    passes: [...manifest.passes, { id: passId, kind: 'diarized', createdAt: pass.createdAt, model: pass.model }]
+  }))
+  if (getSettings().audioRetentionDays === 0) await deleteSessionAudio(pageId)
 
   status('done', 1)
-  log('meeting', 'labeled', { pageId, turns: lines.length })
+  log('meeting', 'labeled', { pageId, lines: segments.length, pass: passId })
   for (const listener of completedListeners) listener(pageId)
 }
 
@@ -328,34 +435,37 @@ function enqueue(recording: MeetingRecording): void {
   })
 }
 
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-/** Rewrites "Old:" speaker prefixes, the People line, and names in the notes after a relabel. */
-function relabel(body: string, from: string, to: string, speakers: readonly MeetingSpeaker[]): string {
-  const { notes, transcript } = splitNotes(body)
-  const lines = transcript
-    .split('\n')
-    .map((line) => {
-      if (line.startsWith('People: ')) return peopleLine(speakers)
-      const match = LINE.exec(line)
-      return match?.[1] && match[2] === from ? `${match[1]}${to}: ${line.slice(match[0].length)}` : line
-    })
-    .join('\n')
-  if (!notes) return lines
-  const renamed = notes.replace(new RegExp(`\\b${escapeRegExp(from)}\\b`, 'g'), to)
-  return `${renamed}\n\n${TRANSCRIPT_DIVIDER}\n\n${lines}`
+/** The voiceprint of a speaker from the latest pass that has one. */
+async function speakerEmbedding(pageId: string, id: string): Promise<number[]> {
+  const manifest = await readManifestOf(pageId)
+  for (const pass of [...manifest.passes].reverse()) {
+    if (pass.kind !== 'diarized') continue
+    try {
+      const parsed: unknown = JSON.parse(await readFile(join(sessionRawDir(pageId), `${pass.id}.json`), 'utf8'))
+      const clusters = (parsed as { clusters?: unknown }).clusters
+      if (!Array.isArray(clusters)) continue
+      for (const cluster of clusters as unknown[]) {
+        if (!cluster || typeof cluster !== 'object') continue
+        const entry = cluster as Record<string, unknown>
+        if (entry.id === id && Array.isArray(entry.embedding)) {
+          return entry.embedding.filter((n): n is number => typeof n === 'number')
+        }
+      }
+    } catch {
+      // A missing or unreadable pass: try the one before.
+    }
+  }
+  return []
 }
 
 export async function assignSpeaker(
   pageId: string,
-  cluster: number,
+  id: string,
   assignment: SpeakerAssignment
 ): Promise<void> {
-  const meta = await readMeta(pageId)
-  const speaker = meta?.speakers.find((entry) => entry.cluster === cluster)
-  if (!meta || !speaker) throw new Error('This meeting has no such speaker')
+  const speaker = (await readSession(pageId)).speakers.find((entry) => entry.id === id)
+  if (!speaker) throw new Error('This session has no such speaker')
+  const embedding = await speakerEmbedding(pageId, id)
 
   let name: string
   let personId: string | null
@@ -365,24 +475,20 @@ export async function assignSpeaker(
     name = person.name
     personId = person.id
     // Teach the voiceprint this sample, so the person is recognized next time.
-    if (speaker.embedding.length) await addSample(person.id, speaker.embedding)
+    if (embedding.length) await addSample(person.id, embedding)
   } else {
     name = assignment.name.trim()
     if (!name) throw new Error('A name is required')
     personId = null
-    if (assignment.remember && speaker.embedding.length) {
-      personId = (await addPerson(name, speaker.embedding, false)).id
+    if (assignment.remember && embedding.length) {
+      personId = (await addPerson(name, embedding, false)).id
     }
   }
 
-  const previous = speaker.name
-  const speakers = meta.speakers.map((entry) =>
-    entry.cluster === cluster ? { ...entry, name, personId } : entry
-  )
-  await writeMeta(pageId, { ...meta, speakers })
-  const page = await getPage(pageId)
-  await savePage({ id: pageId, title: page.title, body: relabel(page.body, previous, name, speakers) })
-  log('meeting', 'relabeled speaker', { pageId, cluster, remembered: personId !== null })
+  await editSession(pageId, (doc) => {
+    upsertSpeaker(doc, id, { name, personId, confirmed: true }, ORIGIN_PIPELINE)
+  })
+  log('meeting', 'named speaker', { pageId, speaker: id, remembered: personId !== null })
 }
 
 function parseAssignment(value: unknown): SpeakerAssignment {
@@ -400,6 +506,24 @@ function pcmFrom(payload: unknown): Float32Array {
     return new Float32Array(payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength))
   }
   throw new Error('Invalid audio')
+}
+
+/** Mixed audio for a stretch of a session, as 16-bit PCM for playback (Listen). */
+export async function sessionAudio(pageId: string, start: number, end: number): Promise<Int16Array> {
+  const span = Math.min(Math.max(0, end - start), MAX_LISTEN_SECONDS)
+  const micPath = trackPath(pageId, 'mic')
+  if (!existsSync(micPath) || span <= 0) return new Int16Array(0)
+  const systemPath = trackPath(pageId, 'system')
+  const mixed = await turnAudio(
+    { pageId, micPath, systemPath: existsSync(systemPath) ? systemPath : null, seconds: 0 },
+    { start, end: start + span }
+  )
+  const out = new Int16Array(mixed.length)
+  for (let i = 0; i < mixed.length; i++) {
+    const value = Math.max(-1, Math.min(1, mixed[i] ?? 0))
+    out[i] = value < 0 ? value * 0x8000 : value * 0x7fff
+  }
+  return out
 }
 
 /** `processRecordings: false` (test runs) keeps the IPC but doesn't label recordings. */
@@ -425,13 +549,15 @@ export function registerMeetingPipeline({ processRecordings }: { processRecordin
     if (typeof id !== 'string') throw new Error('Invalid input')
     return deletePerson(id)
   })
-  ipcMain.handle('meeting:speakers', async (_event, pageId: unknown) => {
-    if (typeof pageId !== 'string') throw new Error('Invalid page id')
-    const meta = await readMeta(pageId)
-    return meta ? meta.speakers.map(({ cluster, name, personId }) => ({ cluster, name, personId })) : null
+  ipcMain.handle('meeting:assign', (_event, pageId: unknown, id: unknown, assignment: unknown) => {
+    if (typeof pageId !== 'string' || typeof id !== 'string') throw new Error('Invalid input')
+    return assignSpeaker(pageId, id, parseAssignment(assignment))
   })
-  ipcMain.handle('meeting:assign', (_event, pageId: unknown, cluster: unknown, assignment: unknown) => {
-    if (typeof pageId !== 'string' || typeof cluster !== 'number') throw new Error('Invalid input')
-    return assignSpeaker(pageId, cluster, parseAssignment(assignment))
+  ipcMain.handle('sessions:audio', (_event, pageId: unknown, start: unknown, end: unknown) => {
+    if (typeof pageId !== 'string' || typeof start !== 'number' || typeof end !== 'number') {
+      throw new Error('Invalid input')
+    }
+    resolveInNotes(pageId)
+    return sessionAudio(pageId, start, end)
   })
 }

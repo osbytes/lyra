@@ -32,7 +32,9 @@ Repo-level files (`.changeset/`, `.github/`, `docs/`, `scripts/release-*`, `turb
 - `src/shared/types.ts` — types shared across processes, including the `VoicePagesApi` contract.
 - `src/main/sessionStore.ts` + `src/shared/sessionDoc.ts` — sessions: each note is a Yjs document
   (main owns it, windows hold replicas over IPC), exported to the `.txt`/`.md` file plus a
-  `.lyra.json` metadata file. Design: [docs/SESSION-MODEL.md](docs/SESSION-MODEL.md) (repo root).
+  `.lyra.json` metadata file. Audio and raw model passes live in `.sessions/<id>/`.
+  `components/Transcript.tsx` edits the transcript and speakers through the same document.
+  Design: [docs/SESSION-MODEL.md](docs/SESSION-MODEL.md) (repo root).
 - `scripts/` — build, release and smoke-test scripts (CommonJS).
 - `.agents/` — roles, skills and rules for coding agents (see below).
 

@@ -1,11 +1,12 @@
 import { BrowserWindow, ipcMain } from 'electron'
 import type { MeetingStatus } from '../../shared/types'
 import { log } from '../log'
-import { getSessionPage as getPage, saveSessionPage as savePage } from '../sessionStore'
+import { editDoc, type SessionSnapshot } from '../../shared/sessionDoc'
+import { editSession, readSession } from '../sessionStore'
 import { getClaudeKey, hasClaudeKey, setClaudeKey } from '../secrets'
 import { getSettings } from '../settings'
 import { claudeNotes } from './notesClaude'
-import { renderNotes, splitNotes, withNotes } from './notesFormat'
+import { renderNotes } from './notesFormat'
 import { localNotes } from './notesLocal'
 import { onMeetingLabeled } from './pipeline'
 
@@ -13,7 +14,18 @@ function broadcast(status: MeetingStatus): void {
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send('meeting:status', status)
 }
 
-/** Writes (or rewrites) the notes section at the top of a meeting note. */
+/** The transcript as `Name: text` lines, the shape the notes prompts expect. */
+function transcriptText(snapshot: SessionSnapshot): string {
+  const names = new Map(snapshot.speakers.map((speaker) => [speaker.id, speaker.name]))
+  return snapshot.transcript
+    .map((segment) => {
+      const name = segment.cluster ? (names.get(segment.cluster) ?? 'Speaker') : 'Speaker'
+      return `${name}: ${segment.text}`
+    })
+    .join('\n')
+}
+
+/** Writes (or rewrites) a session's generated notes (its summary, above the user's notes). */
 export async function generateNotes(pageId: string): Promise<void> {
   const engine = getSettings().notesEngine
   if (engine === 'off') throw new Error('Meeting notes are turned off in Settings')
@@ -22,7 +34,7 @@ export async function generateNotes(pageId: string): Promise<void> {
   }
 
   try {
-    const { transcript } = splitNotes((await getPage(pageId)).body)
+    const transcript = transcriptText(await readSession(pageId))
     if (!transcript.trim()) throw new Error('This note has no transcript to summarize')
     status('summarizing', 0)
     const started = Date.now()
@@ -39,9 +51,10 @@ export async function generateNotes(pageId: string): Promise<void> {
       status('summarizing', 0.5)
     }
 
-    // Re-read: the note may have been edited while the model was working.
-    const page = await getPage(pageId)
-    await savePage({ id: pageId, title: page.title, body: withNotes(page.body, renderNotes(notes)) })
+    // Only the summary changes, so edits made while the model worked are untouched.
+    await editSession(pageId, (doc) => {
+      editDoc(doc, { summary: renderNotes(notes) }, 'notes')
+    })
     log('notes', 'generated', { pageId, engine, ms: Date.now() - started })
     status('done', 1)
   } catch (error) {

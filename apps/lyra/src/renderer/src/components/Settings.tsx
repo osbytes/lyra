@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import type { HotkeyAction, HotkeyStatus, Settings as SettingsValue } from '../../../shared/types'
 import { homePath } from '../lib/format'
-import { Segmented, Switch } from './Controls'
+import { Segmented, Select, Switch } from './Controls'
 import { HotkeyInput } from './HotkeyInput'
 import { CloseIcon, FolderIcon, GearIcon, MicSmallIcon, PeopleIcon, RecordIcon } from './Icons'
 import { MicrophoneSelect } from './MicrophoneSelect'
@@ -54,8 +54,8 @@ function NotesSection({ settings, update }: Pick<Props, 'settings' | 'update'>) 
   }
 
   return (
-    <Section title="Notes">
-      <Row label="Notes folder" hint="Every note is a file in this folder.">
+    <Section title="Sessions">
+      <Row label="Sessions folder" hint="Every session is a plain text file in this folder.">
         <code className="settings-path" title={settings.notesDir}>
           {homePath(settings.notesDir)}
         </code>
@@ -75,7 +75,7 @@ function NotesSection({ settings, update }: Pick<Props, 'settings' | 'update'>) 
         </div>
       </Row>
       {notice ? <p className="settings-notice">{notice}</p> : null}
-      <Row label="File format" hint="For new notes. Existing .txt and .md files keep working.">
+      <Row label="File format" hint="For new sessions. Existing .txt and .md files keep working.">
         <Segmented
           label="File format"
           value={settings.fileFormat}
@@ -99,12 +99,10 @@ const NOTES_ENGINES = [
 ] as const
 
 const DEFAULT_HOTKEYS: Record<HotkeyAction, string> = {
-  dictation: 'CommandOrControl+Shift+Space',
-  meeting: 'CommandOrControl+Shift+M'
+  session: 'CommandOrControl+Shift+Space'
 }
-const HOTKEY_SETTING: Record<HotkeyAction, 'hotkey' | 'meetingHotkey'> = {
-  dictation: 'hotkey',
-  meeting: 'meetingHotkey'
+const HOTKEY_SETTING: Record<HotkeyAction, 'hotkey'> = {
+  session: 'hotkey'
 }
 
 function HotkeyRow({
@@ -150,26 +148,16 @@ function ShortcutsSection({ settings, update }: Pick<Props, 'settings' | 'update
     return window.api.onHotkeyStatus(setStatuses)
   }, [])
 
-  const statusOf = (action: HotkeyAction): HotkeyStatus | undefined =>
-    statuses.find((status) => status.action === action)
 
   return (
     <Section title="Shortcuts">
       <HotkeyRow
-        action="dictation"
-        label="Start or stop dictation"
-        hint="Works from any app, even when Lyra is hidden. Starts a new note."
+        action="session"
+        label="Start or stop a session"
+        hint="Works from any app, even when Lyra is hidden. Starts a new session."
         settings={settings}
         update={update}
-        status={statusOf('dictation')}
-      />
-      <HotkeyRow
-        action="meeting"
-        label="Start or stop a meeting"
-        hint="Records your mic and the computer's audio, then labels who said what."
-        settings={settings}
-        update={update}
-        status={statusOf('meeting')}
+        status={statuses.at(0)}
       />
       <Row label="Open at login" hint="Keeps the shortcuts available after a restart.">
         <Switch
@@ -229,20 +217,14 @@ function MeetingsSection({ settings, update }: Pick<Props, 'settings' | 'update'
         label="Keep recordings"
         hint="Audio lets you replay and re-transcribe a session. Transcripts are always kept."
       >
-        <select
-          className="settings-select"
-          aria-label="Keep recordings"
+        <Select
+          label="Keep recordings"
           value={retentionValue(settings.audioRetentionDays)}
-          onChange={(event) => {
-            void update({ audioRetentionDays: parseRetention(event.target.value) })
+          options={retentionChoices(settings.audioRetentionDays)}
+          onChange={(value) => {
+            void update({ audioRetentionDays: parseRetention(value) })
           }}
-        >
-          {retentionChoices(settings.audioRetentionDays).map((choice) => (
-            <option key={choice.value} value={choice.value}>
-              {choice.label}
-            </option>
-          ))}
-        </select>
+        />
       </Row>
     </Section>
   )

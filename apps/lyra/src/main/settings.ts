@@ -12,14 +12,14 @@ export function defaultSettings(): Settings {
     fileFormat: 'txt',
     micDeviceId: null,
     hotkey: 'CommandOrControl+Shift+Space',
-    meetingHotkey: 'CommandOrControl+Shift+M',
     launchAtLogin: false,
     micPrompt: { enabled: false, ignoredApps: [] },
     // Long enough to replay or re-transcribe recent sessions, short enough not to pile up.
     audioRetentionDays: 30,
     captureSystemAudio: true,
     notesEngine: 'off',
-    meetingNoticeSeen: false
+    meetingNoticeSeen: false,
+    detailsPanel: false
   }
 }
 
@@ -50,13 +50,13 @@ const FIELD_CHECKS: { [K in FlatKey]: (value: unknown) => value is Settings[K] }
   fileFormat: oneOf('txt', 'md'),
   micDeviceId: (value): value is string | null => value === null || isString(value),
   hotkey: isString,
-  meetingHotkey: isString,
   launchAtLogin: isBool,
   audioRetentionDays: (value): value is number | null =>
     value === null || (Number.isInteger(value) && (value as number) >= 0 && (value as number) <= MAX_RETENTION_DAYS),
   captureSystemAudio: isBool,
   notesEngine: oneOf('off', 'local', 'claude'),
-  meetingNoticeSeen: isBool
+  meetingNoticeSeen: isBool,
+  detailsPanel: isBool
 }
 
 /** Copies every well-formed field of `raw` onto `out`; anything else is ignored. */

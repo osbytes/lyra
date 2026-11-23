@@ -14,9 +14,8 @@ export type Settings = {
   fileFormat: NoteFormat
   /** `null` = the system default microphone. */
   micDeviceId: string | null
-  /** Electron accelerators for the global shortcuts. */
+  /** Electron accelerator for the global start/stop shortcut. */
   hotkey: string
-  meetingHotkey: string
   launchAtLogin: boolean
   micPrompt: { enabled: boolean; ignoredApps: string[] }
   /**
@@ -26,19 +25,19 @@ export type Settings = {
   audioRetentionDays: number | null
   captureSystemAudio: boolean
   notesEngine: 'off' | 'local' | 'claude'
+  /** Show a session's details (dates, tags, speakers) in a side panel instead of inline. */
+  detailsPanel: boolean
   /** The one-time "get consent before recording others" notice was acknowledged. */
   meetingNoticeSeen: boolean
 }
 
 export type MoveNotesResult = { moved: number; skipped: number }
 
-export type SessionKind = 'dictation' | 'meeting'
 export type SessionPhase = 'idle' | 'starting' | 'listening' | 'finishing'
 
 /** What the main window's recorder is doing; mirrored to the tray and the overlay. */
 export type SessionState = {
   phase: SessionPhase
-  kind: SessionKind
   /** Epoch ms when listening began, or null when idle. */
   startedAt: number | null
   micName: string
@@ -48,13 +47,14 @@ export type SessionState = {
 export type OverlayFrame = { level: number; live: string }
 
 /** Sent from main to the main window's recorder. */
-export type SessionCommand = { type: 'toggle'; kind: SessionKind } | { type: 'stop' }
+export type SessionCommand = { type: 'toggle' } | { type: 'stop' }
 
 /** "Another app started using the mic" prompt. `app` is '' when the app is unknown (macOS). */
 export type MicPrompt = { app: string }
-export type PromptAnswer = 'meeting' | 'dictation' | 'dismiss' | 'ignore'
+export type PromptAnswer = 'start' | 'dismiss' | 'ignore'
 
-export type HotkeyAction = SessionKind
+/** One global shortcut starts or stops a session from anywhere. */
+export type HotkeyAction = 'session'
 
 export type HotkeyStatus = {
   action: HotkeyAction
@@ -85,13 +85,6 @@ export type Person = {
   samples: number
 }
 
-/** A speaker found in a meeting, as labeled in its transcript. */
-export type MeetingSpeaker = {
-  cluster: number
-  name: string
-  personId: string | null
-}
-
 /** Relabel a meeting speaker as a saved person, or under a new name (optionally saving their voice). */
 export type SpeakerAssignment =
   | { personId: string }
@@ -110,6 +103,12 @@ export type PageSummary = {
   title: string
   updatedAt: string
   preview: string
+  tags: string[]
+  /** Distinct speakers in the session's transcript; 0 when it has none. */
+  speakers: number
+  startedAt: string
+  /** Length of the recording, or null when nothing was recorded. */
+  seconds: number | null
 }
 
 export type WhisperStatus =
@@ -141,6 +140,8 @@ export type VoicePagesApi = {
   createPage: (options?: { startedAt?: string }) => Promise<Page>
   savePage: (page: Pick<Page, 'id' | 'title' | 'body'>) => Promise<Page>
   deletePage: (id: string) => Promise<void>
+  /** Shows a session's text file in the system file manager. */
+  revealPage: (id: string) => Promise<void>
   /** Fires when the list of pages, or a page's title or preview, may have changed. */
   onPagesChanged: (callback: () => void) => () => void
   /**
@@ -181,9 +182,17 @@ export type VoicePagesApi = {
   getHotkeyStatus: () => Promise<HotkeyStatus[]>
   onHotkeyStatus: (callback: (status: HotkeyStatus[]) => void) => () => void
   /** Meeting audio: open WAV files for a page, append 16-bit PCM chunks, then finalize. */
-  startRecording: (pageId: string, withSystem: boolean) => Promise<void>
+  /**
+   * Records into a session's audio; recording again in the same session continues its
+   * timeline. Resolves to where this recording starts on it, in seconds.
+   */
+  startRecording: (pageId: string, withSystem: boolean) => Promise<number>
   appendRecording: (track: AudioTrack, pcm16: Int16Array) => void
+  /** Words the live transcriber committed, timed on the session's timeline. */
+  appendRecordingWords: (words: TranscriptWord[]) => void
   stopRecording: () => Promise<MeetingRecording | null>
+  /** Mixed 16 kHz mono PCM for a stretch of a session's audio (Listen); empty if none is kept. */
+  sessionAudio: (pageId: string, start: number, end: number) => Promise<Int16Array>
   listPeople: () => Promise<Person[]>
   onPeopleChanged: (callback: (people: Person[]) => void) => () => void
   /** Saves a voiceprint from ~20 s of 16 kHz mono speech. */
@@ -192,8 +201,11 @@ export type VoicePagesApi = {
   setSelfPerson: (id: string) => Promise<void>
   deletePerson: (id: string) => Promise<void>
   /** Speakers of a processed meeting note, or null if it isn't one. */
-  getMeetingSpeakers: (pageId: string) => Promise<MeetingSpeaker[] | null>
-  assignSpeaker: (pageId: string, cluster: number, assignment: SpeakerAssignment) => Promise<void>
+  /**
+   * Names a session's speaker as a saved person, or under a new name. Teaches the voiceprint
+   * from that speaker's audio (always for a saved person; for a new name when `remember`).
+   */
+  assignSpeaker: (pageId: string, speakerId: string, assignment: SpeakerAssignment) => Promise<void>
   onMeetingStatus: (callback: (status: MeetingStatus) => void) => () => void
   /** (Re)writes the notes section at the top of a meeting note with the chosen engine. */
   generateNotes: (pageId: string) => Promise<void>

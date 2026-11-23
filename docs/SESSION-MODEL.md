@@ -1,6 +1,6 @@
 # Session data model
 
-Status: accepted (2026-11-23); phase 1 in progress. Replaces the page model in
+Status: implemented (2026-11-23), phases 1–4. Replaces the page model in
 `apps/lyra/src/main/pages.ts` and the meeting sidecars in `.audio/` and `.meta/`.
 
 Decisions:
@@ -259,7 +259,27 @@ Settings, people/voiceprints, updater, hotkeys and the mic watcher are unchanged
 
 ## Phases
 
-Each phase is its own PR and leaves the app working.
+Each phase leaves the app working. All four are implemented; notes on where the code differs
+from the plan above:
+
+- **One timeline per session.** Recording again in a session appends to the same
+  `audio/mic.wav` (and `system.wav`, padded with silence so the tracks stay aligned), so
+  transcript times always point into one file. `startRecording` returns where the new recording
+  starts.
+- **One kind of session.** There is no dictation/meeting switch: every session records the
+  mic, plus the computer's audio when that setting is on, and labeling runs on every recording.
+  When diarization hears one voice it stops there (no re-transcription), and the session stays
+  plain notes.
+- **Live text goes to the notes**, and each recording remembers the range it inserted (a Yjs
+  relative position plus the exact text, in `meta.liveRanges`). When labeling finds two or more
+  speakers it fills the transcript and removes those ranges from the notes, but only where the
+  text is still exactly as transcribed, so anything the user edited stays.
+- **Generated notes live in `summary`**, a separate `Y.Text`, so "Rewrite notes" never touches
+  the user's notes. The export renders summary, notes, then transcript.
+- **Per-line confidence** is the cosine similarity between a line's own voiceprint and its
+  speaker's. Lines below 0.6 are flagged and pre-ticked in Split.
+- **A re-run keeps edits**: a new pass replaces the transcript, but a line the user edited keeps
+  their text when the new pass has a line over the same stretch of audio.
 
 1. **Session store and Yjs document.** Add `sessions.ts` (manifest, `doc.yjs` log and compaction,
    export rendering), migration, and the IPC sync. Plain notes only: `notes`, `title`, `tags`.
