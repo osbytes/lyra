@@ -2,12 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PageSummary, SessionKind, UpdateStatus, WhisperStatus } from '../../shared/types'
 import { DictationDock } from './components/DictationDock'
 import { Editor } from './components/Editor'
-import { MeetingSpeakers } from './components/MeetingSpeakers'
+import { Transcript } from './components/Transcript'
 import { CheckIcon, CopyIcon, FolderIcon, MicIcon, PlusIcon } from './components/Icons'
 import { SettingsDialog } from './components/Settings'
 import { Sidebar } from './components/Sidebar'
-import { useDictation } from './hooks/useDictation'
-import { usePages } from './hooks/usePages'
+import { useDictation, type Span } from './hooks/useDictation'
+import { usePages, type OpenPage } from './hooks/usePages'
 import { useSettings } from './hooks/useSettings'
 import { homePath, readingMinutes, relativeTime, shortcutLabel, wordCount } from './lib/format'
 import { appendTranscript, promptFor } from './text/transcript'
@@ -29,12 +29,22 @@ const MEETING_TITLE_FORMAT: Intl.DateTimeFormatOptions = {
 function isPageField(target: EventTarget | null): boolean {
   return (
     target instanceof HTMLElement &&
-    (target.classList.contains('title-input') || target.classList.contains('editor'))
+    (target.classList.contains('title-input') ||
+      target.classList.contains('editor') ||
+      target.classList.contains('line-text'))
   )
 }
 
-function toMarkdown(title: string, body: string): string {
-  return title && title !== 'Untitled' ? `# ${title}\n\n${body}` : body
+function toMarkdown(page: OpenPage): string {
+  const names = new Map(page.speakers.map((speaker) => [speaker.id, speaker.name]))
+  const lines = page.transcript.map((line) => {
+    const name = line.cluster ? (names.get(line.cluster) ?? 'Speaker') : 'Speaker'
+    return `**${name}:** ${line.text}`
+  })
+  const body = [page.summary.trim(), page.body.trim(), lines.join('\n\n')]
+    .filter(Boolean)
+    .join('\n\n')
+  return page.title && page.title !== 'Untitled' ? `# ${page.title}\n\n${body}` : body
 }
 
 export default function App(): React.JSX.Element {
@@ -44,6 +54,10 @@ export default function App(): React.JSX.Element {
     currentRef,
     saveState,
     edit,
+    editSummary,
+    editSegment,
+    assignLines,
+    appendLive,
     undo,
     redo,
     open,
@@ -72,19 +86,24 @@ export default function App(): React.JSX.Element {
     }
   }, [])
 
+  const sessionKind = useRef<SessionKind>('dictation')
+
   const onCommit = useCallback(
-    (text: string) => {
+    (text: string, at: Span) => {
       const page = currentRef.current
       if (!page) return
       const view = scroller.current
       // Keep new words in view, unless the writer has scrolled up to reread.
       const follow = !view || view.scrollHeight - view.scrollTop - view.clientHeight < 160
-      edit({ body: appendTranscript(page.body, text) })
+      // A meeting's live words are a rough transcript, replaced once speakers are labeled;
+      // dictation is the user's own writing.
+      if (sessionKind.current === 'meeting') appendLive(text, at)
+      else edit({ body: appendTranscript(page.body, text) })
       if (follow) {
         requestAnimationFrame(() => view?.scrollTo({ top: view.scrollHeight, behavior: 'smooth' }))
       }
     },
-    [currentRef, edit]
+    [currentRef, edit, appendLive]
   )
 
   const getContext = useCallback(() => {
@@ -103,8 +122,6 @@ export default function App(): React.JSX.Element {
     await flush()
   }, [stopDictation, flush])
 
-  const sessionKind = useRef<SessionKind>('dictation')
-
   /** Starts dictating into a new note named for this moment. */
   const startSession = useCallback(
     async (kind: SessionKind = 'dictation') => {
@@ -116,10 +133,11 @@ export default function App(): React.JSX.Element {
         edit({ title: `Meeting · ${startedAt.toLocaleString(undefined, MEETING_TITLE_FORMAT)}` })
         await start({
           pageId: page.id,
+          kind: 'meeting',
           systemAudio: settingsRef.current?.captureSystemAudio ?? true
         })
       } else {
-        await start()
+        await start({ pageId: page.id, kind: 'dictation', systemAudio: false })
       }
     },
     [stop, create, start, edit]
@@ -167,7 +185,7 @@ export default function App(): React.JSX.Element {
     if (recording) void stop()
     else if (currentRef.current) {
       sessionKind.current = 'dictation'
-      void start()
+      void start({ pageId: currentRef.current.id, kind: 'dictation', systemAudio: false })
     }
   }, [recording, stop, start, currentRef])
 
@@ -228,8 +246,8 @@ export default function App(): React.JSX.Element {
   ) : null
 
   const copy = (): void => {
-    if (!current?.body) return
-    window.api.copyText(toMarkdown(current.title, current.body))
+    if (!current) return
+    window.api.copyText(toMarkdown(current))
     setCopied(true)
   }
 
@@ -269,7 +287,10 @@ export default function App(): React.JSX.Element {
     return () => window.removeEventListener('keydown', onKey)
   }, [toggleDictation, newPage, startSession, undo, redo])
 
-  const words = current ? wordCount(current.body) : 0
+  const words = current
+    ? wordCount([current.summary, current.body, ...current.transcript.map((line) => line.text)].join(' '))
+    : 0
+  const meetingLive = dictation.recording && sessionKind.current === 'meeting'
   const editedAt = current ? pages.find((page) => page.id === current.id)?.updatedAt : undefined
 
   return (
@@ -295,7 +316,7 @@ export default function App(): React.JSX.Element {
                 className="btn no-drag"
                 type="button"
                 onClick={copy}
-                disabled={!current.body}
+                disabled={!current.body && !current.summary && !current.transcript.length}
                 title="Copy as Markdown"
               >
                 {copied ? <CheckIcon /> : <CopyIcon />}
@@ -330,17 +351,36 @@ export default function App(): React.JSX.Element {
                   {words > 0 ? <span>{readingMinutes(words)} min read</span> : null}
                   {editedAt ? <span>Edited {relativeTime(editedAt).toLowerCase()}</span> : null}
                 </p>
-                <MeetingSpeakers
-                  pageId={current.id}
-                  body={current.body}
-                  notesEngine={settings?.notesEngine ?? 'off'}
-                />
+                {current.summary.trim() ? (
+                  <section className="summary" aria-label="Meeting notes">
+                    <h2 className="section-label">Meeting notes</h2>
+                    <Editor
+                      value={current.summary}
+                      ghost=""
+                      listening={false}
+                      label="Meeting notes"
+                      onChange={editSummary}
+                    />
+                  </section>
+                ) : null}
                 <Editor
                   value={current.body}
-                  ghost={dictation.live}
-                  listening={dictation.phase === 'listening'}
+                  ghost={meetingLive ? '' : dictation.live}
+                  listening={dictation.phase === 'listening' && !meetingLive}
                   onChange={(body) => edit({ body })}
                 />
+                {current.transcript.length ? (
+                  <Transcript
+                    pageId={current.id}
+                    transcript={current.transcript}
+                    speakers={current.speakers}
+                    hasSummary={!!current.summary.trim()}
+                    notesEngine={settings?.notesEngine ?? 'off'}
+                    onEditLine={editSegment}
+                    onAssign={assignLines}
+                    onUndo={() => void undo()}
+                  />
+                ) : null}
               </article>
             </div>
             <DictationDock

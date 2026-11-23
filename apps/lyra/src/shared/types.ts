@@ -66,8 +66,12 @@ export type HotkeyStatus = {
 export type AudioTrack = 'mic' | 'system'
 
 /** A finished meeting recording: 16 kHz mono 16-bit WAV files in `<notes>/.audio`. */
+/** Dictation records the mic; a meeting adds the computer's audio and labels speakers. */
+export type RecordingKind = 'dictation' | 'meeting'
+
 export type MeetingRecording = {
   pageId: string
+  kind: RecordingKind
   micPath: string
   /** null when system audio wasn't captured. */
   systemPath: string | null
@@ -83,13 +87,6 @@ export type Person = {
   createdAt: string
   /** How many voice samples the voiceprint is built from. */
   samples: number
-}
-
-/** A speaker found in a meeting, as labeled in its transcript. */
-export type MeetingSpeaker = {
-  cluster: number
-  name: string
-  personId: string | null
 }
 
 /** Relabel a meeting speaker as a saved person, or under a new name (optionally saving their voice). */
@@ -181,9 +178,17 @@ export type VoicePagesApi = {
   getHotkeyStatus: () => Promise<HotkeyStatus[]>
   onHotkeyStatus: (callback: (status: HotkeyStatus[]) => void) => () => void
   /** Meeting audio: open WAV files for a page, append 16-bit PCM chunks, then finalize. */
-  startRecording: (pageId: string, withSystem: boolean) => Promise<void>
+  /**
+   * Records into a session's audio; recording again in the same session continues its
+   * timeline. Resolves to where this recording starts on it, in seconds.
+   */
+  startRecording: (pageId: string, withSystem: boolean, kind: RecordingKind) => Promise<number>
   appendRecording: (track: AudioTrack, pcm16: Int16Array) => void
+  /** Words the live transcriber committed, timed on the session's timeline. */
+  appendRecordingWords: (words: TranscriptWord[]) => void
   stopRecording: () => Promise<MeetingRecording | null>
+  /** Mixed 16 kHz mono PCM for a stretch of a session's audio (Listen); empty if none is kept. */
+  sessionAudio: (pageId: string, start: number, end: number) => Promise<Int16Array>
   listPeople: () => Promise<Person[]>
   onPeopleChanged: (callback: (people: Person[]) => void) => () => void
   /** Saves a voiceprint from ~20 s of 16 kHz mono speech. */
@@ -192,8 +197,11 @@ export type VoicePagesApi = {
   setSelfPerson: (id: string) => Promise<void>
   deletePerson: (id: string) => Promise<void>
   /** Speakers of a processed meeting note, or null if it isn't one. */
-  getMeetingSpeakers: (pageId: string) => Promise<MeetingSpeaker[] | null>
-  assignSpeaker: (pageId: string, cluster: number, assignment: SpeakerAssignment) => Promise<void>
+  /**
+   * Names a session's speaker as a saved person, or under a new name. Teaches the voiceprint
+   * from that speaker's audio (always for a saved person; for a new name when `remember`).
+   */
+  assignSpeaker: (pageId: string, speakerId: string, assignment: SpeakerAssignment) => Promise<void>
   onMeetingStatus: (callback: (status: MeetingStatus) => void) => () => void
   /** (Re)writes the notes section at the top of a meeting note with the chosen engine. */
   generateNotes: (pageId: string) => Promise<void>

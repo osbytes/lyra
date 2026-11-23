@@ -70,20 +70,24 @@ const api: VoicePagesApi = {
   },
   getHotkeyStatus: () => ipcRenderer.invoke('hotkey:status'),
   onHotkeyStatus: (callback) => subscribe<HotkeyStatus[]>('hotkey:status', callback),
-  startRecording: (pageId, withSystem) => ipcRenderer.invoke('recorder:start', pageId, withSystem),
+  startRecording: (pageId, withSystem, kind) =>
+    ipcRenderer.invoke('recorder:start', pageId, withSystem, kind),
   appendRecording: (track, pcm16) => {
     ipcRenderer.send('recorder:append', track, pcm16)
   },
+  appendRecordingWords: (words) => {
+    ipcRenderer.send('recorder:words', words)
+  },
   stopRecording: () => ipcRenderer.invoke('recorder:stop'),
+  sessionAudio: (pageId, start, end) => ipcRenderer.invoke('sessions:audio', pageId, start, end),
   listPeople: () => ipcRenderer.invoke('people:list'),
   onPeopleChanged: (callback) => subscribe<Person[]>('people:changed', callback),
   enrollPerson: (name, pcm, self) => ipcRenderer.invoke('people:enroll', name, pcm, self),
   renamePerson: (id, name) => ipcRenderer.invoke('people:rename', id, name),
   setSelfPerson: (id) => ipcRenderer.invoke('people:setSelf', id),
   deletePerson: (id) => ipcRenderer.invoke('people:delete', id),
-  getMeetingSpeakers: (pageId) => ipcRenderer.invoke('meeting:speakers', pageId),
-  assignSpeaker: (pageId, cluster, assignment) =>
-    ipcRenderer.invoke('meeting:assign', pageId, cluster, assignment),
+  assignSpeaker: (pageId, speakerId, assignment) =>
+    ipcRenderer.invoke('meeting:assign', pageId, speakerId, assignment),
   onMeetingStatus: (callback) => subscribe<MeetingStatus>('meeting:status', callback),
   generateNotes: (pageId) => ipcRenderer.invoke('notes:generate', pageId),
   hasClaudeKey: () => ipcRenderer.invoke('secrets:hasClaudeKey'),

@@ -46,7 +46,7 @@ export const NOTES_SYSTEM_PROMPT = [
   'Use only what the transcript says. Be brief.'
 ].join('\n')
 
-/** Separates generated notes (above) from the labeled transcript (below) in the note body. */
+/** Separates generated notes (above) from the labeled transcript (below) in the export. */
 export const TRANSCRIPT_DIVIDER = '──── Transcript ────'
 
 function isStringArray(value: unknown): value is string[] {
@@ -104,7 +104,7 @@ export function renderNotes(notes: MeetingNotes): string {
   ].join('\n')
 }
 
-/** Splits a meeting body into its notes section (may be empty) and its transcript. */
+/** Splits a Lyra 0.2 meeting body into its notes section (may be empty) and its transcript. */
 export function splitNotes(body: string): { notes: string; transcript: string } {
   const index = body.indexOf(TRANSCRIPT_DIVIDER)
   if (index === -1) return { notes: '', transcript: body }
@@ -112,11 +112,6 @@ export function splitNotes(body: string): { notes: string; transcript: string } 
     notes: body.slice(0, index).trim(),
     transcript: body.slice(index + TRANSCRIPT_DIVIDER.length).replace(/^\s+/, '')
   }
-}
-
-export function withNotes(body: string, notes: string): string {
-  const { transcript } = splitNotes(body)
-  return `${notes}\n\n${TRANSCRIPT_DIVIDER}\n\n${transcript}`
 }
 
 /** Splits a long transcript at line boundaries into chunks of at most `maxChars`. */

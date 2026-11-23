@@ -104,6 +104,12 @@ export const ChevronDownIcon = () => (
   </Icon>
 )
 
+export const PlayIcon = () => (
+  <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+    <path d="M7 4.5v15l12.5-7.5z" fill="currentColor" />
+  </svg>
+)
+
 export const StopIcon = () => (
   <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
     <rect x="6" y="6" width="12" height="12" rx="3" fill="currentColor" />
