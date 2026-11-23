@@ -756,21 +756,48 @@ code {
   transition: color 160ms;
 }
 
-.insertion-point {
+/*
+ * The transcriber's cursor: a second author's caret, labeled, where its words land. Zero width,
+ * so it never shifts the text it sits in; drawn in the mirror under the textarea.
+ */
+.transcriber-caret {
+  position: relative;
   display: inline-block;
-  width: 8px;
-  height: 8px;
-  margin-left: 4px;
-  border-radius: 50%;
+  width: 0;
+  height: 1em;
+}
+
+.transcriber-caret::before {
+  content: '';
+  position: absolute;
+  top: -0.05em;
+  left: 0;
+  width: 2px;
+  height: 1.3em;
+  border-radius: 1px;
   background: var(--record);
-  vertical-align: middle;
   animation: pulse 1.2s ease-in-out infinite;
+}
+
+.transcriber-caret::after {
+  content: 'Lyra';
+  position: absolute;
+  bottom: 1.25em;
+  left: 0;
+  padding: 1px 5px;
+  border-radius: 4px 4px 4px 0;
+  background: var(--record);
+  color: #ffffff;
+  font-family: var(--font-ui);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
 }
 
 @keyframes pulse {
   50% {
-    opacity: 0.25;
-    transform: scale(0.7);
+    opacity: 0.35;
   }
 }
 
