@@ -1,10 +1,9 @@
-# CI: typecheck and package the installers on all three platforms, and refuse a PR without a
-# changeset (.changeset/README.md). Releases are built by release.yml from a version tag.
+# CI: typecheck, lint and bundle the app, and refuse a PR without a changeset
+# (.changeset/README.md). Runs on PRs only. Installers are packaged only by release.yml, from a
+# version tag; a manual run of release.yml builds them without publishing.
 name: ci
 
 on:
-  push:
-    branches: [main]
   pull_request:
 
 concurrency:
@@ -44,21 +43,8 @@ jobs:
           exit 1
 
   build:
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: macOS
-            os: macos-latest
-            script: build:mac
-          - name: Windows
-            os: windows-latest
-            script: build:win
-          - name: Linux
-            os: ubuntu-22.04
-            script: build:linux
+    name: build
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -68,17 +54,11 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      # postinstall patches the whisper addon's rpath with patchelf
       - name: Install patchelf
-        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y patchelf
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      - name: Typecheck and package
-        env:
-          SCRIPT: ${{ matrix.script }}
-        run: pnpm run "$SCRIPT"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: ${{ matrix.name }}-dist
-          path: dist
-          if-no-files-found: warn
+      # typecheck, lint and bundle; installers are only packaged by release.yml
+      - name: Typecheck, lint and bundle
+        run: pnpm build

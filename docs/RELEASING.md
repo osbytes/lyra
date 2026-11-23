@@ -14,8 +14,8 @@ Lyra is one desktop app shipped as installers for macOS, Windows and Linux, vers
 3. If the change needs anything from the user at upgrade time (a moved notes folder, a setting
    that changed meaning, a model to re-download, a behaviour that changed), add an `**Upgrade:**`
    line to the changeset. It ends up in the changelog and the GitHub release.
-4. CI (`ci.yml`) typechecks and packages the app on all three platforms, and refuses a PR without
-   a changeset.
+4. CI (`ci.yml`) typechecks, lints and bundles the app, and refuses a PR without a changeset. It
+   doesn't package installers; only `release.yml` does.
 
 ## Versions (before 1.0)
 
@@ -33,9 +33,11 @@ in a way older versions cannot read says so in its `**Upgrade:**` line.
 1. Merging to `main` runs `version.yml`, which keeps a **"Release"** pull request open. It bumps
    the version, writes `CHANGELOG.md` from the pending changesets and deletes them. Review it like
    any PR: is the changelog readable, are upgrade notes present.
-2. Before merging the release PR, on the release candidate commit: download the installers from
-   that PR's CI run (the `*-dist` artifacts), install at least one over the current release, and
-   check that pages open, dictation records and transcribes, and Settings shows the new version.
+2. Before merging the release PR, build the release candidate: run `release.yml` by hand on the
+   release PR's branch (`gh workflow run release --ref changeset-release/main`). A manual run
+   builds and attests the installers but doesn't publish. Download them from that run (the
+   `*-dist` artifacts), install at least one over the current release, and check that pages open,
+   dictation records and transcribes, and Settings shows the new version.
 3. Merge. `version.yml` runs `pnpm release:tag`, which pushes `vX.Y.Z`. `release.yml` builds the
    installers on macOS, Windows and Linux, attests them (`gh attestation verify <file> --owner
    osbytes`), and publishes the GitHub release with the `.dmg`, `.zip`, `-setup.exe`,
