@@ -19,7 +19,11 @@ export type Settings = {
   meetingHotkey: string
   launchAtLogin: boolean
   micPrompt: { enabled: boolean; ignoredApps: string[] }
-  keepMeetingAudio: boolean
+  /**
+   * Days to keep recorded audio after a session: `null` keeps it forever, `0` deletes it once
+   * the transcript is labeled. Transcripts are always kept.
+   */
+  audioRetentionDays: number | null
   captureSystemAudio: boolean
   notesEngine: 'off' | 'local' | 'claude'
   /** The one-time "get consent before recording others" notice was acknowledged. */

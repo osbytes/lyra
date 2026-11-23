@@ -10,7 +10,7 @@ import {
   shell
 } from 'electron'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
-import { copyFile, mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile, unlink, utimes, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -46,7 +46,8 @@ import { listPeople } from './voices'
 import { generateNotes, registerMeetingNotes } from './meeting/notes'
 import { stopNotesWorker } from './meeting/notesLocal'
 import { stopSpeakerWorker } from './meeting/speakers'
-import { registerRecorderIpc, trackPath } from './recorder'
+import { audioDir, registerRecorderIpc, trackPath } from './recorder'
+import { startAudioRetention, sweepAudio } from './audioRetention'
 import { createTray } from './tray'
 import { registerUpdater } from './updater'
 import { broadcastStatus, pcmFromIpc, transcribePcm, warmUp } from './whisper'
@@ -476,10 +477,31 @@ async function checkSessionStore(): Promise<void> {
   }
 }
 
+/** Retention deletes only audio older than the setting, and nothing when set to forever. */
+async function checkAudioRetention(): Promise<void> {
+  await mkdir(audioDir(), { recursive: true })
+  const old = join(audioDir(), 'retention-old.mic.wav')
+  const fresh = join(audioDir(), 'retention-fresh.mic.wav')
+  await writeFile(old, 'x')
+  await writeFile(fresh, 'x')
+  const fortyDaysAgo = new Date(Date.now() - 40 * 86_400_000)
+  await utimes(old, fortyDaysAgo, fortyDaysAgo)
+
+  overrideSettings({ audioRetentionDays: null })
+  if ((await sweepAudio()) !== 0 || !existsSync(old)) throw new Error('retention: forever deleted audio')
+  overrideSettings({ audioRetentionDays: 30 })
+  const deleted = await sweepAudio()
+  if (deleted !== 1 || existsSync(old) || !existsSync(fresh)) {
+    throw new Error(`retention: 30 days deleted ${String(deleted)} file(s)`)
+  }
+  await unlink(fresh)
+}
+
 async function runUiSmoke(win: BrowserWindow): Promise<void> {
   try {
     checkConsentParser()
     await checkSessionStore()
+    await checkAudioRetention()
     const result: unknown = await win.webContents.executeJavaScript(`
       (async () => {
         const fail = (message) => { throw new Error(message) }
@@ -599,6 +621,7 @@ void app.whenReady().then(() => {
   }
   void migrateLegacyPages().finally(() => {
     startWatchingNotes()
+    startAudioRetention()
     createWindow()
   })
   broadcastStatus({ state: 'idle' })

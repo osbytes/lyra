@@ -308,7 +308,7 @@ export async function processMeeting(recording: MeetingRecording): Promise<void>
   const body = lines.length ? `${peopleLine(speakers)}\n\n${lines.join('\n\n')}` : page.body
   await writeMeta(pageId, { version: 1, speakers, liveTranscript: page.body })
   await savePage({ id: pageId, title: page.title, body })
-  if (!getSettings().keepMeetingAudio) await deleteAudio(recording)
+  if (getSettings().audioRetentionDays === 0) await deleteAudio(recording)
 
   status('done', 1)
   log('meeting', 'labeled', { pageId, turns: lines.length })

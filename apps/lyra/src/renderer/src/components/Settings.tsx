@@ -182,6 +182,32 @@ function ShortcutsSection({ settings, update }: Pick<Props, 'settings' | 'update
   )
 }
 
+const RETENTION_CHOICES = [
+  { value: '0', label: 'Until transcribed' },
+  { value: '7', label: '7 days' },
+  { value: '30', label: '30 days' },
+  { value: '90', label: '90 days' },
+  { value: '365', label: '1 year' },
+  { value: 'forever', label: 'Forever' }
+] as const
+
+function retentionValue(days: number | null): string {
+  return days === null ? 'forever' : String(days)
+}
+
+/** The choices, plus the stored value if it isn't one of them (settings.json edited by hand). */
+function retentionChoices(days: number | null): { value: string; label: string }[] {
+  const value = retentionValue(days)
+  const known = RETENTION_CHOICES.some((choice) => choice.value === value)
+  return known ? [...RETENTION_CHOICES] : [...RETENTION_CHOICES, { value, label: `${value} days` }]
+}
+
+function parseRetention(value: string): number | null {
+  if (value === 'forever') return null
+  const days = Number(value)
+  return Number.isInteger(days) && days >= 0 ? days : 30
+}
+
 function MeetingsSection({ settings, update }: Pick<Props, 'settings' | 'update'>) {
   return (
     <Section title="Meetings">
@@ -200,14 +226,23 @@ function MeetingsSection({ settings, update }: Pick<Props, 'settings' | 'update'
         voiceprints stay on this computer.
       </p>
       <Row
-        label="Keep meeting audio"
-        hint="Otherwise the recording is deleted once the transcript is labeled."
+        label="Keep recordings"
+        hint="Audio lets you replay and re-transcribe a session. Transcripts are always kept."
       >
-        <Switch
-          label="Keep meeting audio"
-          checked={settings.keepMeetingAudio}
-          onChange={(keepMeetingAudio) => void update({ keepMeetingAudio })}
-        />
+        <select
+          className="settings-select"
+          aria-label="Keep recordings"
+          value={retentionValue(settings.audioRetentionDays)}
+          onChange={(event) => {
+            void update({ audioRetentionDays: parseRetention(event.target.value) })
+          }}
+        >
+          {retentionChoices(settings.audioRetentionDays).map((choice) => (
+            <option key={choice.value} value={choice.value}>
+              {choice.label}
+            </option>
+          ))}
+        </select>
       </Row>
     </Section>
   )
