@@ -1,4 +1,5 @@
 import { BrowserWindow } from 'electron'
+import { z } from 'zod'
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -24,19 +25,20 @@ import { diarize, ensureSpeakerModels } from './speakers'
 import { DIARIZE_THRESHOLD } from './thresholds'
 
 /**
- * Speaker labels settled once a recording stops. Live identification (`live.ts`) has to decide
- * who said each phrase from a second or two of audio, against voiceprints that are still forming,
- * and in a long session those voiceprints drift together until everyone is one speaker. With the
- * whole recording in hand, offline diarization (pyannote segmentation, then TitaNet voiceprints of
- * 3 s windows clustered over every stretch at once; `clustering.ts`) separates them far better,
- * and a saved voice that matches two speakers strongly merges them (`mergeSamePerson`). Each live
- * word then goes to the speaker diarized at its time, as WhisperX does: the text the user watched
- * appear stays word for word, only who said it and where lines break change. Lines the user
- * edited keep their text.
+ * Speaker labels settled once a recording stops. While recording, lines are labeled only by the
+ * track they were heard on (`takeWriter.ts`), which can't tell apart two people at one mic or on
+ * one call. With the whole recording in hand, offline diarization (pyannote segmentation, then
+ * TitaNet voiceprints of 3 s windows clustered over every stretch at once; `clustering.ts`)
+ * separates them, and a saved voice that matches two speakers strongly merges them
+ * (`mergeSamePerson`). Each word then goes to the speaker diarized at its time, as WhisperX does,
+ * keeping to speakers heard on its own track: the text stays word for word, only who said it and
+ * where lines break change. Lines the user edited keep their text.
  */
 
 /** A word with no diarized speech under it takes the nearest speaker within this many seconds. */
 const NEAREST_SECONDS = 1
+/** A diarized speaker with at least this share of their energy on the mic is at this computer. */
+const MIC_SIDE = 0.5
 /** Same as live lines: one line per turn, up to MAX_LINE_SECONDS. */
 const LINE_JOIN_GAP = 8
 const MAX_LINE_SECONDS = 30
@@ -45,36 +47,55 @@ const MODEL = 'sherpa-onnx diarization over live words'
 
 type Line = { speaker: number; words: TranscriptWord[] }
 
+/** A word and the track it was transcribed from, when the recording kept them apart. */
+type HeardWord = TranscriptWord & { track: 'mic' | 'system' | null }
+
 const overlap = (a: { start: number; end: number }, b: { start: number; end: number }): number =>
   Math.max(0, Math.min(a.end, b.end) - Math.max(a.start, b.start))
 
-/** The diarized speaker of each word: most overlap, else the nearest close by, else the one before. */
-export function assignWords(words: readonly TranscriptWord[], segments: readonly DiarizedSegment[]): number[] {
+/**
+ * The diarized speaker of each word: most overlap, else the nearest close by, else the one before.
+ * A word heard on the mic track only goes to a speaker who is mostly on the mic, and a system-track
+ * word to one who isn't, when there is such a speaker nearby: on speakers the far end also reaches
+ * the mic, so the diarized turns blur at the edges, but the track a word came from doesn't.
+ */
+export function assignWords(words: readonly HeardWord[], segments: readonly DiarizedSegment[]): number[] {
   const out: number[] = []
   for (const word of words) {
-    let speaker: number | null = null
-    let best = 0
+    const side = sideSegments(word.track, segments)
+    out.push(nearestSpeaker(word, side) ?? nearestSpeaker(word, segments) ?? out.at(-1) ?? segments[0]?.speaker ?? 0)
+  }
+  return out
+}
+
+function sideSegments(track: HeardWord['track'], segments: readonly DiarizedSegment[]): readonly DiarizedSegment[] {
+  if (track === 'mic') return segments.filter((segment) => segment.micShare >= MIC_SIDE)
+  if (track === 'system') return segments.filter((segment) => segment.micShare < MIC_SIDE)
+  return segments
+}
+
+function nearestSpeaker(word: TranscriptWord, segments: readonly DiarizedSegment[]): number | null {
+  let speaker: number | null = null
+  let best = 0
+  for (const segment of segments) {
+    const shared = overlap(word, segment)
+    if (shared > best) {
+      best = shared
+      speaker = segment.speaker
+    }
+  }
+  if (speaker === null) {
+    const middle = (word.start + word.end) / 2
+    let nearest = NEAREST_SECONDS
     for (const segment of segments) {
-      const shared = overlap(word, segment)
-      if (shared > best) {
-        best = shared
+      const distance = Math.max(segment.start - middle, middle - segment.end)
+      if (distance < nearest) {
+        nearest = distance
         speaker = segment.speaker
       }
     }
-    if (speaker === null) {
-      const middle = (word.start + word.end) / 2
-      let nearest = NEAREST_SECONDS
-      for (const segment of segments) {
-        const distance = Math.max(segment.start - middle, middle - segment.end)
-        if (distance < nearest) {
-          nearest = distance
-          speaker = segment.speaker
-        }
-      }
-    }
-    out.push(speaker ?? out.at(-1) ?? segments[0]?.speaker ?? 0)
   }
-  return out
+  return speaker
 }
 
 /** Groups words into lines: a new line when the speaker changes, after a long pause, or past MAX_LINE_SECONDS. */
@@ -100,27 +121,35 @@ export function buildLines(words: readonly TranscriptWord[], speakers: readonly 
   return lines
 }
 
-function isWord(value: unknown): value is TranscriptWord {
-  if (!value || typeof value !== 'object') return false
-  const word = value as Record<string, unknown>
-  return typeof word.text === 'string' && typeof word.start === 'number' && typeof word.end === 'number'
-}
+const Word = z.object({ text: z.string(), start: z.number(), end: z.number() })
+const Segment = z.object({
+  start: z.number(),
+  track: z.enum(['mic', 'system', 'mix']).catch('mix'),
+  words: z.array(z.unknown())
+})
+const LivePass = z.object({ segments: z.array(z.unknown()) })
 
 /**
- * Every word the live transcriber committed in this session, in the order it committed them.
- * Not sorted by time: streaming word times can step backwards by a word or two, and sorting by
- * them scrambles the sentence.
+ * Every word transcribed while recording, in time order. Each chunk's words stay in the order
+ * Whisper gave them; chunks are ordered by where they start, across both tracks.
  */
-async function liveWords(pageId: string): Promise<TranscriptWord[]> {
+async function liveWords(pageId: string): Promise<HeardWord[]> {
   const path = join(sessionRawDir(pageId), 'live.json')
   if (!existsSync(path)) return []
-  const parsed: unknown = JSON.parse(await readFile(path, 'utf8'))
-  const segments = (parsed as { segments?: unknown } | null)?.segments
-  if (!Array.isArray(segments)) return []
-  return (segments as unknown[])
+  const pass = LivePass.safeParse(JSON.parse(await readFile(path, 'utf8')))
+  if (!pass.success) return []
+  const segments = pass.data.segments.flatMap((entry) => {
+    const segment = Segment.safeParse(entry)
+    return segment.success ? [segment.data] : []
+  })
+  return segments
+    .sort((a, b) => a.start - b.start)
     .flatMap((segment) => {
-      const words = (segment as { words?: unknown } | null)?.words
-      return Array.isArray(words) ? (words as unknown[]).filter(isWord) : []
+      const track = segment.track === 'mix' ? null : segment.track
+      return segment.words.flatMap((entry) => {
+        const word = Word.safeParse(entry)
+        return word.success ? [{ ...word.data, track }] : []
+      })
     })
 }
 

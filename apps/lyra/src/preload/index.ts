@@ -9,6 +9,7 @@ import type {
   SessionCommand,
   SessionState,
   SessionUpdate,
+  TranscriptProgress,
   Settings,
   UpdateStatus,
   VoicePagesApi,
@@ -77,13 +78,8 @@ const api: VoicePagesApi = {
   appendRecording: (track, pcm16) => {
     ipcRenderer.send('recorder:append', track, pcm16)
   },
-  appendRecordingWords: (words) => {
-    ipcRenderer.send('recorder:words', words)
-  },
-  appendRecordingText: (text, start, end) => {
-    ipcRenderer.send('recorder:text', text, start, end)
-  },
   stopRecording: () => ipcRenderer.invoke('recorder:stop'),
+  onTranscriptProgress: (callback) => subscribe<TranscriptProgress>('transcriber:progress', callback),
   sessionAudio: (pageId, start, end) => ipcRenderer.invoke('sessions:audio', pageId, start, end),
   listPeople: () => ipcRenderer.invoke('people:list'),
   onPeopleChanged: (callback) => subscribe<Person[]>('people:changed', callback),
@@ -102,7 +98,6 @@ const api: VoicePagesApi = {
   copyText: (text) => clipboard.writeText(text),
   platform: process.platform,
   warmUp: () => ipcRenderer.invoke('whisper:warmUp'),
-  transcribe: (pcm, prompt) => ipcRenderer.invoke('whisper:transcribe', pcm, prompt),
   log: (scope, message, data) => ipcRenderer.send('log:write', scope, message, data),
   onStatus: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, status: WhisperStatus): void => {

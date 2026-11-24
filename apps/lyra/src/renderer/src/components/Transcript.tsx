@@ -63,11 +63,40 @@ type Props = {
   showSpeakersBar: boolean
   /** Opens the picker from outside (the side panel); a new object each time. */
   pickerRequest: { speaker: string; anchor: DOMRect } | null
-  /** While recording into the transcript: the words not yet confirmed (null when not). */
-  live: string | null
+  /** While recording into the transcript: whether speech is being transcribed (null when not). */
+  transcribing: Pending | null
 }
 
 type Picker = { speaker: string; line: string | null; anchor: DOMRect }
+
+/** Where transcription stands while recording: speech waiting for Whisper, or the last of it. */
+export type Pending = { working: boolean; finishing: boolean }
+
+/**
+ * Where the next lines will appear while recording. Nothing that might still change is shown:
+ * each stretch of speech lands as finished lines once it's transcribed, and until then this row
+ * says Lyra has heard it and is on it.
+ */
+function PendingLine({ pending }: { pending: Pending }) {
+  const working = pending.finishing || pending.working
+  const label = pending.finishing ? 'Finishing' : working ? 'Transcribing' : 'Listening'
+  return (
+    <div className="line pending-line" role="status" aria-live="polite">
+      <div className="gutter">
+        <span className="who unknown">{label}</span>
+      </div>
+      <div className="line-body">
+        <p className="line-text pending-text">
+          <span className={`pending-dots${working ? ' is-working' : ''}`} aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </span>
+        </p>
+      </div>
+    </div>
+  )
+}
 
 // --- Small helpers ------------------------------------------------------------------
 
@@ -651,7 +680,7 @@ export function Transcript({
   onUndo,
   showSpeakersBar,
   pickerRequest,
-  live
+  transcribing
 }: Props) {
   const people = usePeople()
   const nowPlaying = usePlayback()
@@ -957,19 +986,7 @@ export function Transcript({
             </div>
           )
         })}
-        {live !== null ? (
-          <div className="line live-line" aria-live="polite">
-            <div className="gutter">
-              <span className="who unknown">Listening</span>
-            </div>
-            <div className="line-body">
-              <p className="line-text live-text">
-                <span className="ghost">{live}</span>
-                <span className="transcriber-caret" />
-              </p>
-            </div>
-          </div>
-        ) : null}
+        {transcribing !== null ? <PendingLine pending={transcribing} /> : null}
       </div>
 
       {selection && selectedLine && !menu && !correcting && !rewriting ? (

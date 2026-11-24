@@ -10,7 +10,6 @@ import tseslint from 'typescript-eslint'
  * (osbytes playbook: turn a rule on for new code and cap the existing count so it only goes down.)
  */
 const CAST_BASELINE = [
-  'src/main/meeting/live.ts',
   'src/main/meeting/notesFormat.ts',
   'src/main/meeting/notesWorker.ts',
   'src/main/meeting/pipeline.ts',
