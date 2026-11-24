@@ -7,6 +7,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode
 } from 'react'
+import { useHotkeys } from 'react-hotkeys-hook'
 import type { WhisperStatus } from '../../../shared/types'
 import type { DictationPhase } from '../hooks/useDictation'
 import { useMicrophones } from '../hooks/useMicrophones'
@@ -114,21 +115,21 @@ function Sources({
   const summary = `${micLabel}${systemAudio ? ' and computer audio' : ''}`
   const rect = open ? anchor.current?.getBoundingClientRect() : undefined
 
-  // Focus stays on the anchor when the popover opens, so Escape is heard on the window. A nested
+  // Focus stays on the anchor when the popover opens, so Escape is heard document-wide. A nested
   // dropdown that handled Escape itself has already prevented it and closes alone.
-  useEffect(() => {
-    if (!open) return
-    const onKey = (event: KeyboardEvent): void => {
-      if (event.key !== 'Escape' || event.defaultPrevented) return
-      event.preventDefault()
+  useHotkeys(
+    'escape',
+    () => {
       setOpen(false)
       anchor.current?.focus()
+    },
+    {
+      enabled: open,
+      enableOnFormTags: true,
+      preventDefault: true,
+      ignoreEventWhen: (event) => event.defaultPrevented
     }
-    window.addEventListener('keydown', onKey)
-    return () => {
-      window.removeEventListener('keydown', onKey)
-    }
-  }, [open])
+  )
 
   return (
     <>
