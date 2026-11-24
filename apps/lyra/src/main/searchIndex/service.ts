@@ -117,8 +117,21 @@ function ensureReady(): Promise<void> {
 async function applySemanticSearch(enabled: boolean): Promise<void> {
   try {
     if (!enabled) {
+      const loaded = embedderChoice?.kind === 'llama'
       embedderChoice = null
-      await call({ type: 'setEmbedder', embedder: null }, z.null())
+      // A model can't be unloaded inside the worker (worker.ts, setEmbedder): restart it instead,
+      // between reconciles; the next call starts a worker without one.
+      if (loaded) {
+        reconciling = reconciling
+          .then(async () => {
+            await writeQueued()
+            await stopSearchIndex()
+          })
+          .catch((error: unknown) => {
+            log('search-index', 'could not restart the index', { error: String(error) })
+          })
+        await reconciling
+      }
       return
     }
     let logged = 0

@@ -9,7 +9,6 @@ export type Embedder = {
   /** Stored with each vector: vectors from another model are ignored and replaced. */
   model: string
   embed(text: string, kind: 'document' | 'query'): Promise<Float32Array>
-  dispose(): Promise<void>
 }
 
 /** Every embedder produces this many dimensions (the `embeddings` column is F32_BLOB(768)). */
@@ -40,10 +39,6 @@ export async function createLlamaEmbedder(modelPath: string, model: string): Pro
       const { vector } = await context.getEmbeddingFor(prefix + text)
       if (vector.length !== EMBEDDING_DIMS) throw new Error(`Embedding has ${String(vector.length)} dimensions`)
       return unit(vector)
-    },
-    async dispose() {
-      await context.dispose()
-      await loaded.dispose()
     }
   }
 }
@@ -64,7 +59,6 @@ export function createHashEmbedder(): Embedder {
         vector[bucket] = (vector[bucket] ?? 0) + 1
       }
       return Promise.resolve(unit(vector))
-    },
-    dispose: () => Promise.resolve()
+    }
   }
 }

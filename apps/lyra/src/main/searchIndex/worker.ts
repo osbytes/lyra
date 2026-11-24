@@ -69,10 +69,15 @@ function schedulePump(delay = EMBED_GAP_MS): void {
   }, delay)
 }
 
+/**
+ * A model is never disposed here: disposing node-llama-cpp's last model ends this process. Main
+ * restarts the worker to unload it (searchIndex/service.ts, applySemanticSearch).
+ */
 async function setEmbedder(choice: Extract<IndexRequest, { type: 'setEmbedder' }>['embedder']): Promise<void> {
-  await embedder?.dispose()
-  embedder = null
   embedError = null
+  // Already loaded: loading it again would hold two copies, since neither can be disposed.
+  if (choice?.kind === 'llama' && embedder?.model === choice.model) return
+  embedder = null
   if (!choice) return
   embedder = choice.kind === 'hash' ? createHashEmbedder() : await createLlamaEmbedder(choice.modelPath, choice.model)
   schedulePump(0)
