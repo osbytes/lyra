@@ -40,7 +40,11 @@ const INDEX_DELAY_MS = 1500
 let worker: UtilityProcess | null = null
 let ready: Promise<void> | null = null
 let nextId = 1
-const pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>()
+/**
+ * Requests waiting for an answer, by the worker they went to: a worker that exits fails only
+ * its own, even when its exit arrives after the next worker has started.
+ */
+const pending = new Map<number, { child: UtilityProcess; resolve: (value: unknown) => void; reject: (error: Error) => void }>()
 
 function databasePath(): string {
   return join(app.getPath('userData'), 'index', 'lyra.db')
@@ -72,7 +76,7 @@ function fork(): UtilityProcess {
     if (!parsed.success) return
     const response = parsed.data
     const entry = pending.get(response.id)
-    if (!entry) return
+    if (entry?.child !== child) return
     pending.delete(response.id)
     if (response.ok) entry.resolve(response.result)
     else entry.reject(new Error(response.error))
@@ -83,8 +87,11 @@ function fork(): UtilityProcess {
       worker = null
       ready = null
     }
-    for (const entry of pending.values()) entry.reject(new Error('Search index worker stopped'))
-    pending.clear()
+    for (const [id, entry] of pending) {
+      if (entry.child !== child) continue
+      pending.delete(id)
+      entry.reject(new Error('Search index worker stopped'))
+    }
   })
   return child
 }
@@ -92,7 +99,7 @@ function fork(): UtilityProcess {
 function send(child: UtilityProcess, request: IndexRequest): Promise<unknown> {
   const id = nextId++
   return new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject })
+    pending.set(id, { child, resolve, reject })
     const envelope: IndexEnvelope = { id, request }
     child.postMessage(envelope)
   })
