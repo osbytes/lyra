@@ -1,43 +1,119 @@
-# Release: on a version tag (v1.2.3), build the installers on macOS, Windows and Linux, attest
-# them, and publish the GitHub release. The body is this version's CHANGELOG.md section. The
+# Release: build the installers on macOS, Windows and Linux. On a version tag (v1.2.3), also attest
+# them and publish the GitHub release. The body is this version's CHANGELOG.md section. The
 # latest*.yml files and blockmaps are what electron-updater reads from releases/latest.
+#
+# A pull request that touches packaging or the version builds every installer without publishing.
+# Every Release PR bumps apps/lyra/package.json, so a release that can't build fails there, before
+# its tag exists. A manual run builds the chosen branch, or, given a tag whose release failed,
+# builds that tag's source with this workflow and publishes it (docs/RELEASING.md).
 name: release
 
 on:
   push:
     tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - apps/lyra/package.json
+      - apps/lyra/electron-builder.yml
+      - apps/lyra/build/**
+      - apps/lyra/native/**
+      - apps/lyra/scripts/build-mac-helpers.cjs
+      - apps/lyra/scripts/fix-whisper-rpath.cjs
+      - apps/lyra/scripts/prepare-llama.cjs
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "An existing version tag (vX.Y.Z) with no release: build it and publish it. Empty: build this branch only."
+        type: string
+        default: ""
+
+# a PR's newer push cancels its older build; runs for a tag never cancel each other
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || (inputs.tag && format('refs/tags/{0}', inputs.tag)) || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # read-only by default; the publish job takes exactly the write scopes it needs
 permissions:
   contents: read
+
+# Windows runners default to PowerShell, where "$SCRIPT" is an empty PowerShell variable rather than
+# the env var. `pnpm run ""` only lists the scripts and exits 0, which is how v0.2.0 and v0.3.0
+# built nothing and never published. Every step runs in bash, on every OS.
+defaults:
+  run:
+    shell: bash
 
 jobs:
   version:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+      ref: ${{ steps.v.outputs.ref }}
+      app: ${{ steps.v.outputs.app }}
+      latest: ${{ steps.v.outputs.latest }}
     steps:
+      # a manual run given a tag reads that tag's source; anything else, the commit that triggered it
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || '' }}
           persist-credentials: false
       - name: Version
         id: v
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          case "$GITHUB_EVENT_NAME" in
+            push) tag=$GITHUB_REF_NAME ;;
+            workflow_dispatch) tag=$INPUT_TAG ;;
+            *) tag= ;;
+          esac
           # tag names may only be versions: nothing else ever reaches a shell
-          case "$GITHUB_REF_NAME" in v[0-9]*.[0-9]*.[0-9]*) ;; *) [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] || { echo "not a version tag: $GITHUB_REF_NAME"; exit 1; } ;; esac
-          pkg=$(node -p "require('./apps/lyra/package.json').version")
-          if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] && [ "v$pkg" != "$GITHUB_REF_NAME" ]; then
-            echo "tag $GITHUB_REF_NAME does not match apps/lyra/package.json $pkg"; exit 1
+          if [ -n "$tag" ]; then
+            case "$tag" in *[!A-Za-z0-9.+-]*) echo "not a version tag: $tag"; exit 1 ;; esac
+            case "$tag" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "not a version tag: $tag"; exit 1 ;; esac
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+              echo "$tag already has a release"; exit 1
+            fi
           fi
-          echo "version=$(printf %s "$pkg" | tr -cd 'A-Za-z0-9.+-')" >> "$GITHUB_OUTPUT"
+
+          # tags from before the Turborepo move (v0.2.0 and older) keep the app at the root
+          if [ -f apps/lyra/package.json ]; then app=apps/lyra; else app=.; fi
+          pkg=$(node -p "require('./$app/package.json').version" | tr -cd 'A-Za-z0-9.+-')
+          if [ -n "$tag" ] && [ "v$pkg" != "$tag" ]; then
+            echo "tag $tag does not match $app/package.json $pkg"; exit 1
+          fi
+          # the release body; checked on every run so a missing CHANGELOG section fails before the builds
+          node scripts/release-notes.mjs "$pkg" > /dev/null
+
+          latest=false
+          if [ -n "$tag" ]; then
+            # releases/latest is what every install updates to: only the newest stable version
+            # takes it, so an older tag published late never replaces a newer release there
+            newest=$(gh api --paginate "repos/$GITHUB_REPOSITORY/tags" --jq '.[].name' | { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sort -V | tail -n 1)
+            if [ "$tag" = "$newest" ]; then latest=true; fi
+          fi
+
+          {
+            echo "version=$pkg"
+            echo "tag=$tag"
+            echo "ref=${tag:+refs/tags/$tag}"
+            echo "app=$app"
+            echo "latest=$latest"
+          } >> "$GITHUB_OUTPUT"
 
   build:
     name: ${{ matrix.name }}
     needs: version
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: true
+      # one platform failing leaves the others running, so a broken build shows every failure at once
+      fail-fast: false
       matrix:
         include:
           - name: macOS
@@ -52,6 +128,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.version.outputs.ref }}
           persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -64,23 +141,26 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       - name: Typecheck and package
+        working-directory: ${{ needs.version.outputs.app }}
         env:
           SCRIPT: ${{ matrix.script }}
-        run: pnpm --filter lyra run "$SCRIPT"
+        run: pnpm run "$SCRIPT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.name }}-dist
           if-no-files-found: error
           path: |
-            apps/lyra/dist/*.dmg
-            apps/lyra/dist/*.zip
-            apps/lyra/dist/*-setup.exe
-            apps/lyra/dist/*.AppImage
-            apps/lyra/dist/*.deb
-            apps/lyra/dist/latest*.yml
-            apps/lyra/dist/*.blockmap
+            ${{ needs.version.outputs.app }}/dist/*.dmg
+            ${{ needs.version.outputs.app }}/dist/*.zip
+            ${{ needs.version.outputs.app }}/dist/*-setup.exe
+            ${{ needs.version.outputs.app }}/dist/*.AppImage
+            ${{ needs.version.outputs.app }}/dist/*.deb
+            ${{ needs.version.outputs.app }}/dist/latest*.yml
+            ${{ needs.version.outputs.app }}/dist/*.blockmap
 
+  # only version tags publish: a tag push, or a manual run given a tag
   publish:
+    if: needs.version.outputs.tag != ''
     needs: [version, build]
     runs-on: ubuntu-latest
     permissions:
@@ -90,6 +170,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.version.outputs.ref }}
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -114,11 +195,11 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: node scripts/release-notes.mjs "$VERSION" > release-notes.md && cat release-notes.md
 
-      # only version tags publish; a manual run stops after building and attesting
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
-        if: startsWith(github.ref, 'refs/tags/v')
         with:
+          tag_name: ${{ needs.version.outputs.tag }}
           body_path: release-notes.md
           files: out/*
           fail_on_unmatched_files: true
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(needs.version.outputs.tag, '-') }}
+          make_latest: ${{ needs.version.outputs.latest }}
