@@ -4,7 +4,6 @@ import { formatDuration } from '../lib/format'
 import { GripIcon, StopIcon } from './Icons'
 
 const BAR_COUNT = 16
-const LIVE_CHARS = 60
 
 function useNow(running: boolean): number {
   const [now, setNow] = useState(Date.now)
@@ -72,7 +71,7 @@ export function Overlay() {
 /** The floating recording pill shown while Lyra's main window is out of view. */
 function RecordingPill() {
   const [state, setState] = useState<SessionState | null>(null)
-  const [live, setLive] = useState('')
+  const [status, setStatus] = useState('')
   const bars = useRef<(HTMLSpanElement | null)[]>([])
 
   useEffect(() => {
@@ -87,7 +86,7 @@ function RecordingPill() {
   useEffect(() => {
     const history = new Array<number>(BAR_COUNT).fill(0)
     return window.api.onOverlayFrame((frame) => {
-      setLive(frame.live)
+      setStatus(frame.status)
       history.shift()
       history.push(frame.level)
       history.forEach((value, i) => {
@@ -100,14 +99,13 @@ function RecordingPill() {
   const listening = state?.phase === 'listening'
   const now = useNow(listening)
   const elapsed = state?.startedAt ? Math.max(0, now - state.startedAt) : 0
-  const tail = live.length > LIVE_CHARS ? `…${live.slice(-LIVE_CHARS)}` : live
 
   const label =
     state?.phase === 'starting'
       ? 'Warming up…'
       : state?.phase === 'finishing'
         ? 'Saving…'
-        : tail || 'Listening'
+        : status || 'Listening'
 
   return (
     <div className="overlay-pill" role="status">

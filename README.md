@@ -42,7 +42,7 @@ pnpm dev
 
 Grant microphone access when prompted. Models download on first use:
 
-- **Whisper `base.en`** (~150 MB), on the first recording
+- **Whisper `large-v3-turbo`** (~575 MB), on the first recording
 - **Speaker models** (~32 MB), on the first meeting
 - **Local notes model** (~2 GB), only if you turn on local meeting notes
 

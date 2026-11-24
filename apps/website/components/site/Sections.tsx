@@ -200,7 +200,7 @@ export function Files() {
 }
 
 const DOWNLOADS = [
-  { name: 'Whisper base.en', size: '~150 MB', width: '7.5%', when: 'On your first recording', optional: false },
+  { name: 'Whisper large-v3-turbo', size: '~575 MB', width: '29%', when: 'On your first recording', optional: false },
   { name: 'Speaker models', size: '~32 MB', width: '1.6%', when: 'The first time a session has more than one voice', optional: false },
   { name: 'Local notes model', size: '~2 GB', width: '100%', when: 'Only if you turn on meeting notes on this computer', optional: true }
 ]

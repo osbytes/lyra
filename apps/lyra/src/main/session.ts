@@ -80,8 +80,8 @@ function parseState(value: unknown): SessionState | null {
 function parseFrame(value: unknown): OverlayFrame | null {
   if (!value || typeof value !== 'object') return null
   const raw = value as Record<string, unknown>
-  if (typeof raw.level !== 'number' || typeof raw.live !== 'string') return null
-  return { level: Math.max(0, Math.min(1, raw.level)), live: raw.live.slice(-400) }
+  if (typeof raw.level !== 'number' || typeof raw.status !== 'string') return null
+  return { level: Math.max(0, Math.min(1, raw.level)), status: raw.status.slice(0, 80) }
 }
 
 export function registerSessionIpc(): void {

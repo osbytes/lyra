@@ -9,7 +9,7 @@ import {
 } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 import type { WhisperStatus } from '../../../shared/types'
-import type { DictationPhase } from '../hooks/useDictation'
+import type { DictationPhase, Levels } from '../hooks/useDictation'
 import { useMicrophones } from '../hooks/useMicrophones'
 import { formatDuration, shortcutLabel } from '../lib/format'
 import { Floating, ScrollArea, Switch } from './Controls'
@@ -18,13 +18,15 @@ import { MicrophoneSelect } from './MicrophoneSelect'
 import { tip } from './Tooltip'
 
 const BAR_COUNT = 20
+/** Bars in each of the two meters shown while recording a call. */
+const METER_BARS = 10
 const OFFSET_KEY = 'lyra.dockOffset'
 /** Space kept between the dock and the edges of the column it floats in. */
 const EDGE = 8
 /** Height the sources popover needs above the dock before it opens below instead. */
 const POPOVER_ROOM = 260
 
-type SubscribeLevel = (listener: (level: number) => void) => () => void
+type SubscribeLevel = (listener: (levels: Levels) => void) => () => void
 
 type Props = {
   phase: DictationPhase
@@ -33,6 +35,8 @@ type Props = {
   error: string | null
   notice: string | null
   subscribeLevel: SubscribeLevel
+  /** Speech is waiting to be transcribed. */
+  transcribing: boolean
   /** Starts or stops recording into the open session. */
   onToggle: () => void
   micDeviceId: string | null
@@ -44,30 +48,58 @@ type Props = {
 }
 
 /**
- * Scrolling level history. Writes straight to the DOM so ~30 updates a second
+ * Scrolling level history of one input. Writes straight to the DOM so ~30 updates a second
  * never re-render React (or the editor).
  */
-function Waveform({ subscribe }: { subscribe: SubscribeLevel }) {
+function Waveform({
+  subscribe,
+  track,
+  label,
+  count = BAR_COUNT
+}: {
+  subscribe: SubscribeLevel
+  track: keyof Levels
+  label: string
+  count?: number
+}) {
   const bars = useRef<(HTMLSpanElement | null)[]>([])
 
   useEffect(() => {
-    const history = new Array<number>(BAR_COUNT).fill(0)
-    return subscribe((level) => {
+    const history = new Array<number>(count).fill(0)
+    return subscribe((levels) => {
       history.shift()
-      history.push(level)
+      history.push(levels[track] ?? 0)
       history.forEach((value, i) => {
         const bar = bars.current[i]
         if (bar) bar.style.transform = `scaleY(${0.12 + Math.min(1, value * 1.6) * 0.88})`
       })
     })
-  }, [subscribe])
+  }, [subscribe, track, count])
 
   return (
-    <div className="waveform" aria-hidden="true">
-      {Array.from({ length: BAR_COUNT }, (_, i) => (
+    <div className={`waveform is-${track}`} {...tip(label)}>
+      {Array.from({ length: count }, (_, i) => (
         <span key={i} ref={(el) => void (bars.current[i] = el)} />
       ))}
     </div>
+  )
+}
+
+/** Both inputs' levels while recording a call: you on the mic, the other side on the computer. */
+function Meters({ subscribe, systemAudio }: { subscribe: SubscribeLevel; systemAudio: boolean }) {
+  return systemAudio ? (
+    <span className="dock-meters">
+      <span className="dock-meter">
+        <MicSmallIcon />
+        <Waveform subscribe={subscribe} track="mic" label="Your microphone" count={METER_BARS} />
+      </span>
+      <span className="dock-meter">
+        <SpeakerIcon />
+        <Waveform subscribe={subscribe} track="system" label="Computer audio" count={METER_BARS} />
+      </span>
+    </span>
+  ) : (
+    <Waveform subscribe={subscribe} track="mic" label="Your microphone" />
   )
 }
 
@@ -83,14 +115,14 @@ function useElapsed(running: boolean): number {
   return elapsed
 }
 
-function statusText(phase: DictationPhase, status: WhisperStatus): string {
+function statusText(phase: DictationPhase, status: WhisperStatus, transcribing: boolean): string {
   if (status.state === 'downloading') {
     const pct = status.total ? Math.round((status.received / status.total) * 100) : 0
     return `Downloading speech model… ${String(pct)}%`
   }
   if (phase === 'starting') return 'Warming up…'
-  if (phase === 'finishing') return 'Finishing up…'
-  if (phase === 'listening') return 'Listening'
+  if (phase === 'finishing') return 'Finishing transcript…'
+  if (phase === 'listening') return transcribing ? 'Transcribing…' : 'Listening'
   // Idle: the mic button's tooltip says what it does.
   return ''
 }
@@ -310,16 +342,17 @@ function useDockDrag() {
 }
 
 export function DictationDock(props: Props) {
-  const { phase, status, error, notice, subscribeLevel, onToggle } = props
+  const { phase, status, error, notice, subscribeLevel, transcribing, onToggle } = props
   const listening = phase === 'listening'
   const busy = phase === 'starting' || phase === 'finishing'
   const elapsed = useElapsed(listening)
   const button = useRef<HTMLButtonElement>(null)
   const drag = useDockDrag()
-  const label = statusText(phase, status)
+  const label = statusText(phase, status, transcribing)
 
   useEffect(() => {
-    return subscribeLevel((level) => {
+    return subscribeLevel((levels) => {
+      const level = Math.max(levels.mic, levels.system ?? 0)
       button.current?.style.setProperty('--level', String(Math.min(1, level * 1.6)))
     })
   }, [subscribeLevel])
@@ -369,7 +402,7 @@ export function DictationDock(props: Props) {
 
         {listening ? (
           <>
-            <Waveform subscribe={subscribeLevel} />
+            <Meters subscribe={subscribeLevel} systemAudio={props.systemAudio} />
             <span className="dock-timer">{formatDuration(elapsed)}</span>
           </>
         ) : (

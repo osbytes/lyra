@@ -1,15 +1,9 @@
 /** `lyra meeting`: the real speaker pipeline on a WAV, for smoke:meeting, evals and replays. */
 import { app } from 'electron'
-import { existsSync } from 'node:fs'
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { notesDir } from '../pages'
-import {
-  createSession as createPage,
-  flushAllSessions,
-  readSession,
-  sessionRawDir
-} from '../sessionStore'
+import { createSession as createPage, flushAllSessions, readSession } from '../sessionStore'
 import { overrideSettings } from '../settings'
 import { assignSpeaker, processMeeting } from '../meeting/pipeline'
 import { addPerson, listPeople } from '../voices'
@@ -69,11 +63,7 @@ export async function runMeetingFixture(task: MeetingTask, services: Services): 
         end,
         text
       }))
-      // The live pass's decisions too, so a bad result can be traced to the phrase that caused it.
-      const livePath = join(sessionRawDir(page.id), 'live.json')
-      const live: unknown = existsSync(livePath) ? JSON.parse(await readFile(livePath, 'utf8')) : null
-      const trace = live && typeof live === 'object' && 'trace' in live ? live.trace : []
-      await writeFile(output, JSON.stringify({ seconds: +took, segments, trace }, null, 2), 'utf8')
+      await writeFile(output, JSON.stringify({ seconds: +took, segments }, null, 2), 'utf8')
     }
 
     // Name the first speaker and save their voice, as the speaker picker does.
@@ -88,7 +78,10 @@ export async function runMeetingFixture(task: MeetingTask, services: Services): 
     await flushAllSessions()
     const renamed = await readFile(join(notesDir(), page.id), 'utf8')
     const people = await listPeople()
-    if (!renamed.includes('] Fixture Person: ') || people.length !== (task.enroll ? 2 : 1)) {
+    // Voiceprints come from settling the speakers after the recording; without that step the
+    // speakers are only the tracks they were heard on, with no voice to save.
+    const saved = (task.enroll ? 1 : 0) + (task.relabel || task.pipeline === 'offline' ? 1 : 0)
+    if (!renamed.includes('] Fixture Person: ') || people.length !== saved) {
       throw new Error('naming did not update the export or save the voice')
     }
     process.stdout.write('meeting-fixture: relabel ok\n')

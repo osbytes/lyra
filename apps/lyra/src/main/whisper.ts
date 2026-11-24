@@ -6,12 +6,34 @@ import type { TranscriptWord, WhisperStatus } from '../shared/types'
 import { log } from './log'
 import { ensureModelFile, hasModelFile, modelsDir, type ModelFile } from './models'
 
+/**
+ * Whisper large-v3-turbo, 5-bit. Recordings are transcribed in whole chunks at pauses rather than
+ * streamed, so the model can be far larger than base.en: it transcribes 30 s of audio in well
+ * under a second on a desktop GPU, and is much more accurate on real meetings. The addon keeps
+ * the first model it loads, so every caller uses this one.
+ */
 const MODEL: ModelFile = {
-  name: 'ggml-base.en.bin',
-  url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.en.bin',
-  bytes: 147_964_211,
-  sha256: 'a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002'
+  name: 'ggml-large-v3-turbo-q5_0.bin',
+  url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo-q5_0.bin',
+  bytes: 574_041_195,
+  sha256: '394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2'
 }
+
+/**
+ * Silero VAD for whisper.cpp, run on each chunk before Whisper. The chunker's energy detector
+ * finds where to cut, but can't tell a voice from a keyboard or the echo of a call that slipped
+ * past the gate, and Whisper invents words for those ("Hello? Hello?"). Silero only passes
+ * speech, so Whisper only hears speech.
+ */
+const VAD_MODEL: ModelFile = {
+  name: 'ggml-silero-v5.1.2.bin',
+  url: 'https://huggingface.co/ggml-org/whisper-vad/resolve/9ffd54a1e1ee413ddf265af9913beaf518d1639b/ggml-silero-v5.1.2.bin',
+  bytes: 885_098,
+  sha256: '29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf'
+}
+
+/** How recordings name the model in their passes. */
+export const MODEL_LABEL = 'whisper large-v3-turbo q5 (chunked)'
 
 type NativeWhisper = (
   options: Record<string, unknown>,
@@ -79,29 +101,13 @@ export async function ensureModel(): Promise<void> {
       broadcastStatus({ state: 'idle' })
     }
   }
+  await ensureModelFile(VAD_MODEL)
   modelReady = true
 }
 
-export function pcmFromIpc(payload: unknown): Float32Array {
-  let bytes: Uint8Array
-  if (payload instanceof ArrayBuffer) {
-    bytes = new Uint8Array(payload)
-  } else if (ArrayBuffer.isView(payload)) {
-    const view = payload
-    bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength)
-  } else {
-    throw new Error('Invalid audio payload from renderer')
-  }
-
-  if (bytes.byteLength % 4 !== 0) {
-    throw new Error('PCM byte length is not 4-byte aligned')
-  }
-
-  const copy = new Float32Array(bytes.byteLength / 4)
-  new Uint8Array(copy.buffer).set(bytes)
-  return copy
-}
-
+/** A sentence this many times, making up this share of a chunk, is Whisper looping. */
+const LOOP_REPEATS = 3
+const LOOP_SHARE = 0.6
 const HALLUCINATIONS = new Set(['you', 'thank you', 'thanks for watching', 'bye', '.', '...'])
 
 function seconds(stamp: unknown): number {
@@ -114,13 +120,14 @@ function seconds(stamp: unknown): number {
 /**
  * With `max_len: 1` Whisper returns one row per token: [start, end, text].
  * Tokens that start with a space begin a new word; the rest (punctuation,
- * word pieces) attach to the previous word. Bracketed annotations such as
- * [BLANK_AUDIO] or (music) are dropped.
+ * word pieces) attach to the previous word. Annotations such as [BLANK_AUDIO],
+ * (music) or *Gunshot* (large-v3-turbo's name for a keyboard click) are dropped.
  */
 function wordsFromTokens(result: { transcription?: unknown }): TranscriptWord[] {
   const rows: unknown[] = Array.isArray(result.transcription) ? result.transcription : []
   const words: TranscriptWord[] = []
   let bracketDepth = 0
+  let starred = false
 
   for (const row of rows) {
     if (!Array.isArray(row) || row.length < 3) continue
@@ -129,8 +136,10 @@ function wordsFromTokens(result: { transcription?: unknown }): TranscriptWord[] 
     const end = seconds(row[1])
     const opens = (text.match(/[[(]/g) ?? []).length
     const closes = (text.match(/[\])]/g) ?? []).length
-    const inside = bracketDepth > 0 || opens > 0
+    const stars = (text.match(/\*/g) ?? []).length
+    const inside = bracketDepth > 0 || opens > 0 || starred || stars > 0
     bracketDepth = Math.max(0, bracketDepth + opens - closes)
+    if (stars % 2 === 1) starred = !starred
     if (inside || !text.trim()) continue
 
     const last = words.at(-1)
@@ -151,10 +160,28 @@ function normalize(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim()
 }
 
-/** Drops the stock phrases Whisper invents on silence, and echoes of its own prompt. */
+/**
+ * Whisper looping on a sound it can't make out: mostly one sentence over and over ("I'm very
+ * impressed. I'm very impressed. I'm very impressed."). Real speech repeats a word, rarely a
+ * whole chunk of the same sentence.
+ */
+function isLoop(raw: string): boolean {
+  const sentences = raw
+    .split(/(?<=[.!?])\s+/)
+    .map(normalize)
+    .filter(Boolean)
+  if (sentences.length < LOOP_REPEATS) return false
+  const counts = new Map<string, number>()
+  for (const sentence of sentences) counts.set(sentence, (counts.get(sentence) ?? 0) + 1)
+  const most = Math.max(...counts.values())
+  return most >= LOOP_REPEATS && most / sentences.length >= LOOP_SHARE
+}
+
+/** Drops the stock phrases Whisper invents on silence, loops, and echoes of its own prompt. */
 function isHallucination(words: TranscriptWord[], prompt: string): boolean {
-  const text = normalize(words.map((word) => word.text).join(''))
-  if (!text || HALLUCINATIONS.has(text)) return true
+  const raw = words.map((word) => word.text).join('')
+  const text = normalize(raw)
+  if (!text || HALLUCINATIONS.has(text) || isLoop(raw)) return true
   return text.length > 12 && normalize(prompt).includes(text)
 }
 
@@ -179,7 +206,14 @@ function runSerial<T>(task: () => Promise<T>): Promise<T> {
 
 async function runWhisper(pcm: Float32Array, prompt: string): Promise<TranscriptWord[]> {
   const transcribe = loadTranscribe()
-  const options = { ...BASE_OPTIONS, model: modelPath(), pcmf32: pcm, prompt }
+  const options = {
+    ...BASE_OPTIONS,
+    model: modelPath(),
+    vad: true,
+    vad_model: join(modelsDir(), VAD_MODEL.name),
+    pcmf32: pcm,
+    prompt
+  }
   try {
     return wordsFromTokens(await transcribe({ ...options, use_gpu: useGpu }))
   } catch (gpuError) {

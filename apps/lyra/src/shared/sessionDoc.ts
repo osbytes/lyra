@@ -357,24 +357,6 @@ function removeRangeText(doc: Y.Doc, range: Y.Map<unknown>): boolean {
 }
 
 /**
- * How many committed phrases main has placed in the current recording. The window sends phrases
- * in order and draws the ones not yet placed as unconfirmed text, so nothing blinks out while a
- * phrase is being voiceprinted.
- */
-export function livePlaced(doc: Y.Doc): number {
-  return num(currentRange(doc)?.get('placed'))
-}
-
-/** Counts one more placed phrase (in the same change that writes it). */
-export function markPlaced(doc: Y.Doc, origin: unknown): void {
-  const range = currentRange(doc)
-  if (!range) return
-  doc.transact(() => {
-    range.set('placed', num(range.get('placed')) + 1)
-  }, origin)
-}
-
-/**
  * A live transcript line. Words from the same speaker within `joinGap` seconds of their last
  * line extend it (one line per turn, up to `maxLine` seconds), unless the user edited that line.
  * Text is joined with the dictation rules (spacing, capitals, voice commands) on one line.

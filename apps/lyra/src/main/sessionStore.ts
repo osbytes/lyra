@@ -132,27 +132,7 @@ export type RawPass = {
     words: { text: string; start: number; end: number }[]
   }[]
   clusters: { id: string; embedding: number[]; matches: { personId: string; score: number }[] }[]
-  /** Live passes: every speaker decision, so a mislabeled session can be replayed and debugged. */
-  trace?: LiveTraceEvent[]
 }
-
-/**
- * One live speaker-identification decision. `voice`: a stretch of speech was voiceprinted and
- * scored against every voice so far (`scores`), then joined one, started one, or (`reuse`, `held`)
- * took the previous speaker without a voiceprint. `merge` and `fold` fold one voice into another.
- */
-export type LiveTraceEvent =
-  | {
-      kind: 'voice'
-      start: number
-      end: number
-      cluster: string | null
-      decision: 'join' | 'new' | 'reuse' | 'held'
-      scores: Record<string, number>
-      embedding: number[]
-    }
-  | { kind: 'merge'; at: number; from: string; into: string; score: number }
-  | { kind: 'fold'; from: string; into: string }
 
 export type TrackInfo = Manifest['tracks'][number]
 

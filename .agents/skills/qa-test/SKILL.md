@@ -25,8 +25,8 @@ For speaker, diarization or call-labeling changes, also score the pipeline and c
 run from before the change (`eval-data/results/<run>/results.json`):
 
 - `--pipeline live` (the default) replays each scenario as a recording, exactly as the app runs it:
-  streaming Whisper, live speaker identification, then the relabel pass after stop. `stream` scores
-  live identification alone (what the window shows while recording), `offline` the
+  chunked Whisper per track with track labels, then the relabel pass after stop. `stream` scores
+  the lines as they land while recording (what the window shows), `offline` the
   diarize-then-transcribe pipeline. Compare the same pipeline before and after a change.
 - `pnpm eval:sessions` (in `apps/lyra`): real people's voices (Mini LibriSpeech, downloaded once,
   decoded with ffmpeg) laid out as conversations, the closest thing to real sessions: two to four
