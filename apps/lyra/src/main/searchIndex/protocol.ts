@@ -1,0 +1,127 @@
+import { z } from 'zod'
+
+/**
+ * Messages between main and the index worker (a utilityProcess that owns the search database).
+ * Both sides parse what they receive: the worker its requests, main each result. See
+ * docs/SEARCH-INDEX.md.
+ */
+
+const Field = z.enum(['title', 'tags', 'summary', 'notes', 'transcript'])
+
+export const EditRecord = z.object({
+  kind: z.enum(['replace', 'delete', 'highlight']),
+  start: z.number().int(),
+  end: z.number().int(),
+  text: z.string().nullable()
+})
+
+export const SegmentRecord = z.object({
+  id: z.string(),
+  rawId: z.string().nullable(),
+  start: z.number(),
+  end: z.number(),
+  cluster: z.string().nullable(),
+  confidence: z.number().nullable(),
+  edited: z.boolean(),
+  text: z.string(),
+  original: z.string(),
+  edits: z.array(EditRecord)
+})
+
+export const SpeakerRecord = z.object({
+  cluster: z.string(),
+  name: z.string(),
+  personId: z.string().nullable(),
+  confirmed: z.boolean(),
+  confidence: z.number().nullable(),
+  talkSeconds: z.number(),
+  segments: z.number().int(),
+  matches: z.array(z.object({ personId: z.string(), score: z.number() }))
+})
+
+export const PassageRecord = z.object({
+  field: Field,
+  segmentId: z.string().nullable(),
+  cluster: z.string().nullable(),
+  start: z.number().nullable(),
+  text: z.string()
+})
+
+export const ActionItemRecord = z.object({
+  owner: z.string().nullable(),
+  task: z.string(),
+  done: z.boolean()
+})
+
+/** Everything the index holds about one session, built in main from its manifest and document. */
+export const SessionRecord = z.object({
+  id: z.string(),
+  title: z.string(),
+  titleAuto: z.boolean(),
+  preview: z.string(),
+  startedAt: z.string(),
+  endedAt: z.string().nullable(),
+  updatedAt: z.string(),
+  seconds: z.number().nullable(),
+  audio: z.enum(['none', 'kept', 'deleted']),
+  words: z.number().int(),
+  exportHash: z.string().nullable(),
+  /** Compared with the manifest at startup: a different key means the row is stale. */
+  indexKey: z.string(),
+  tags: z.array(z.string()),
+  tracks: z.array(z.object({ name: z.enum(['mic', 'system']), sampleRate: z.number(), seconds: z.number() })),
+  passes: z.array(
+    z.object({ id: z.string(), kind: z.enum(['live', 'diarized']), model: z.string(), createdAt: z.string() })
+  ),
+  speakers: z.array(SpeakerRecord),
+  segments: z.array(SegmentRecord),
+  actionItems: z.array(ActionItemRecord),
+  passages: z.array(PassageRecord)
+})
+export type SessionRecord = z.infer<typeof SessionRecord>
+
+export const PersonRecord = z.object({
+  id: z.string(),
+  name: z.string(),
+  self: z.boolean(),
+  createdAt: z.string(),
+  voiceprints: z.array(z.array(z.number()))
+})
+export type PersonRecord = z.infer<typeof PersonRecord>
+
+export const IndexStats = z.object({
+  sessions: z.number().int(),
+  segments: z.number().int(),
+  speakers: z.number().int(),
+  passages: z.number().int(),
+  people: z.number().int()
+})
+export type IndexStats = z.infer<typeof IndexStats>
+
+export const IndexRequest = z.discriminatedUnion('type', [
+  /** Opens (or creates) the database for a notes folder; another folder's index is dropped. */
+  z.object({ type: z.literal('open'), path: z.string(), notesDir: z.string() }),
+  z.object({ type: z.literal('upsertSession'), session: SessionRecord }),
+  z.object({ type: z.literal('removeSession'), id: z.string() }),
+  z.object({ type: z.literal('replacePeople'), people: z.array(PersonRecord) }),
+  /** Each indexed session's `indexKey`, by id. */
+  z.object({ type: z.literal('indexKeys') }),
+  /** A session as the index holds it, rebuilt from its rows; for checks. */
+  z.object({ type: z.literal('readSession'), id: z.string() }),
+  z.object({ type: z.literal('readPeople') }),
+  z.object({ type: z.literal('stats') }),
+  z.object({ type: z.literal('close') })
+])
+export type IndexRequest = z.infer<typeof IndexRequest>
+
+export const IndexEnvelope = z.object({ id: z.number().int(), request: IndexRequest })
+export type IndexEnvelope = z.infer<typeof IndexEnvelope>
+
+export const IndexResponse = z.discriminatedUnion('ok', [
+  z.object({ id: z.number().int(), ok: z.literal(true), result: z.unknown() }),
+  z.object({ id: z.number().int(), ok: z.literal(false), error: z.string() })
+])
+export type IndexResponse = z.infer<typeof IndexResponse>
+
+/** What `open` reports: whether the index was (re)created and so needs a full reindex. */
+export const OpenResult = z.object({ fresh: z.boolean() })

@@ -54,6 +54,26 @@ async function save(next: StoredPerson[]): Promise<void> {
   await rename(`${path}.tmp`, path)
   const summary = next.map(toPerson)
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send('people:changed', summary)
+  for (const listener of saveListeners) listener(next.map(toVoicePerson))
+}
+
+/** A person with their voiceprint samples, for stores that mirror voices.json (the search index). */
+export type VoicePerson = Person & { voiceprints: number[][] }
+
+const toVoicePerson = (stored: StoredPerson): VoicePerson => ({
+  ...toPerson(stored),
+  voiceprints: stored.embeddings
+})
+
+const saveListeners = new Set<(people: VoicePerson[]) => void>()
+
+export function onPeopleSaved(listener: (people: VoicePerson[]) => void): () => void {
+  saveListeners.add(listener)
+  return () => saveListeners.delete(listener)
+}
+
+export async function listVoicePeople(): Promise<VoicePerson[]> {
+  return (await load()).map(toVoicePerson)
 }
 
 function toPerson(stored: StoredPerson): Person {

@@ -16,6 +16,7 @@ import {
   openSessionFor,
   readSession,
   readSessionFromDisk,
+  restoreSession,
   sessionAudioDir,
   sessionRawDir,
   updateManifest,
@@ -45,7 +46,8 @@ import {
   setSegmentText,
   snapshotOf,
   docTranscript,
-  upsertSpeaker
+  upsertSpeaker,
+  addTag
 } from '../../shared/sessionDoc'
 import {
   correctRange,
@@ -70,6 +72,8 @@ import { createMeetingNotes } from '../meeting/notes'
 import { createFakeNotesWriter, createModelNotesWriter } from '../meeting/notesWriter'
 import { chooseWriter } from '../meeting/writers'
 import { searchSessions } from '../search'
+import { checkSearchIndex } from '../searchIndex/service'
+import { addPerson, deletePerson } from '../voices'
 
 /** Text the smoke run writes into notes, and the key run-ui-smoke.cjs puts in the environment. */
 const NEVER_LOGGED = ['hello from smoke', 'Merged', 'sk-ant-smoke-not-a-real-key']
@@ -342,6 +346,59 @@ async function checkSessionStore(): Promise<void> {
   }
 }
 
+/**
+ * The search index mirrors sessions and people: what it holds reads back equal to what the
+ * files say, through edits, a delete, an undo and a voice saved.
+ */
+async function checkSearchIndexMirror(): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`search index: ${message}`)
+  }
+  const expectInSync = async (step: string): Promise<void> => {
+    const result = await checkSearchIndex()
+    if (result.mismatched.length) fail(`${step}: out of sync for ${result.mismatched.join(', ')}`)
+  }
+  const page = await createPage({ startedAt: '2026-03-04T05:06:07' })
+  await editSession(page.id, (doc) => {
+    editDoc(
+      doc,
+      {
+        title: 'Index smoke',
+        notes: 'Budget review\n\nShip the release notes',
+        summary: 'Summary\nWe met.\n\nAction items\n- [ ] Ana: send the deck\n- [x] wrap up'
+      },
+      'main'
+    )
+    addTag(doc, 'Planning', 'main')
+    upsertSpeaker(doc, 'c0', { name: 'Ana', confirmed: true, confidence: 0.91, matches: [{ personId: 'p1', score: 0.91 }] }, 'main')
+    upsertSpeaker(doc, 'c1', { name: 'Speaker 2' }, 'main')
+    replaceTranscript(
+      doc,
+      [
+        { id: 's1', rawId: 'pass-1-s1', start: 0.25, end: 3.7, cluster: 'c0', confidence: 0.83, text: 'The quarterly budget is ready.' },
+        { id: 's2', rawId: null, start: 3.7, end: 6.1, cluster: 'c1', confidence: null, text: 'Great, thanks Ana.' }
+      ],
+      'main'
+    )
+    setSegmentEdits(doc, 's1', [{ kind: 'replace', start: 4, end: 13, text: 'yearly' }, { kind: 'highlight', start: 14, end: 20 }], ORIGIN_USER)
+  })
+  await expectInSync('after an edit')
+  const record = await readSessionFromDisk(page.id)
+  if (!record.transcript.some((line) => line.edited)) fail('the edit did not land')
+
+  await deletePage(page.id)
+  await expectInSync('after a delete')
+  await restoreSession(page.id)
+  await expectInSync('after an undo')
+
+  const person = await addPerson('Index Person', [0.1, 0.2, 0.30000000000000004], false)
+  await expectInSync('after saving a voice')
+  await deletePerson(person.id)
+  await expectInSync('after deleting a voice')
+  await deletePage(page.id)
+  await expectInSync('at the end')
+}
+
 /** Retention deletes only audio older than the setting, and nothing when set to forever. */
 async function checkAudioRetention(): Promise<void> {
   const fail = (message: string): never => {
@@ -559,6 +616,7 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
     await checkSessionStore()
     await checkAudioRetention()
     await checkTranscriptModel()
+    await checkSearchIndexMirror()
     const result: unknown = await win.webContents.executeJavaScript(`
       (async () => {
         const fail = (message) => { throw new Error(message) }

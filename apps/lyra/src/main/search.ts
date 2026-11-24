@@ -1,6 +1,7 @@
 import Fuse, { type FuseResult, type RangeTuple } from 'fuse.js'
 import type { PageSummary, SearchField, SearchHit, SearchMatch } from '../shared/types'
 import { log } from './log'
+import { paragraphs } from './searchIndex/record'
 import { listSessions, readSession } from './sessionStore'
 
 /** Sessions returned per query, and matches kept per session. */
@@ -25,12 +26,6 @@ type Entry = {
   start: number | null
   line: string | null
 }
-
-const paragraphs = (text: string): string[] =>
-  text
-    .split(/\n\s*\n|\n(?=[-*•—]\s)/)
-    .map((part) => part.trim())
-    .filter(Boolean)
 
 /** Every searchable piece of one session: title, tags, paragraphs and transcript lines. */
 async function entriesOf(page: PageSummary): Promise<Entry[]> {

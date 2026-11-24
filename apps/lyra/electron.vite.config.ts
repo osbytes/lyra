@@ -7,13 +7,15 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
     build: {
       rollupOptions: {
-        external: ['@kutalia/whisper-node-addon', 'sherpa-onnx-node', 'node-llama-cpp'],
+        external: ['@kutalia/whisper-node-addon', 'sherpa-onnx-node', 'node-llama-cpp', '@libsql/client'],
         input: {
           index: resolve('src/main/index.ts'),
           // Runs in a utilityProcess: speaker diarization off the main thread.
           speakerWorker: resolve('src/main/meeting/worker.ts'),
           // Runs in a utilityProcess: local meeting notes with llama.cpp.
-          notesWorker: resolve('src/main/meeting/notesWorker.ts')
+          notesWorker: resolve('src/main/meeting/notesWorker.ts'),
+          // Runs in a utilityProcess: the search index database (libSQL).
+          indexWorker: resolve('src/main/searchIndex/worker.ts')
         }
       }
     }
