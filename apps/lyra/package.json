@@ -2,7 +2,7 @@
   "name": "lyra",
   "version": "0.3.0",
   "private": true,
-  "description": "Lyra — a local voice notebook: talk onto pages, autosave markdown, all on device.",
+  "description": "Lyra, a local voice notebook: talk onto pages, autosave markdown, all on device.",
   "main": "./out/main/index.js",
   "author": "Lyra contributors",
   "license": "MIT",

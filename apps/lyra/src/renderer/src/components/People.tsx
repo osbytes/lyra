@@ -107,7 +107,7 @@ function Enroll({ micDeviceId, onDone }: EnrollProps) {
           </div>
           <p className="settings-notice">
             They’ll read a short passage aloud for {ENROLL_SECONDS} seconds. Only record people who
-            agree to it — the voiceprint stays on this computer.
+            agree to it. The voiceprint stays on this computer.
           </p>
           <div className="settings-buttons">
             <button
@@ -258,7 +258,7 @@ export function PeopleSettings({ micDeviceId }: { micDeviceId: string | null }) 
         </ul>
       ) : (
         <p className="settings-notice">
-          No saved voices yet. Speakers show up as “Speaker 1”, “Speaker 2”… until you name them —
+          No saved voices yet. Speakers show up as “Speaker 1”, “Speaker 2”… until you name them, and
           naming one in a meeting note can save their voice too.
         </p>
       )}

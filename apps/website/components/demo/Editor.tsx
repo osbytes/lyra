@@ -75,7 +75,7 @@ export function Editor({ value, ghost, listening, transcriberAt, onChange, label
         }}
         onKeyDown={onKeyDown}
         placeholder={
-          preview || listening || label ? '' : 'Start talking — or typing. Your words land here and save automatically.'
+          preview || listening || label ? '' : 'Start talking or typing. Your words land here and save automatically.'
         }
         aria-label={label ?? 'Page body'}
       />

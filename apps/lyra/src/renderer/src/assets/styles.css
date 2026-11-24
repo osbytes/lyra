@@ -610,7 +610,7 @@ code {
   white-space: nowrap;
 }
 
-/* Long states ("Downloading… 45%", "Update failed — retry") truncate inside the sidebar. */
+/* Long states ("Downloading… 45%", "Update failed. Retry") truncate inside the sidebar. */
 .update-label {
   min-width: 0;
   overflow: hidden;
