@@ -47,7 +47,7 @@ import {
 import { startAudioRetention } from './audioRetention'
 import { createTray } from './tray'
 import { registerUpdater } from './updater'
-import { broadcastStatus, pcmFromIpc, transcribePcm, warmUp } from './whisper'
+import { broadcastStatus, warmUp } from './whisper'
 import { log, logPath } from './log'
 import { searchSessions } from './search'
 import type { Task } from './tasks/args'
@@ -232,9 +232,6 @@ function registerIpc(): void {
     log(String(scope), String(message), data)
   })
   ipcMain.handle('whisper:warmUp', () => warmUp())
-  ipcMain.handle('whisper:transcribe', (_event, payload: unknown, prompt: unknown) =>
-    transcribePcm(pcmFromIpc(payload), typeof prompt === 'string' ? prompt : '')
-  )
 }
 
 
@@ -290,8 +287,8 @@ void app.whenReady().then(() => {
 
   registerIpc()
   registerSessionIpc()
-  registerRecorderIpc({ identifySpeakers: !isTestRun })
-  // Evals pass --no-relabel to score live identification on its own.
+  registerRecorderIpc({ identifySpeakers: !isTestRun, transcribe: !isTestRun })
+  // Evals pass --no-relabel to score the track-labeled lines on their own.
   if (task?.kind !== 'meeting' || task.relabel) {
     onRecordingFinished((recording) => {
       if (identifiesSpeakers()) void relabelSession(recording.pageId)

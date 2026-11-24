@@ -5,11 +5,11 @@
 //   pnpm replay:session C:\notes\.sessions\2026-11-23_15-44-01.txt   # or its folder
 //   pnpm replay:session <session> --pipelines live,stream,offline --reference ref.json
 //
-// For each pipeline (live: what the app runs; stream: live identification alone; offline:
+// For each pipeline (live: what the app runs; stream: track labels before relabel; offline:
 // diarize then transcribe) it prints who spoke each line and how long each speaker talked,
 // next to what the session got when it was recorded. With --reference (the run-eval format:
-// { segments: [{ speaker, start, end, text }] }) each run is also scored. Hypotheses, with the
-// live pass's decision trace, go to eval-data/replays/<session>/. The session is read, never
+// { segments: [{ speaker, start, end, text }] }) each run is also scored. Hypotheses go to
+// eval-data/replays/<session>/. The session is read, never
 // changed; nothing leaves the machine.
 const { spawnSync } = require('node:child_process')
 const { existsSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs')
@@ -97,7 +97,7 @@ function main() {
     }
   }
   writeFileSync(join(outDir, 'source.txt'), `${dir}\n`)
-  process.stdout.write(`\nreplay: hypotheses and live traces in ${outDir}\n`)
+  process.stdout.write(`\nreplay: hypotheses in ${outDir}\n`)
 }
 
 try {

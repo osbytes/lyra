@@ -24,7 +24,8 @@ export type SessionState = {
 }
 
 /** High-frequency recording feedback for the overlay pill. */
-export type OverlayFrame = { level: number; live: string }
+/** The recording pill's input level, and what it says besides "Listening" (or nothing). */
+export type OverlayFrame = { level: number; status: string }
 
 /** Sent from main to the main window's recorder. */
 export type SessionCommand = { type: 'toggle' } | { type: 'stop' }
@@ -69,6 +70,16 @@ export type Person = {
 export type SpeakerAssignment =
   | { personId: string }
   | { name: string; remember: boolean }
+
+/**
+ * Whether the recording in progress has speech waiting to be transcribed. Speech still being
+ * spoken isn't counted: it's cut into a chunk at the next pause, and only then waits for Whisper.
+ */
+export type TranscriptProgress = {
+  pageId: string
+  /** Chunks of speech waiting for (or in) Whisper. */
+  queued: number
+}
 
 export type MeetingStatus = {
   pageId: string
@@ -170,7 +181,7 @@ export type VoicePagesApi = {
   onSessionCommand: (callback: (command: SessionCommand) => void) => () => void
   /** Main window: report recorder state changes. */
   reportSession: (state: SessionState) => void
-  /** Main window: report level and live text (throttled by the caller). */
+  /** Main window: report level and status (throttled by the caller). */
   reportOverlayFrame: (frame: OverlayFrame) => void
   /** Overlay: the recorder's current state, then follow changes with `onSessionState`. */
   getSessionState: () => Promise<SessionState>
@@ -191,15 +202,12 @@ export type VoicePagesApi = {
    * timeline. Resolves to where this recording starts on it, in seconds.
    */
   startRecording: (pageId: string, withSystem: boolean) => Promise<number>
+  /** Captured audio; main transcribes it a chunk at a time and writes the lines itself. */
   appendRecording: (track: AudioTrack, pcm16: Int16Array) => void
-  /** Words the live transcriber committed, timed on the session's timeline. */
-  appendRecordingWords: (words: TranscriptWord[]) => void
-  /**
-   * A committed phrase and the stretch of the session timeline it was heard in. Main places it:
-   * in the notes while one voice speaks, as speaker-labeled transcript lines once two do.
-   */
-  appendRecordingText: (text: string, start: number, end: number) => void
+  /** Resolves once the last chunks are transcribed and the take is saved. */
   stopRecording: () => Promise<MeetingRecording | null>
+  /** Whether the recording in progress has speech waiting to be transcribed. */
+  onTranscriptProgress: (callback: (progress: TranscriptProgress) => void) => () => void
   /** Mixed 16 kHz mono PCM for a stretch of a session's audio (Listen); empty if none is kept. */
   sessionAudio: (pageId: string, start: number, end: number) => Promise<Int16Array>
   listPeople: () => Promise<Person[]>
@@ -239,8 +247,6 @@ export type VoicePagesApi = {
   platform: string
   /** Downloads the model if needed and loads it into memory. */
   warmUp: () => Promise<void>
-  /** `prompt` is recent text that gives Whisper context for punctuation and vocabulary. */
-  transcribe: (pcm: Uint8Array, prompt: string) => Promise<TranscriptWord[]>
   /** Appends a line to the app log (terminal + userData/logs/lyra.log). */
   log: (scope: string, message: string, data?: unknown) => void
   onStatus: (callback: (status: WhisperStatus) => void) => () => void

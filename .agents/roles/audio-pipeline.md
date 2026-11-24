@@ -1,6 +1,6 @@
 ---
 name: audio-pipeline
-description: Audio and speech engineer for Lyra. Use for microphone/system-audio capture, voice activity detection, streaming Whisper transcription, speaker diarization, and meeting processing.
+description: Audio and speech engineer for Lyra. Use for microphone/system-audio capture, voice activity detection, chunked Whisper transcription, speaker diarization, and meeting processing.
 ---
 
 # Role: audio-pipeline engineer

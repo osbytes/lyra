@@ -55,7 +55,7 @@ const Meeting = z
     system: args.positional[1] ?? null,
     /** `live` replays the audio as a recording; `offline` labels it after the fact. */
     pipeline: args['--offline'] ? ('offline' as const) : ('live' as const),
-    /** Off for evals that score live identification on its own. */
+    /** Off for evals that score the track-labeled lines on their own. */
     relabel: !args['--no-relabel'],
     /** Where to write the labeled segments as JSON, for the eval scorers. */
     output: args['--output'] ?? null,

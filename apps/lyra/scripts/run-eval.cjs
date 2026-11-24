@@ -11,8 +11,8 @@
 //   node scripts/run-eval.cjs --score ref.json hyp.json   # score any two transcripts
 //   --enroll                  sessions: save the first person's voice (enroll.wav) before replaying
 //   --pipeline live|stream|offline   live (default) replays the audio as a recording, as the app
-//                             runs it: live identification, then relabeling once it stops; stream
-//                             is live identification alone; offline is the diarize-then-transcribe
+//                             runs it: chunks labeled by track, then relabeling once it stops; stream
+//                             is the track-labeled lines alone; offline is the diarize-then-transcribe
 //                             pipeline
 //
 // Prints WER, cpWER (words given to the wrong speaker count as errors) and DER per item, and
