@@ -38,5 +38,5 @@ the command line. Each runs in a throwaway profile and exits with its result. In
 lyra smoke                                  UI and IPC smoke test (pnpm smoke:ui)
 lyra screenshot [--review <dir>]            README shot; --review captures every state
 lyra meeting <mic.wav> [system.wav]         the real speaker pipeline (pnpm smoke:meeting)
-  [--offline] [--no-relabel] [--output <file.json>] [--notes local|cloud]
+  [--offline] [--no-relabel] [--output <file.json>] [--notes local|cloud] [--enroll <owner.wav>]
 ```
