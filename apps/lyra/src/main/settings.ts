@@ -23,6 +23,8 @@ export function defaultSettings(): Settings {
     cloudModel: null,
     cloudBaseUrl: null,
     meetingNoticeSeen: false,
+    // Off until asked for: it downloads a model and works the CPU while it indexes.
+    semanticSearch: false,
     detailsPanel: false
   }
 }

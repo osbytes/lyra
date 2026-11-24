@@ -62,6 +62,7 @@ const CHANGE_LABELS: Partial<Record<keyof SettingsValue, string>> = {
   cloudProvider: 'Changed the summary provider',
   cloudModel: 'Changed the summary model',
   cloudBaseUrl: 'Changed the server address',
+  semanticSearch: 'Changed search by meaning',
   micPrompt: 'Changed the microphone prompt'
 }
 
@@ -459,6 +460,29 @@ function SummarySection({ settings, update }: SectionProps) {
   )
 }
 
+function SearchSection({ settings, update }: SectionProps) {
+  return (
+    <Section title="Search">
+      <Row
+        label="Search by meaning"
+        hint="Also finds sessions that say the same thing in other words: “car repairs” finds “new tires and an oil change”."
+      >
+        <Switch
+          label="Search by meaning"
+          checked={settings.semanticSearch}
+          onChange={(semanticSearch) => void update({ semanticSearch })}
+        />
+      </Row>
+      {settings.semanticSearch ? (
+        <p className="settings-notice">
+          Runs a small model on this computer, so nothing leaves it. The first time downloads about
+          150 MB, then reads through your sessions in the background.
+        </p>
+      ) : null}
+    </Section>
+  )
+}
+
 function PromptsSection({ settings, update }: SectionProps) {
   const { enabled, ignoredApps } = settings.micPrompt
   const setPrompt = (patch: Partial<SettingsValue['micPrompt']>): void => {
@@ -585,6 +609,7 @@ export function SettingsDialog({ settings, update: rawUpdate, issues, onClose }:
               <>
                 <RecordingSection settings={settings} update={update} />
                 <SummarySection settings={settings} update={update} />
+                <SearchSection settings={settings} update={update} />
                 <PromptsSection settings={settings} update={update} />
               </>
             ) : null}

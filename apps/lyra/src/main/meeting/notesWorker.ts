@@ -2,15 +2,12 @@
  * Local meeting-notes worker (utilityProcess): runs a small instruct model with
  * llama.cpp, constrained to the notes JSON schema so output always parses.
  */
-import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
-import type * as NodeLlamaCpp from 'node-llama-cpp'
 import type { GbnfJsonObjectSchema, Llama, LlamaModel } from 'node-llama-cpp'
 import { z } from 'zod'
+import { loadLlamaModule } from '../llamaModule'
 import {
   MeetingNotes,
   NOTES_SYSTEM_PROMPT,
-  PACKAGED_FLAG,
   TitleSuggestion,
   TITLE_SYSTEM_PROMPT
 } from './notesFormat'
@@ -29,24 +26,6 @@ export type NotesWorkerResponse =
   | { id: number; ok: false; error: string }
 
 const CONTEXT_SIZE = 8192
-
-type LlamaModule = typeof NodeLlamaCpp
-
-/**
- * Packaged builds ship node-llama-cpp as its own npm install in resources/llama
- * (see scripts/prepare-llama.cjs); in development it comes from node_modules.
- * It's ESM-only, so it's loaded with import() from this CommonJS bundle.
- */
-let llamaModule: Promise<LlamaModule> | null = null
-function loadLlamaModule(): Promise<LlamaModule> {
-  if (!llamaModule) {
-    const packaged = join(process.resourcesPath, 'llama', 'node_modules', 'node-llama-cpp', 'dist', 'index.js')
-    llamaModule = process.argv.includes(PACKAGED_FLAG)
-      ? (import(pathToFileURL(packaged).href) as Promise<LlamaModule>)
-      : import('node-llama-cpp')
-  }
-  return llamaModule
-}
 
 let llama: Llama | null = null
 let loaded: { path: string; model: LlamaModel } | null = null

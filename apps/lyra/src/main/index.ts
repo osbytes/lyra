@@ -50,6 +50,7 @@ import { registerUpdater } from './updater'
 import { broadcastStatus, warmUp } from './whisper'
 import { log, logPath } from './log'
 import { searchSessions } from './search'
+import { closeSearchIndex, startSearchIndex } from './searchIndex/service'
 import type { Task } from './tasks/args'
 import { isTaskLaunch, prepareTaskProfile, runTaskIn, taskFromArgv } from './tasks/run'
 import type { Page, Settings } from '../shared/types'
@@ -314,6 +315,7 @@ void app.whenReady().then(() => {
     // Sessions deleted before a crash were never emptied into the system trash.
     void emptySessionTrash()
     startWatchingNotes()
+    startSearchIndex()
     startAudioRetention()
     createWindow()
   })
@@ -333,6 +335,9 @@ async function shutdownWork(): Promise<void> {
     log('app', 'could not finish the recording on quit', error)
   })
   await flushAllSessions()
+  await closeSearchIndex().catch((error: unknown) => {
+    log('app', 'could not close the search index on quit', error)
+  })
   await emptySessionTrash()
 }
 

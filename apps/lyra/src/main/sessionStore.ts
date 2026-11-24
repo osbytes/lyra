@@ -392,6 +392,7 @@ async function migrateNote(id: string): Promise<Entry> {
   }
   writeFileSync(docPath(id), frame(Y.encodeStateAsUpdate(doc)))
   writeManifest(manifest)
+  emitChange({ kind: 'saved', id, manifest, snapshot: snapshotOf(doc) })
   log('sessions', 'created session from note', { id })
   return makeEntry(id, doc, manifest, 1)
 }
@@ -692,6 +693,32 @@ async function writeExport(entry: Entry): Promise<void> {
   )
   writeManifest(entry.manifest)
   notifyPagesChanged()
+  emitChange({ kind: 'saved', id: entry.id, manifest: entry.manifest, snapshot })
+}
+
+// --- Change events -----------------------------------------------------------------
+
+/** What other stores (the search index) follow: a session written, deleted or restored. */
+export type SessionChange =
+  | { kind: 'saved'; id: string; manifest: Manifest; snapshot: SessionSnapshot }
+  | { kind: 'removed'; id: string }
+  | { kind: 'restored'; id: string }
+
+const changeListeners = new Set<(change: SessionChange) => void>()
+
+export function onSessionChange(listener: (change: SessionChange) => void): () => void {
+  changeListeners.add(listener)
+  return () => changeListeners.delete(listener)
+}
+
+function emitChange(change: SessionChange): void {
+  for (const listener of changeListeners) {
+    try {
+      listener(change)
+    } catch (error) {
+      log('sessions', 'a change listener failed', { id: change.id, error: String(error) })
+    }
+  }
 }
 
 // --- Public API -------------------------------------------------------------------
@@ -818,6 +845,7 @@ export async function createSession(options: CreateSessionOptions = {}): Promise
         dirty: false
       }
       writeManifest(manifest)
+      emitChange({ kind: 'saved', id, manifest, snapshot: snapshotOf(doc) })
       const entry = makeEntry(id, doc, manifest, 1)
       open.set(id, entry)
       release(entry)
@@ -861,6 +889,7 @@ export async function deleteSession(id: string): Promise<void> {
     moves.push({ from, to })
   }
   trashed.set(id, { held, moves })
+  emitChange({ kind: 'removed', id })
 }
 
 type TrashMove = { from: string; to: string }
@@ -896,6 +925,7 @@ export async function restoreSession(id: string): Promise<void> {
   trashed.delete(id)
   await rm(held, { recursive: true, force: true })
   notifyPagesChanged()
+  emitChange({ kind: 'restored', id })
 }
 
 /** Sends every deleted session to the system trash; they can't be undone after this. */

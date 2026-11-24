@@ -17,6 +17,7 @@ import {
   openSessionFor,
   readSession,
   readSessionFromDisk,
+  restoreSession,
   sessionAudioDir,
   sessionRawDir,
   updateManifest,
@@ -44,7 +45,8 @@ import {
   setSegmentText,
   snapshotOf,
   docTranscript,
-  upsertSpeaker
+  upsertSpeaker,
+  addTag
 } from '../../shared/sessionDoc'
 import {
   correctRange,
@@ -69,6 +71,9 @@ import { createMeetingNotes } from '../meeting/notes'
 import { createFakeNotesWriter, createModelNotesWriter } from '../meeting/notesWriter'
 import { chooseWriter } from '../meeting/writers'
 import { searchSessions } from '../search'
+import { chunksOf } from '../searchIndex/record'
+import { checkSearchIndex, drainEmbeddings, useTestEmbedder } from '../searchIndex/service'
+import { addPerson, deletePerson } from '../voices'
 
 /** Text the smoke run writes into notes, and the key run-ui-smoke.cjs puts in the environment. */
 const NEVER_LOGGED = ['hello from smoke', 'Merged', 'sk-ant-smoke-not-a-real-key']
@@ -341,6 +346,182 @@ async function checkSessionStore(): Promise<void> {
   }
 }
 
+/**
+ * The search index mirrors sessions and people: what it holds reads back equal to what the
+ * files say, through edits, a delete, an undo and a voice saved.
+ */
+async function checkSearchIndexMirror(): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`search index: ${message}`)
+  }
+  const expectInSync = async (step: string): Promise<void> => {
+    const result = await checkSearchIndex()
+    if (result.mismatched.length) fail(`${step}: out of sync for ${result.mismatched.join(', ')}`)
+  }
+  const page = await createPage({ startedAt: '2026-03-04T05:06:07' })
+  await editSession(page.id, (doc) => {
+    editDoc(
+      doc,
+      {
+        title: 'Index smoke',
+        notes: 'Budget review\n\nShip the release notes',
+        summary: 'Summary\nWe met.\n\nAction items\n- [ ] Ana: send the deck\n- [x] wrap up'
+      },
+      'main'
+    )
+    addTag(doc, 'Planning', 'main')
+    upsertSpeaker(doc, 'c0', { name: 'Ana', confirmed: true, confidence: 0.91, matches: [{ personId: 'p1', score: 0.91 }] }, 'main')
+    upsertSpeaker(doc, 'c1', { name: 'Speaker 2' }, 'main')
+    replaceTranscript(
+      doc,
+      [
+        { id: 's1', rawId: 'pass-1-s1', start: 0.25, end: 3.7, cluster: 'c0', confidence: 0.83, text: 'The quarterly budget is ready.' },
+        { id: 's2', rawId: null, start: 3.7, end: 6.1, cluster: 'c1', confidence: null, text: 'Great, thanks Ana.' }
+      ],
+      'main'
+    )
+    setSegmentEdits(doc, 's1', [{ kind: 'replace', start: 4, end: 13, text: 'yearly' }, { kind: 'highlight', start: 14, end: 20 }], ORIGIN_USER)
+  })
+  await expectInSync('after an edit')
+  const record = await readSessionFromDisk(page.id)
+  if (!record.transcript.some((line) => line.edited)) fail('the edit did not land')
+
+  await deletePage(page.id)
+  await expectInSync('after a delete')
+  await restoreSession(page.id)
+  await expectInSync('after an undo')
+
+  const person = await addPerson('Index Person', [0.1, 0.2, 0.30000000000000004], false)
+  await expectInSync('after saving a voice')
+  await deletePerson(person.id)
+  await expectInSync('after deleting a voice')
+  await deletePage(page.id)
+  await expectInSync('at the end')
+}
+
+/**
+ * Search on the index: a fixed set of sessions and queries with the results each must give
+ * (docs/SEARCH-INDEX.md, Phase 2). Ids are compared among these sessions only.
+ */
+async function checkSearchQueries(): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`search: ${message}`)
+  }
+  const make = async (
+    startedAt: string,
+    fields: { title: string; notes: string; tag: string },
+    lines: { cluster: string; name: string; text: string }[]
+  ): Promise<string> => {
+    const page = await createPage({ startedAt })
+    await editSession(page.id, (doc) => {
+      editDoc(doc, { title: fields.title, notes: fields.notes }, 'main')
+      addTag(doc, fields.tag, 'main')
+      for (const line of lines) upsertSpeaker(doc, line.cluster, { name: line.name }, 'main')
+      replaceTranscript(
+        doc,
+        lines.map((line, i) => ({ id: `q${String(i)}`, rawId: null, start: i * 5, end: i * 5 + 4, cluster: line.cluster, confidence: null, text: line.text })),
+        'main'
+      )
+    })
+    return page.id
+  }
+  const budget = await make(
+    '2026-04-01T10:00:00',
+    { title: 'Quarterly budget review', notes: 'We discussed the marketing budgets and hiring.', tag: 'Finance' },
+    [
+      { cluster: 'c0', name: 'Ana', text: 'Revenue grew in Europe.' },
+      { cluster: 'c1', name: 'Bob', text: 'Dillon will send the deck.' }
+    ]
+  )
+  const design = await make(
+    '2026-05-10T10:00:00',
+    { title: 'Design sync', notes: 'Mockups for the onboarding flow.', tag: 'design' },
+    [{ cluster: 'c0', name: 'Carla', text: 'The meeting ran long.' }]
+  )
+  const weekly = await make(
+    '2026-07-01T10:00:00',
+    { title: 'Weekly notes', notes: 'The budget came up once, in passing.', tag: 'weekly' },
+    []
+  )
+  const ours = new Set([budget, design, weekly])
+  const ids = async (query: string): Promise<string[]> =>
+    (await searchSessions(query)).map((hit) => hit.id).filter((id) => ours.has(id))
+  const expect = async (query: string, expected: string[]): Promise<void> => {
+    const got = await ids(query)
+    if (JSON.stringify(got) !== JSON.stringify(expected)) {
+      fail(`"${query}" gave ${JSON.stringify(got)}, expected ${JSON.stringify(expected)}`)
+    }
+  }
+  await expect('budget', [budget, weekly]) // a title match outranks a notes match
+  await expect('budgets', [budget, weekly]) // stems
+  await expect('budg', [budget, weekly]) // prefixes, while typing
+  await expect('buget', [budget, weekly]) // a typo
+  await expect('meetign', [design]) // a typo of a word whose stem is shorter
+  await expect('illo', [budget]) // part of a word ("Dillon")
+  await expect('person:ana', [budget]) // filters alone, newest first
+  await expect('speaker:carla meeting', [design])
+  await expect('tag:Design', [design])
+  await expect('after:2026-06 budget', [weekly])
+  await expect('before:2026-05 budget', [budget])
+  await expect('xyzzy', [])
+  const said = (await searchSessions('revenue europe')).find((hit) => hit.id === budget)
+  const line = said?.matches.find((match) => match.field === 'transcript')
+  if (line?.speaker !== 'Ana' || line.line !== 'q0' || line.start !== 0) {
+    return fail(`transcript hit: ${JSON.stringify(said)}`)
+  }
+  const marked = line.parts.filter((part) => part.hit).map((part) => part.text.toLowerCase())
+  if (marked.join('|') !== 'revenue|europe') fail(`highlights: ${JSON.stringify(line.parts)}`)
+  for (const id of ours) await deletePage(id)
+  await expect('budget', [])
+}
+
+/**
+ * Search by meaning, end to end, with the word-hashing stand-in for the model: transcript
+ * windows, background embedding, the vector scan and fusion with keyword results.
+ */
+async function checkSemanticSearch(): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`semantic search: ${message}`)
+  }
+  await useTestEmbedder(true)
+  const garage = await createPage({ startedAt: '2026-08-01T09:00:00' })
+  await editSession(garage.id, (doc) => {
+    editDoc(doc, { title: 'Garage visit', notes: 'The car needs new tires and an oil change before the road trip.' }, 'main')
+    upsertSpeaker(doc, 'c0', { name: 'Ana' }, 'main')
+    // Four lines over a minute: two windows of at most 45 s, the second repeating the third line.
+    replaceTranscript(
+      doc,
+      [0, 20, 40, 60].map((start, i) => ({
+        id: `w${String(i)}`, rawId: null, start, end: start + 4, cluster: 'c0', confidence: null, text: `Line ${String(i)} about the garage.`
+      })),
+      'main'
+    )
+  })
+  const windows = chunksOf(await readSessionFromDisk(garage.id))
+    .filter((chunk) => chunk.field === 'transcript')
+    .map((chunk) => `${chunk.segmentId ?? '?'}:${String(chunk.start)}-${String(chunk.end)}`)
+  if (windows.join('|') !== 'w0:0-44|w2:40-64') fail(`transcript windows: ${windows.join('|')}`)
+  const stats = await drainEmbeddings()
+  if (stats.chunks === 0 || stats.embedded !== stats.chunks) fail(`not every chunk embedded: ${JSON.stringify(stats)}`)
+  const result = await checkSearchIndex()
+  if (result.mismatched.length) fail(`index out of sync for ${result.mismatched.join(', ')}`)
+
+  // "soon" is in no note, so keyword search finds nothing; the meaning is close to the garage note.
+  const query = 'car needs new tires oil change road trip soon'
+  const found = (await searchSessions(query)).find((hit) => hit.id === garage.id)
+  const match = found?.matches[0]
+  if (match?.field !== 'notes' || match.parts.some((part) => part.hit)) {
+    fail(`a match by meaning was missed or marked: ${JSON.stringify(found)}`)
+  }
+  // A plain keyword match still comes first and keeps its marks.
+  const keyword = (await searchSessions('tires')).find((hit) => hit.id === garage.id)
+  if (!keyword?.matches.some((m) => m.parts.some((part) => part.hit))) fail(`keyword match lost: ${JSON.stringify(keyword)}`)
+
+  await useTestEmbedder(false)
+  if ((await searchSessions(query)).some((hit) => hit.id === garage.id)) fail('matched by meaning with semantic search off')
+  await deletePage(garage.id)
+}
+
 /** Retention deletes only audio older than the setting, and nothing when set to forever. */
 async function checkAudioRetention(): Promise<void> {
   const fail = (message: string): never => {
@@ -606,6 +787,9 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
     await checkAudioRetention()
     await checkTranscriptModel()
     await checkChunkedTranscriber()
+    await checkSearchIndexMirror()
+    await checkSearchQueries()
+    await checkSemanticSearch()
     const result: unknown = await win.webContents.executeJavaScript(`
       (async () => {
         const fail = (message) => { throw new Error(message) }
