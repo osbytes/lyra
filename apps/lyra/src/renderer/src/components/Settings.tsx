@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import type { Settings as SettingsValue } from '../../../shared/types'
+import type { ClaudeKeySource, Settings as SettingsValue } from '../../../shared/types'
 import {
   claudeKeyChanged,
   hotkeyProblem,
@@ -58,6 +58,7 @@ const CHANGE_LABELS: Partial<Record<keyof SettingsValue, string>> = {
   captureSystemAudio: 'Changed computer audio capture',
   audioRetentionDays: 'Changed how long audio is kept',
   notesEngine: 'Changed session summaries',
+  claudeModel: 'Changed the Claude model',
   micPrompt: 'Changed the microphone prompt'
 }
 
@@ -161,6 +162,12 @@ const SUMMARY_ENGINES = [
   { value: 'claude', label: 'With Claude' }
 ] as const
 
+const KEY_HINTS: Record<ClaudeKeySource | 'none', string> = {
+  keychain: 'Saved in your system keychain.',
+  environment: 'From ANTHROPIC_API_KEY. A key saved here is used instead.',
+  none: 'From console.anthropic.com.'
+}
+
 const DEFAULT_HOTKEY = 'CommandOrControl+Shift+Space'
 
 function StartupSection({ settings, update }: SectionProps) {
@@ -259,19 +266,28 @@ function RecordingSection({ settings, update }: SectionProps) {
 }
 
 function SummarySection({ settings, update }: SectionProps) {
-  const [hasKey, setHasKey] = useState(false)
+  const [keySource, setKeySource] = useState<ClaudeKeySource | null>(null)
   const [key, setKey] = useState('')
+  const [model, setModel] = useState(settings.claudeModel ?? '')
   const [error, setError] = useState<string | null>(null)
 
+  const refreshKeySource = (): Promise<void> => window.api.claudeKeySource().then(setKeySource)
+
   useEffect(() => {
-    void window.api.hasClaudeKey().then(setHasKey)
+    void refreshKeySource()
   }, [])
+
+  // Undo, or another window, can change the saved model under the field.
+  useEffect(() => {
+    setModel(settings.claudeModel ?? '')
+  }, [settings.claudeModel])
 
   const saveKey = async (value: string | null): Promise<void> => {
     setError(null)
     try {
       await window.api.setClaudeKey(value)
-      setHasKey(value !== null)
+      // Removing a saved key can fall back to ANTHROPIC_API_KEY, so ask rather than assume.
+      await refreshKeySource()
       setKey('')
       claudeKeyChanged()
     } catch (caught) {
@@ -279,7 +295,17 @@ function SummarySection({ settings, update }: SectionProps) {
     }
   }
 
+  const hasKey = keySource !== null
   const missingKey = settings.notesEngine === 'claude' && !hasKey
+  const saveModel = (): void => {
+    const trimmed = model.trim()
+    const next = trimmed ? trimmed : null
+    if (next === settings.claudeModel) return
+    // An id the settings check rejects is not saved; show what was kept.
+    void update({ claudeModel: next }).then((saved) => {
+      setModel(saved.claudeModel ?? '')
+    })
+  }
 
   return (
     <Section title="Summaries">
@@ -309,9 +335,9 @@ function SummarySection({ settings, update }: SectionProps) {
           <div className={missingKey ? 'settings-group has-issue' : 'settings-group'}>
             <Row
               label="Claude API key"
-              hint={hasKey ? 'Saved in your system keychain.' : 'From console.anthropic.com.'}
+              hint={KEY_HINTS[keySource ?? 'none']}
             >
-              {hasKey ? (
+              {keySource === 'keychain' ? (
                 <button className="btn" type="button" onClick={() => void saveKey(null)}>
                   Remove key
                 </button>
@@ -349,6 +375,26 @@ function SummarySection({ settings, update }: SectionProps) {
               </p>
             ) : null}
           </div>
+          <Row
+            label="Claude model"
+            hint="Leave empty for Lyra’s default (or ANTHROPIC_MODEL when it’s set)."
+          >
+            <input
+              className="settings-input"
+              value={model}
+              placeholder="claude-opus-5-5"
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(event) => {
+                setModel(event.target.value)
+              }}
+              onBlur={saveModel}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') saveModel()
+              }}
+              aria-label="Claude model"
+            />
+          </Row>
           {error ? <p className="settings-notice is-error">{error}</p> : null}
         </>
       ) : null}

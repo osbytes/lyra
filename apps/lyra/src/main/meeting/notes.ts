@@ -3,7 +3,7 @@ import type { MeetingStatus } from '../../shared/types'
 import { log } from '../log'
 import { editDoc, type SessionSnapshot } from '../../shared/sessionDoc'
 import { editSession, readSession } from '../sessionStore'
-import { getClaudeKey, hasClaudeKey, setClaudeKey } from '../secrets'
+import { claudeKeySource, getClaudeKey, setClaudeKey } from '../secrets'
 import { getSettings } from '../settings'
 import { claudeNotes } from './notesClaude'
 import { renderNotes } from './notesFormat'
@@ -77,7 +77,7 @@ export function registerMeetingNotes(): void {
     if (typeof pageId !== 'string') throw new Error('Invalid page id')
     return generateNotes(pageId)
   })
-  ipcMain.handle('secrets:hasClaudeKey', () => hasClaudeKey())
+  ipcMain.handle('secrets:claudeKeySource', () => claudeKeySource())
   ipcMain.handle('secrets:setClaudeKey', (_event, key: unknown) => {
     if (key !== null && typeof key !== 'string') throw new Error('Invalid key')
     return setClaudeKey(key)

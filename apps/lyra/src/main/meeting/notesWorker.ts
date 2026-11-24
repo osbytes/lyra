@@ -6,7 +6,13 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type * as NodeLlamaCpp from 'node-llama-cpp'
 import type { Llama, LlamaModel } from 'node-llama-cpp'
-import { NOTES_SCHEMA, NOTES_SYSTEM_PROMPT, TITLE_SCHEMA, TITLE_SYSTEM_PROMPT } from './notesFormat'
+import {
+  NOTES_SCHEMA,
+  NOTES_SYSTEM_PROMPT,
+  PACKAGED_FLAG,
+  TITLE_SCHEMA,
+  TITLE_SYSTEM_PROMPT
+} from './notesFormat'
 
 export type NotesWorkerRequest = {
   id: number
@@ -34,7 +40,7 @@ let llamaModule: Promise<LlamaModule> | null = null
 function loadLlamaModule(): Promise<LlamaModule> {
   if (!llamaModule) {
     const packaged = join(process.resourcesPath, 'llama', 'node_modules', 'node-llama-cpp', 'dist', 'index.js')
-    llamaModule = process.env.LYRA_PACKAGED === '1'
+    llamaModule = process.argv.includes(PACKAGED_FLAG)
       ? (import(pathToFileURL(packaged).href) as Promise<LlamaModule>)
       : import('node-llama-cpp')
   }

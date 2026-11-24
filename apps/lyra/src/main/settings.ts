@@ -4,11 +4,12 @@ import { mkdir, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 import type { Settings } from '../shared/types'
+import { config } from './config'
 import { log } from './log'
 
 export function defaultSettings(): Settings {
   return {
-    notesDir: join(homedir(), '.lyra'),
+    notesDir: config().notesDir ?? join(homedir(), '.lyra'),
     fileFormat: 'txt',
     micDeviceId: null,
     hotkey: 'CommandOrControl+Shift+Space',
@@ -18,6 +19,7 @@ export function defaultSettings(): Settings {
     audioRetentionDays: 30,
     captureSystemAudio: true,
     notesEngine: 'off',
+    claudeModel: null,
     meetingNoticeSeen: false,
     detailsPanel: false
   }
@@ -42,6 +44,11 @@ const oneOf =
 
 const MAX_RETENTION_DAYS = 3650
 
+/** A model id as the Claude API and its gateways spell them (`claude-opus-5-5`, `us.anthropic.…`). */
+export function isModelId(value: unknown): value is string {
+  return isString(value) && value.length <= 120 && /^[A-Za-z0-9][\w.:@/-]*$/.test(value)
+}
+
 type FlatKey = Exclude<keyof Settings, 'micPrompt'>
 
 /** How to recognize a well-formed value for each top-level setting. */
@@ -55,6 +62,7 @@ const FIELD_CHECKS: { [K in FlatKey]: (value: unknown) => value is Settings[K] }
     value === null || (Number.isInteger(value) && (value as number) >= 0 && (value as number) <= MAX_RETENTION_DAYS),
   captureSystemAudio: isBool,
   notesEngine: oneOf('off', 'local', 'claude'),
+  claudeModel: (value): value is string | null => value === null || isModelId(value),
   meetingNoticeSeen: isBool,
   detailsPanel: isBool
 }

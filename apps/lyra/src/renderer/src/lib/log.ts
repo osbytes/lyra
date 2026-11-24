@@ -1,6 +1,6 @@
 /**
  * Renderer-side logging. Lines are forwarded to the main process, which prints
- * them in the terminal and appends them to userData/logs/lyra.log.
+ * them in the terminal and appends them to userData/logs/lyra.log as JSON lines.
  */
 export function log(scope: string, message: string, data?: unknown): void {
   console.debug(`[${scope}] ${message}`, data ?? '')

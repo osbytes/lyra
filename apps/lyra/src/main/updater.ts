@@ -10,13 +10,11 @@ const CHECK_EVERY_MS = 4 * 60 * 60 * 1000
 let current: UpdateStatus = { state: 'idle' }
 let checkTimer: ReturnType<typeof setInterval> | null = null
 let userInitiated = false
+/** Off for task runs (smoke tests, screenshots); set by registerUpdater. */
+let allowed = true
 
 function updaterEnabled(): boolean {
-  if (!app.isPackaged) return false
-  if (process.env.VOICE_PAGES_SMOKE === '1' || process.env.VOICE_PAGES_SCREENSHOT === '1') {
-    return false
-  }
-  return true
+  return allowed && app.isPackaged
 }
 
 function macAppBundle(): string {
@@ -81,7 +79,8 @@ export async function installUpdate(): Promise<void> {
   autoUpdater.quitAndInstall()
 }
 
-export function registerUpdater(): void {
+export function registerUpdater({ enabled }: { enabled: boolean }): void {
+  allowed = enabled
   ipcMain.handle('updater:start', () => startUpdate())
   ipcMain.handle('updater:install', () => installUpdate())
   ipcMain.handle('updater:get', () => current)

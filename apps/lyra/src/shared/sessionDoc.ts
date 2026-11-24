@@ -202,7 +202,7 @@ function isLowSurrogate(code: number): boolean {
 /** Sets title, summary and/or notes in one transaction. */
 export function editDoc(
   doc: Y.Doc,
-  changes: { title?: string; summary?: string; notes?: string },
+  changes: { title?: string | undefined; summary?: string | undefined; notes?: string | undefined },
   origin: unknown
 ): void {
   doc.transact(() => {

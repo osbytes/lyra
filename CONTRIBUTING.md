@@ -20,7 +20,7 @@ The website lives in `apps/website` (Next.js). Run it with `pnpm dev:web` and op
 Run these before opening a pull request:
 
 ```bash
-pnpm check      # typecheck + lint (no `any`; see .agents/rules/typescript.md)
+pnpm check      # typecheck + lint + docs/CONFIG.md is current (see .agents/rules/typescript.md)
 pnpm smoke      # native Whisper addon loads in Electron
 pnpm smoke:ui   # page create/save/list/delete through the UI bridge
 pnpm smoke:meeting <file.wav>   # real speaker pipeline on a 16 kHz mono WAV (downloads models)

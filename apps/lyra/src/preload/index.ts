@@ -96,7 +96,7 @@ const api: VoicePagesApi = {
     ipcRenderer.invoke('meeting:resolveSpeaker', pageId, speakerId, assignment),
   onMeetingStatus: (callback) => subscribe<MeetingStatus>('meeting:status', callback),
   generateNotes: (pageId) => ipcRenderer.invoke('notes:generate', pageId),
-  hasClaudeKey: () => ipcRenderer.invoke('secrets:hasClaudeKey'),
+  claudeKeySource: () => ipcRenderer.invoke('secrets:claudeKeySource'),
   setClaudeKey: (key) => ipcRenderer.invoke('secrets:setClaudeKey', key),
   copyText: (text) => clipboard.writeText(text),
   platform: process.platform,

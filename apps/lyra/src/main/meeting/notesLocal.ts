@@ -1,15 +1,21 @@
 import { app, utilityProcess, type UtilityProcess } from 'electron'
 import { join } from 'node:path'
 import { log } from '../log'
-import { existsSync } from 'node:fs'
-import { ensureDownload, modelsDir, type DownloadProgress } from '../models'
-import { chunkTranscript, parseNotes, parseTitle, type MeetingNotes } from './notesFormat'
+import { ensureModelFile, hasModelFile, type DownloadProgress, type ModelFile } from '../models'
+import {
+  chunkTranscript,
+  PACKAGED_FLAG,
+  parseNotes,
+  parseTitle,
+  type MeetingNotes
+} from './notesFormat'
 import type { NotesWorkerRequest, NotesWorkerResponse } from './notesWorker'
 
-const MODEL = {
+const MODEL: ModelFile = {
   name: 'qwen2.5-3b-instruct-q4_k_m.gguf',
-  url: 'https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf',
-  minBytes: 2_000_000_000
+  url: 'https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/7dabda4d13d513e3e842b20f0d435c732f172cbe/qwen2.5-3b-instruct-q4_k_m.gguf',
+  bytes: 2_104_932_768,
+  sha256: '626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d'
 }
 
 /** ~6k tokens of transcript per pass leaves room for the prompt and the answer in 8k. */
@@ -21,9 +27,9 @@ const pending = new Map<number, { resolve: (value: unknown[]) => void; reject: (
 
 function getWorker(): UtilityProcess {
   if (worker) return worker
-  const child = utilityProcess.fork(join(__dirname, 'notesWorker.js'), [], {
-    serviceName: 'Lyra notes worker',
-    env: { ...process.env, LYRA_PACKAGED: app.isPackaged ? '1' : '0' }
+  // The worker can't ask `app` whether this is a packaged build, so it's told on its command line.
+  const child = utilityProcess.fork(join(__dirname, 'notesWorker.js'), app.isPackaged ? [PACKAGED_FLAG] : [], {
+    serviceName: 'Lyra notes worker'
   })
   child.on('message', (message: NotesWorkerResponse) => {
     const entry = pending.get(message.id)
@@ -56,7 +62,7 @@ function ask(modelPath: string, prompts: string[], task: NotesWorkerRequest['tas
  * meetings are summarized in parts, then the partial notes are merged.
  */
 export async function localNotes(transcript: string, onDownload?: DownloadProgress): Promise<MeetingNotes> {
-  const modelPath = await ensureDownload(MODEL.name, MODEL.url, MODEL.minBytes, onDownload)
+  const modelPath = await ensureModelFile(MODEL, onDownload)
   const chunks = chunkTranscript(transcript, CHUNK_CHARS)
   const partials = (await ask(
     modelPath,
@@ -78,13 +84,13 @@ export async function localNotes(transcript: string, onDownload?: DownloadProgre
 }
 
 /** The local model is on disk already (a title alone never starts its ~2 GB download). */
-export function hasLocalNotesModel(): boolean {
-  return existsSync(join(modelsDir(), MODEL.name))
+export function hasLocalNotesModel(): Promise<boolean> {
+  return hasModelFile(MODEL)
 }
 
 /** A title suggestion from the local model; null if it gave nothing usable. */
 export async function localTitle(text: string): Promise<string | null> {
-  const modelPath = await ensureDownload(MODEL.name, MODEL.url, MODEL.minBytes)
+  const modelPath = await ensureModelFile(MODEL)
   const [result] = await ask(modelPath, [`Note:\n\n${text}`], 'title')
   return parseTitle(result)
 }

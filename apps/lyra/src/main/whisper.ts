@@ -1,16 +1,17 @@
 import { BrowserWindow } from 'electron'
 import { createRequire } from 'node:module'
-import { stat } from 'node:fs/promises'
 import { arch, platform } from 'node:os'
 import { join } from 'node:path'
 import type { TranscriptWord, WhisperStatus } from '../shared/types'
 import { log } from './log'
-import { ensureDownload, modelsDir } from './models'
+import { ensureModelFile, hasModelFile, modelsDir, type ModelFile } from './models'
 
-const MODEL_NAME = 'ggml-base.en.bin'
-const MIN_MODEL_BYTES = 10_000_000
-const MODEL_URL =
-  'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin'
+const MODEL: ModelFile = {
+  name: 'ggml-base.en.bin',
+  url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.en.bin',
+  bytes: 147_964_211,
+  sha256: 'a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002'
+}
 
 type NativeWhisper = (
   options: Record<string, unknown>,
@@ -25,7 +26,7 @@ const require = createRequire(import.meta.url)
 let transcribeFn: TranscribeFn | null = null
 
 export function modelPath(): string {
-  return join(modelsDir(), MODEL_NAME)
+  return join(modelsDir(), MODEL.name)
 }
 
 export function broadcastStatus(status: WhisperStatus): void {
@@ -61,24 +62,24 @@ function loadTranscribe(): TranscribeFn {
   return run
 }
 
-export async function modelExists(): Promise<boolean> {
-  try {
-    const info = await stat(modelPath())
-    return info.size >= MIN_MODEL_BYTES
-  } catch {
-    return false
-  }
-}
+// Every dictation calls ensureModel(), so remember a verified model instead of re-checking it.
+let modelReady = false
 
 export async function ensureModel(): Promise<void> {
-  if (await modelExists()) return
-  try {
-    await ensureDownload(MODEL_NAME, MODEL_URL, MIN_MODEL_BYTES, (received, total) => {
-      broadcastStatus({ state: 'downloading', received, total })
-    })
-  } finally {
-    broadcastStatus({ state: 'idle' })
+  if (modelReady) return
+  if (await hasModelFile(MODEL)) {
+    // Present already: at most a one-time hash of a copy downloaded before pinning, no progress UI.
+    await ensureModelFile(MODEL)
+  } else {
+    try {
+      await ensureModelFile(MODEL, (received, total) => {
+        broadcastStatus({ state: 'downloading', received, total })
+      })
+    } finally {
+      broadcastStatus({ state: 'idle' })
+    }
   }
+  modelReady = true
 }
 
 export function pcmFromIpc(payload: unknown): Float32Array {

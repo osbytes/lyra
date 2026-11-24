@@ -1,5 +1,8 @@
 /** Meeting notes: the schema both engines fill, and how notes sit in the note file. */
 
+/** On the notes worker's command line when the app is packaged (it can't ask `app` itself). */
+export const PACKAGED_FLAG = '--packaged'
+
 export type ActionItem = { owner: string; task: string }
 
 export type MeetingNotes = {

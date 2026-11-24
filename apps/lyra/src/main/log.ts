@@ -1,53 +1,79 @@
 import { app } from 'electron'
-import { appendFileSync, mkdirSync, renameSync, statSync } from 'node:fs'
+import { createWriteStream, mkdirSync, renameSync, statSync, type WriteStream } from 'node:fs'
 import { join } from 'node:path'
 
 /**
- * A tiny line logger for diagnosing dictation. Lines go to the terminal and to
- * `<userData>/logs/lyra.log`, which is rotated once it passes a few megabytes.
+ * The app log. Each entry is one JSON object per line in `<userData>/logs/lyra.log` (rotated to
+ * `lyra.old.log` past a few megabytes), so an issue report can be filtered and parsed, and a
+ * readable line in the terminal for development.
+ *
+ * Entries carry ids, counts and timings, never note text, transcripts or keys. The UI smoke test
+ * checks the file for the content it wrote.
  */
 
 const MAX_BYTES = 5 * 1024 * 1024
 
-let file: string | null = null
+type Sink = { path: string; stream: WriteStream }
 
-function logFile(): string | null {
-  if (file) return file
+let sink: Sink | null | undefined
+
+function openSink(): Sink | null {
+  if (sink !== undefined) return sink
   try {
     const dir = join(app.getPath('userData'), 'logs')
     mkdirSync(dir, { recursive: true })
-    file = join(dir, 'lyra.log')
-    if ((statSync(file, { throwIfNoEntry: false })?.size ?? 0) > MAX_BYTES) {
-      renameSync(file, join(dir, 'lyra.old.log'))
+    const path = join(dir, 'lyra.log')
+    if ((statSync(path, { throwIfNoEntry: false })?.size ?? 0) > MAX_BYTES) {
+      renameSync(path, join(dir, 'lyra.old.log'))
     }
+    // Appends without blocking the main process on every line, unlike appendFileSync.
+    const stream = createWriteStream(path, { flags: 'a' })
+    stream.on('error', () => {
+      // Logging must never break dictation; stop writing the file and keep the terminal line.
+      sink = null
+    })
+    sink = { path, stream }
   } catch {
-    file = null
+    sink = null
   }
-  return file
+  return sink
 }
 
 export function logPath(): string | null {
-  return logFile()
+  return openSink()?.path ?? null
 }
 
-function format(data: unknown): string {
-  if (data === undefined) return ''
-  if (data instanceof Error) return ` ${data.stack ?? data.message}`
+/** Resolves once every line logged so far has reached the file. */
+export function flushLog(): Promise<void> {
+  const open = openSink()
+  if (!open) return Promise.resolve()
+  return new Promise((resolve) => {
+    open.stream.write('', () => {
+      resolve()
+    })
+  })
+}
+
+function serializable(data: unknown): unknown {
+  if (data instanceof Error) return { error: data.message, stack: data.stack }
+  return data
+}
+
+/** JSON text for `value`, or a placeholder when it can't be serialized (a cycle, a BigInt). */
+function json(value: unknown): string {
   try {
-    return ` ${JSON.stringify(data)}`
+    // Inside an array, values JSON can't hold (undefined, functions) come out as null rather than
+    // vanishing, so the line stays valid JSON.
+    return JSON.stringify([value]).slice(1, -1)
   } catch {
-    return ' [unserializable]'
+    return '"[unserializable]"'
   }
 }
 
 export function log(scope: string, message: string, data?: unknown): void {
-  const line = `${new Date().toISOString()} [${scope}] ${message}${format(data)}`
-  console.log(line)
-  const path = logFile()
-  if (!path) return
-  try {
-    appendFileSync(path, `${line}\n`)
-  } catch {
-    // Logging must never break dictation.
-  }
+  const time = new Date().toISOString()
+  const head = `{"time":${json(time)},"scope":${json(scope)},"message":${json(message)}`
+  const detail = data === undefined ? '' : json(serializable(data))
+  console.log(`${time} [${scope}] ${message}${detail ? ` ${detail}` : ''}`)
+  openSink()?.stream.write(`${head}${detail ? `,"data":${detail}` : ''}}\n`)
 }

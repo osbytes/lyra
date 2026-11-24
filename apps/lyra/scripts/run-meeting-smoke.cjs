@@ -1,8 +1,11 @@
 // Runs the real meeting pipeline on a 16 kHz mono 16-bit WAV in a throwaway profile:
-//   pnpm smoke:meeting path/to/meeting.wav [path/to/system.wav]
-// The optional second file is the system-audio track (the other side of a call).
+//   pnpm smoke:meeting path/to/meeting.wav [path/to/system.wav] [options]
+// The optional second file is the system-audio track (the other side of a call). Options:
+//   --offline             diarize then transcribe, instead of replaying as a live recording
+//   --no-relabel          keep the live pass's speakers (no relabel after stop)
+//   --notes local|claude  also write meeting notes (local downloads a ~2 GB model)
+//   --output <file.json>  write the labeled segments for the eval scorers
 // Downloads the speech and speaker models on first use (~180 MB); set LYRA_MODELS_DIR to keep them.
-// LYRA_NOTES_ENGINE=local|claude also writes meeting notes (local downloads a ~2 GB model).
 const { spawnSync } = require('node:child_process')
 const { mkdtempSync, rmSync } = require('node:fs')
 const { tmpdir } = require('node:os')
@@ -18,19 +21,21 @@ function removeQuietly(path) {
   }
 }
 
-const wav = process.argv[2]
-if (!wav) {
-  console.error('usage: pnpm smoke:meeting <file.wav>')
+const args = process.argv.slice(2)
+if (!args[0] || args[0].startsWith('--')) {
+  console.error('usage: pnpm smoke:meeting <file.wav> [system.wav] [options]')
   process.exit(1)
 }
+// The app runs from apps/lyra, so paths given relative to here are made absolute first.
+const forApp = args.map((arg, i) =>
+  !arg.startsWith('--') && (i < 2 || args[i - 1] === '--output') && args[i - 1] !== '--notes' ? resolve(arg) : arg
+)
 
 const home = mkdtempSync(join(tmpdir(), 'lyra-meeting-'))
-const result = spawnSync(electron, ['.', `--user-data-dir=${join(home, 'data')}`], {
+const result = spawnSync(electron, ['.', `--user-data-dir=${join(home, 'data')}`, 'meeting', ...forApp], {
   cwd: join(__dirname, '..'),
   env: {
     ...process.env,
-    LYRA_MEETING_FIXTURE: resolve(wav),
-    ...(process.argv[3] ? { LYRA_MEETING_SYSTEM_FIXTURE: resolve(process.argv[3]) } : {}),
     USERPROFILE: home,
     HOME: home
   },
@@ -38,5 +43,5 @@ const result = spawnSync(electron, ['.', `--user-data-dir=${join(home, 'data')}`
 })
 // Test runs keep their profile in a per-process temp folder; don't leave it (or models) behind.
 removeQuietly(home)
-if (result.pid) removeQuietly(join(tmpdir(), 'voice-pages-smoke-' + result.pid))
+if (result.pid) removeQuietly(join(tmpdir(), 'lyra-task-' + result.pid))
 process.exit(result.status ?? 1)

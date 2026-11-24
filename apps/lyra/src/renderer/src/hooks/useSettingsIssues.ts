@@ -41,7 +41,9 @@ export function useSettingsIssues(settings: Settings | null): SettingsIssue[] {
 
   useEffect(() => {
     const check = (): void => {
-      void window.api.hasClaudeKey().then(setHasKey)
+      void window.api.claudeKeySource().then((source) => {
+        setHasKey(source !== null)
+      })
     }
     check()
     keyListeners.add(check)

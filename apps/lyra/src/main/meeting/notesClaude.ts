@@ -1,4 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
+import { config } from '../config'
+import { getSettings } from '../settings'
 import {
   NOTES_SCHEMA,
   NOTES_SYSTEM_PROMPT,
@@ -9,15 +11,25 @@ import {
   type MeetingNotes
 } from './notesFormat'
 
-const MODEL = 'claude-opus-5-5'
+/** The model Lyra is tested with; Settings or ANTHROPIC_MODEL can choose another. */
+export const DEFAULT_CLAUDE_MODEL = 'claude-opus-5-5'
+
+function claudeModel(): string {
+  return getSettings().claudeModel ?? config().anthropicModel ?? DEFAULT_CLAUDE_MODEL
+}
+
+/** ANTHROPIC_BASE_URL, when set, points the client at a proxy or gateway. */
+function client(apiKey: string): Anthropic {
+  const { anthropicBaseUrl } = config()
+  return new Anthropic(anthropicBaseUrl ? { apiKey, baseURL: anthropicBaseUrl } : { apiKey })
+}
 
 /** Meeting notes from Claude. Only called when the user chose Claude and saved a key. */
 export async function claudeNotes(apiKey: string, transcript: string): Promise<MeetingNotes> {
-  const client = new Anthropic({ apiKey })
   try {
-    const message = await client.beta.messages
+    const message = await client(apiKey).beta.messages
       .stream({
-        model: MODEL,
+        model: claudeModel(),
         max_tokens: 16000,
         betas: ['server-side-fallback-2026-07-01'],
         // On a policy decline the API retries on a suitable fallback model in the same call.
@@ -41,11 +53,10 @@ export async function claudeNotes(apiKey: string, transcript: string): Promise<M
 
 /** A title suggestion from Claude; null if it gave nothing usable. */
 export async function claudeTitle(apiKey: string, text: string): Promise<string | null> {
-  const client = new Anthropic({ apiKey })
   try {
-    const message = await client.beta.messages
+    const message = await client(apiKey).beta.messages
       .stream({
-        model: MODEL,
+        model: claudeModel(),
         max_tokens: 4000,
         betas: ['server-side-fallback-2026-07-01'],
         fallbacks: 'default',

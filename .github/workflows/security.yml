@@ -1,0 +1,63 @@
+# Security checks that complement CodeQL (default setup) and Scorecard (scorecard.yml), from the
+# osbytes playbook:
+#   dependencies  a PR may not add a dependency with a known moderate+ vulnerability
+#   workflows     zizmor lints .github/workflows (template injection, credential persistence,
+#                 dangerous triggers, …); exceptions live in .github/zizmor.yml with a reason each
+#   secrets       gitleaks over the whole history (GitHub push protection only knows provider tokens)
+# None of the jobs write anything, so they work the same on fork PRs.
+name: security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "43 5 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dependencies:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
+          # fork PRs get a read-only token; the verdict is in the job log and summary
+          comment-summary-in-pr: never
+
+  workflows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
+        with:
+          version: 1.31.1
+          # findings fail the job and show as annotations; no SARIF upload, so no write scope
+          advanced-security: false
+          annotations: true
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # every commit, not just the tip: a secret removed in a later commit is still leaked
+          persist-credentials: false
+      # the gitleaks binary, pinned by release and sha256 (gitleaks-action needs a paid licence for
+      # organisations). To bump: take the linux_x64 line of the release's gitleaks_<v>_checksums.txt.
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          curl -fsSL -o gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/v$GITLEAKS_VERSION/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "$GITLEAKS_SHA256  gitleaks.tar.gz" | sha256sum -c -
+          tar xzf gitleaks.tar.gz -C "$RUNNER_TEMP" gitleaks
+          rm gitleaks.tar.gz
+      - run: '"$RUNNER_TEMP/gitleaks" git --redact --no-banner .'

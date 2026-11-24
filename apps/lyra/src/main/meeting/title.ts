@@ -42,7 +42,7 @@ export async function suggestTitle(pageId: string): Promise<void> {
       if (!key) return
       title = await claudeTitle(key, text)
     } else {
-      if (!hasLocalNotesModel()) return
+      if (!(await hasLocalNotesModel())) return
       title = await localTitle(text)
     }
     if (!title) return

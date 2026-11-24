@@ -31,7 +31,7 @@ function buildMenu(state: SessionState): Menu {
         }
       : {
           label: 'Start session',
-          accelerator: getSettings().hotkey || undefined,
+          ...(getSettings().hotkey ? { accelerator: getSettings().hotkey } : {}),
           registerAccelerator: false,
           click: () => {
             toggleSession()

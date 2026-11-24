@@ -25,11 +25,16 @@ export type Settings = {
   audioRetentionDays: number | null
   captureSystemAudio: boolean
   notesEngine: 'off' | 'local' | 'claude'
+  /** Claude model id for summaries and titles; `null` uses ANTHROPIC_MODEL, else Lyra's default. */
+  claudeModel: string | null
   /** Show a session's details (dates, tags, speakers) in a side panel instead of inline. */
   detailsPanel: boolean
   /** The one-time "get consent before recording others" notice was acknowledged. */
   meetingNoticeSeen: boolean
 }
+
+/** Where the Claude API key comes from: saved in Settings, or ANTHROPIC_API_KEY. */
+export type ClaudeKeySource = 'keychain' | 'environment'
 
 export type MoveNotesResult = { moved: number; skipped: number }
 
@@ -246,7 +251,8 @@ export type VoicePagesApi = {
   onMeetingStatus: (callback: (status: MeetingStatus) => void) => () => void
   /** (Re)writes the notes section at the top of a meeting note with the chosen engine. */
   generateNotes: (pageId: string) => Promise<void>
-  hasClaudeKey: () => Promise<boolean>
+  /** Where the Claude API key comes from, or null when there is none. */
+  claudeKeySource: () => Promise<ClaudeKeySource | null>
   /** Stores the key encrypted with the OS keychain; null removes it. */
   setClaudeKey: (key: string | null) => Promise<void>
   copyText: (text: string) => void

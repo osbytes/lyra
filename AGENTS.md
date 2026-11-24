@@ -12,11 +12,12 @@ Roadmap: [docs/PLAN.md](docs/PLAN.md). Human contributor guide: [CONTRIBUTING.md
 | Run the app | `pnpm dev` |
 | Typecheck | `pnpm typecheck` |
 | Lint | `pnpm lint` (auto-fix: `pnpm lint:fix`) |
-| Typecheck + lint | `pnpm check` — must pass before every commit |
+| Typecheck + lint | `pnpm check` (also fails if `docs/CONFIG.md` is stale) — must pass before every commit |
+| Config docs | `pnpm config:docs` (in `apps/lyra`) regenerates [docs/CONFIG.md](docs/CONFIG.md) from `src/main/envSpec.ts` and the task usage in `src/main/tasks/args.ts` |
 | UI smoke test | `pnpm smoke:ui` (builds, launches Electron headless, exercises the IPC bridge) |
 | Native addon smoke | `pnpm smoke` (only needed when touching `src/main/whisper.ts` or native deps) |
 | QA with real audio | `powershell -File scripts/make-demo-audio.ps1` makes `test-audio/meeting.wav` (two synthetic voices); see the `qa-test` skill |
-| Meeting pipeline smoke | `pnpm smoke:meeting <file.wav> [system.wav]`: replays the audio as a live recording (streaming Whisper, live speakers, relabel after stop); `LYRA_MEETING_PIPELINE=offline` runs diarize-then-transcribe instead; `LYRA_NOTES_ENGINE=local` adds notes; `LYRA_MODELS_DIR` reuses downloads |
+| Meeting pipeline smoke | `pnpm smoke:meeting <file.wav> [system.wav]`: replays the audio as a live recording (streaming Whisper, live speakers, relabel after stop); `--offline` runs diarize-then-transcribe instead; `--notes local` adds notes; `--no-relabel` keeps the live speakers; `LYRA_MODELS_DIR` reuses downloads |
 | Speaker evals | `pnpm eval:calls` (in `apps/lyra`): synthetic call/room scenarios with exact ground truth (speaker bleed, clipping, quick turns, crosstalk, similar voices); `pnpm eval:ami` scores real AMI meetings (`--meetings`, `--minutes`, `--mic`). WER, cpWER, DER; data and results go to `eval-data/`. `--pipeline live` (default: what the app runs), `stream` (live identification alone) or `offline` |
 | Debug a mislabeled session | `pnpm replay:session <session id or folder>` (in `apps/lyra`): re-runs its kept audio through each pipeline and prints who spoke each line; `--reference ref.json` scores it. A session's `raw/live.json` `trace` has every live speaker decision |
 | Package (Windows dir build) | `pnpm build:unpack`; runs `prepare:llama`, which ships node-llama-cpp as its own npm install |
@@ -44,7 +45,11 @@ the server only).
   `.lyra.json` metadata file. Audio and raw model passes live in `.sessions/<id>/`.
   `components/Transcript.tsx` edits the transcript and speakers through the same document.
   Design: [docs/SESSION-MODEL.md](docs/SESSION-MODEL.md) (repo root).
-- `scripts/` — build, release and smoke-test scripts (CommonJS).
+- `src/main/config.ts` + `src/main/envSpec.ts` — the environment, parsed once at startup. Standard
+  names (`ANTHROPIC_*`, `HF_ENDPOINT`) where one exists, `LYRA_` only for Lyra's own.
+- `src/main/tasks/` — one-off tasks the app binary runs from its command line (`smoke`,
+  `screenshot`, `meeting`); the `pnpm` scripts launch them.
+- `scripts/` — build, release and smoke-test launchers (CommonJS).
 - `.agents/` — roles, skills and rules for coding agents (see below).
 
 ## Rules
@@ -58,7 +63,10 @@ the server only).
 - **Local-first:** no telemetry. Network calls only for model downloads, updates, and features the
   user explicitly opts into (e.g. cloud meeting notes). Never send note content anywhere by default.
 - **Logging:** use `log(scope, message, data)` (`src/main/log.ts`, `src/renderer/src/lib/log.ts`),
-  not `console.*`.
+  not `console.*`. Log ids, counts and timings, never note text, transcripts or keys (the UI
+  smoke test checks the log file).
+- **Config:** read the environment through `config()`, never `process.env` (lint enforces it).
+  A new variable goes in `envSpec.ts`; prefer an existing standard name over a `LYRA_` one.
 - **Style:** match surrounding code. Prettier-style formatting: 2 spaces, single quotes, no
   semicolons, ~100-column lines. Comments explain *why*, not *what*.
 - **Scope:** one change per commit/PR. Don't reformat or refactor unrelated files.

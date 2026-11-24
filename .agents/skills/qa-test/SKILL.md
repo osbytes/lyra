@@ -48,7 +48,7 @@ run from before the change (`eval-data/results/<run>/results.json`):
 
 1. Pick the narrowest run that exercises the change:
    - Meeting pipeline (diarization, Whisper, relabeling):
-     `pnpm smoke:meeting test-audio\meeting.wav`. Add `LYRA_NOTES_ENGINE=local` to include notes and
+     `pnpm smoke:meeting test-audio\meeting.wav`. Add `--notes local` to include notes and set
      `LYRA_MODELS_DIR=<dir>` to reuse downloaded models (the first run downloads them; say so before
      starting if the models aren't present).
    - Diarization only: `node scripts/diarize-spike.cjs --models <dir> --lines test-audio`
