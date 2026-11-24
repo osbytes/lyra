@@ -1,7 +1,6 @@
 # CI: typecheck, lint and bundle the app, check and build the website, and refuse a PR without a
-# changeset (.changeset/README.md). Runs on PRs only. Installers are packaged only by release.yml:
-# it publishes them from a version tag, and builds them without publishing on a PR that touches
-# packaging (every Release PR does) or on a manual run.
+# changeset (.changeset/README.md). Runs on PRs only. Installers are packaged only by release.yml,
+# from a version tag; a manual run of release.yml builds them without publishing.
 name: ci
 
 on:

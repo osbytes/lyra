@@ -15,9 +15,7 @@ Lyra is one desktop app shipped as installers for macOS, Windows and Linux, vers
    that changed meaning, a model to re-download, a behaviour that changed), add an `**Upgrade:**`
    line to the changeset. It ends up in the changelog and the GitHub release.
 4. CI (`ci.yml`) typechecks, lints and bundles the app, and refuses a PR without a changeset. It
-   doesn't package installers; only `release.yml` does. `release.yml` also runs on a PR that
-   touches packaging (`electron-builder.yml`, `apps/lyra/package.json`, the lockfile, the
-   workflow itself) and builds every installer there without publishing.
+   doesn't package installers; only `release.yml` does.
 
 ## Versions (before 1.0)
 
@@ -35,9 +33,11 @@ in a way older versions cannot read says so in its `**Upgrade:**` line.
 1. Merging to `main` runs `version.yml`, which keeps a **"Release vX.Y.Z"** pull request open. It bumps
    the version, writes `CHANGELOG.md` from the pending changesets and deletes them. Review it like
    any PR: is the changelog readable, are upgrade notes present.
-2. The release PR bumps `apps/lyra/package.json`, so `release.yml` builds the release candidate
-   on it: the `macOS`, `Windows` and `Linux` checks. Don't merge until all three pass; a release
-   that can't build fails here, before its tag exists. Download the installers from that run (the
+2. Before merging the release PR, build the release candidate: run `release.yml` by hand on the
+   release PR's branch (`gh workflow run release --ref changeset-release/main`). A manual run
+   builds and attests the installers but doesn't publish. Don't skip it: it is the only build
+   before the tag, and a release that fails on its tag never reaches users (see "A release that
+   failed"). Download the installers from that run (the
    `*-dist` artifacts), install at least one over the current release, and check that pages open,
    dictation records and transcribes, and Settings shows the new version.
 3. Merge. `version.yml` runs `pnpm release:tag`, which pushes `vX.Y.Z`. `release.yml` builds the

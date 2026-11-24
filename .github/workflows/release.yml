@@ -1,29 +1,14 @@
-# Release: build the installers on macOS, Windows and Linux. On a version tag (v1.2.3), also attest
-# them and publish the GitHub release. The body is this version's CHANGELOG.md section. The
+# Release: on a version tag (v1.2.3), build the installers on macOS, Windows and Linux, attest
+# them, and publish the GitHub release. The body is this version's CHANGELOG.md section. The
 # latest*.yml files and blockmaps are what electron-updater reads from releases/latest.
 #
-# A pull request that touches packaging or the version builds every installer without publishing.
-# Every Release PR bumps apps/lyra/package.json, so a release that can't build fails there, before
-# its tag exists. A manual run builds the chosen branch, or, given a tag whose release failed,
-# builds that tag's source with this workflow and publishes it (docs/RELEASING.md).
+# A manual run builds and attests the chosen branch without publishing, or, given a tag whose
+# release failed, builds that tag's source with this workflow and publishes it (docs/RELEASING.md).
 name: release
 
 on:
   push:
     tags: ["v*"]
-  pull_request:
-    paths:
-      - .github/workflows/release.yml
-      - package.json
-      - pnpm-lock.yaml
-      - pnpm-workspace.yaml
-      - apps/lyra/package.json
-      - apps/lyra/electron-builder.yml
-      - apps/lyra/build/**
-      - apps/lyra/native/**
-      - apps/lyra/scripts/build-mac-helpers.cjs
-      - apps/lyra/scripts/fix-whisper-rpath.cjs
-      - apps/lyra/scripts/prepare-llama.cjs
   workflow_dispatch:
     inputs:
       tag:
@@ -31,10 +16,9 @@ on:
         type: string
         default: ""
 
-# a PR's newer push cancels its older build; runs for a tag never cancel each other
+# a tag push and a manual run for the same tag never publish at once
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || (inputs.tag && format('refs/tags/{0}', inputs.tag)) || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ (inputs.tag && format('refs/tags/{0}', inputs.tag)) || github.ref }}
 
 # read-only by default; the publish job takes exactly the write scopes it needs
 permissions:
@@ -68,11 +52,8 @@ jobs:
           INPUT_TAG: ${{ inputs.tag }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          case "$GITHUB_EVENT_NAME" in
-            push) tag=$GITHUB_REF_NAME ;;
-            workflow_dispatch) tag=$INPUT_TAG ;;
-            *) tag= ;;
-          esac
+          # a manual run without a tag only builds
+          if [ "$GITHUB_EVENT_NAME" = push ]; then tag=$GITHUB_REF_NAME; else tag=$INPUT_TAG; fi
           # tag names may only be versions: nothing else ever reaches a shell
           if [ -n "$tag" ]; then
             case "$tag" in *[!A-Za-z0-9.+-]*) echo "not a version tag: $tag"; exit 1 ;; esac
@@ -158,9 +139,7 @@ jobs:
             ${{ needs.version.outputs.app }}/dist/latest*.yml
             ${{ needs.version.outputs.app }}/dist/*.blockmap
 
-  # only version tags publish: a tag push, or a manual run given a tag
   publish:
-    if: needs.version.outputs.tag != ''
     needs: [version, build]
     runs-on: ubuntu-latest
     permissions:
@@ -195,7 +174,10 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: node scripts/release-notes.mjs "$VERSION" > release-notes.md && cat release-notes.md
 
+      # only version tags publish (a tag push, or a manual run given a tag); a manual run without
+      # one stops after building and attesting
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        if: needs.version.outputs.tag != ''
         with:
           tag_name: ${{ needs.version.outputs.tag }}
           body_path: release-notes.md
