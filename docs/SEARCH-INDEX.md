@@ -1,6 +1,6 @@
 # Search index (libSQL) and semantic search
 
-Status: Phases 1 and 2 implemented (2026-11-24); Phase 3 follows in a stacked PR.
+Status: Phases 1–3 implemented (2026-11-24), as three stacked PRs.
 
 A local libSQL database that mirrors everything Lyra persists about sessions and people, so the app
 can search by text, meaning, speaker, person, tag and date in one query. It's the base for
@@ -78,7 +78,7 @@ The statements are in [`src/main/searchIndex/schema.ts`](../apps/lyra/src/main/s
 | `action_items` | `- [ ] Owner: task` line of the generated notes | |
 | `people`, `voiceprints` | person, voiceprint sample | voiceprints are float32 BLOBs (their length depends on the speaker model) |
 | `passages` + `passages_fts` + `passages_tri` | title, tag, paragraph, transcript line | FTS5 external-content tables (stems; trigrams), kept current by triggers |
-| `chunks`, `embeddings` | (Phase 3) | |
+| `chunks`, `embeddings` | chunk of text to embed, vector per (text hash, model) | `embedding` is `F32_BLOB(768)`; no vector index |
 
 Rules:
 - Every child row has `n`, its position in the document, so a session reads back in order.
@@ -117,27 +117,46 @@ export debounce keep that from reindexing on every word.
 
 ## Chunking
 
-- **Passages** (keyword search, highlights, jump-to-line) copy `search.ts`: title, each tag, each
-  paragraph of summary and notes, each transcript segment.
-- **Chunks** (embeddings): summary and notes paragraphs merged up to ~250 tokens; the transcript as
-  windows of consecutive segments up to ~45 s or ~250 tokens with one segment of overlap, keeping
-  `start`, the first segment id and the speakers. Lines like "yeah" or "ok" alone embed as noise.
-  The session title is prepended to each chunk's text before embedding (not stored in `text`).
+- **Passages** (keyword search, highlights, jump-to-line): the title, each tag, each paragraph of
+  summary and notes, each transcript segment.
+- **Chunks** (embeddings, `chunksOf` in `searchIndex/record.ts`):
+  - Summary and notes paragraphs are merged up to 1,000 characters (about 250 tokens).
+  - The transcript is cut into windows of consecutive lines, written `Name: text`, of up to
+    1,000 characters or 45 s. Each window repeats the previous window's last line, so a thought
+    that spans the cut is whole in one of them. Each window keeps its first line's id and start
+    time, so a hit jumps there.
+  - What gets embedded (`input`) is the session title, then the chunk's text. Its sha256 keys
+    the vector, so unchanged text is never embedded twice, even when a session is reindexed.
 
 ## Embeddings
 
-- `node-llama-cpp` (already shipped for local notes) in `indexWorker`, loaded the way
-  `notesWorker.ts` loads it (the `--packaged` resources path).
-- Model: `nomic-embed-text-v1.5` GGUF, Q8_0, pinned as a `ModelFile` and downloaded with
-  `ensureModelFile`. Use its Matryoshka property: keep the first 256 dimensions, renormalise.
-  Prefixes `search_document: ` and `search_query: `.
-- On by default only once the model is downloaded; until then search is keyword only. A setting
-  "Semantic search" (the `add-setting` skill) triggers the download; status reported like
-  `WhisperStatus`.
-- The queue embeds in batches at low priority and pauses while a recording or meeting pipeline
-  runs, so it never competes with Whisper.
-- Changing the model changes `embed_model`; old embeddings are ignored and replaced in the
-  background.
+- `node-llama-cpp` (already shipped for local notes) runs in the index worker, loaded through
+  `src/main/llamaModule.ts`. The notes worker uses the same loader, which also removed a cast
+  from it.
+- Model: `nomic-embed-text-v1.5` GGUF Q8_0 (Apache-2.0, 146,146,432 bytes), pinned to a
+  Hugging Face revision and hash as a `ModelFile` and downloaded with `ensureModelFile`. It uses
+  the prefixes `search_document: ` and `search_query: `.
+- **768 dimensions, not 256.** We measured it on paraphrased questions against a handful of notes
+  ("teeth checkup" → a dentist note, "vehicle maintenance" → "new tires and an oil change"):
+  - Full vectors ranked the right note first for 5 of 6 queries and separated it from the rest
+    better than Matryoshka-256 did.
+  - The right note scored 0.54–0.67; unrelated notes scored 0.40–0.53.
+  - So a chunk counts only if it scores at least 0.5 *and* within 0.05 of the best chunk for
+    that query.
+  - An exact scan at 768-d costs about 3× the 256-d timings above, which is still fine at
+    notebook scale.
+- **The "Search by meaning" setting** (`semanticSearch`, off by default) downloads the model the
+  first time and loads it in the worker. Turning it off unloads the model and keeps the vectors.
+- **Background work.**
+  - The worker embeds one chunk at a time between requests, about 0.2 s per chunk on CPU with
+    2 threads, so a search waits for at most one.
+  - There's no hook for "a recording started" to pause on. The 2-thread limit is what keeps
+    embedding from starving Whisper.
+  - Vectors no chunk uses any more, and other models' vectors, are pruned when the backlog
+    empties.
+- **Tests.** The UI smoke test swaps in a word-hashing stand-in (`createHashEmbedder`), so it
+  exercises chunking, embedding, the vector scan and fusion without the download. The real
+  model was checked by hand (see the PR).
 
 ## Querying
 
@@ -170,10 +189,10 @@ Pending index writes are flushed before each search, so a note saved a moment ag
 
 Fuse.js no longer searches notes; the command palette still uses it for its commands.
 
-Phase 3 adds a semantic pass: embed the query, run an exact `vector_distance_cos` scan over
-`chunks JOIN embeddings` restricted to the filtered sessions, and merge it with the keyword
-ranking by reciprocal rank fusion (k = 60). A semantic-only match shows its chunk as one
-un-highlighted run.
+With semantic search on, the query is embedded too and an exact `vector_distance_cos` scan
+over `chunks JOIN embeddings` (restricted to the filtered sessions) finds the closest chunks.
+Both lists merge by reciprocal rank fusion (k = 60). A session found only by meaning shows its
+closest chunk, unmarked and cut to its opening.
 
 ## Packaging
 
@@ -200,9 +219,8 @@ Each phase ships on its own and leaves the app working.
    the filters above. A golden query set in the UI smoke test (`checkSearchQueries`: ranking,
    stems, prefixes, typos, partial words, each filter, highlights) pins the behaviour; the
    renderer's existing typo case (`helo SMOKE`) still passes.
-3. **Semantic search.** Chunks, embeddings queue, the setting and model download, hybrid
-   ranking. Extend `pnpm eval:search` with paraphrased queries; report recall@5 for keyword alone
-   and for hybrid.
+3. **Semantic search.** Chunks, the embedding pump, the setting and model download, and hybrid
+   ranking. The smoke test runs it with the word-hashing stand-in; the real model was QA'd by hand.
 4. **Later, each optional:**
    - Store `MeetingNotes` as structured data in the doc instead of parsing the summary.
    - "Who is this voice?": compare an unnamed speaker's voiceprint to `voiceprints` and past

@@ -38,7 +38,9 @@ export const SettingsSchema = z.object({
   /** Show a session's details (dates, tags, speakers) in a side panel instead of inline. */
   detailsPanel: z.boolean(),
   /** The one-time "get consent before recording others" notice was acknowledged. */
-  meetingNoticeSeen: z.boolean()
+  meetingNoticeSeen: z.boolean(),
+  /** Search by meaning as well as by words, with a model on this computer (~146 MB). */
+  semanticSearch: z.boolean()
 })
 export type Settings = z.infer<typeof SettingsSchema>
 

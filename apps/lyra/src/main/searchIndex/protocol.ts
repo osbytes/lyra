@@ -54,6 +54,23 @@ export const ActionItemRecord = z.object({
   done: z.boolean()
 })
 
+/**
+ * A stretch of a session embedded for semantic search: merged paragraphs, or a window of
+ * transcript lines. `input` is what gets embedded (the title, then the text); `hash` is its
+ * sha256, which keys the embedding so unchanged text is never embedded twice.
+ */
+export const ChunkRecord = z.object({
+  field: z.enum(['summary', 'notes', 'transcript']),
+  segmentId: z.string().nullable(),
+  cluster: z.string().nullable(),
+  start: z.number().nullable(),
+  end: z.number().nullable(),
+  text: z.string(),
+  input: z.string(),
+  hash: z.string()
+})
+export type ChunkRecord = z.infer<typeof ChunkRecord>
+
 /** Everything the index holds about one session, built in main from its manifest and document. */
 export const SessionRecord = z.object({
   id: z.string(),
@@ -77,7 +94,8 @@ export const SessionRecord = z.object({
   speakers: z.array(SpeakerRecord),
   segments: z.array(SegmentRecord),
   actionItems: z.array(ActionItemRecord),
-  passages: z.array(PassageRecord)
+  passages: z.array(PassageRecord),
+  chunks: z.array(ChunkRecord)
 })
 export type SessionRecord = z.infer<typeof SessionRecord>
 
@@ -95,7 +113,12 @@ export const IndexStats = z.object({
   segments: z.number().int(),
   speakers: z.number().int(),
   passages: z.number().int(),
-  people: z.number().int()
+  people: z.number().int(),
+  chunks: z.number().int(),
+  /** Chunks with a vector from the current embedder. */
+  embedded: z.number().int(),
+  /** Why background embedding last stopped, if it did. */
+  embedError: z.string().nullable()
 })
 export type IndexStats = z.infer<typeof IndexStats>
 
@@ -130,6 +153,16 @@ export const IndexRequest = z.discriminatedUnion('type', [
   /** Opens (or creates) the database for a notes folder; another folder's index is dropped. */
   z.object({ type: z.literal('open'), path: z.string(), notesDir: z.string() }),
   z.object({ type: z.literal('upsertSession'), session: SessionRecord }),
+  /** Which embedder fills in vectors and embeds queries; null turns semantic search off. */
+  z.object({
+    type: z.literal('setEmbedder'),
+    embedder: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('llama'), modelPath: z.string(), model: z.string() }),
+      z.object({ kind: z.literal('hash') })
+    ]).nullable()
+  }),
+  /** Waits until every chunk has a vector (tests). */
+  z.object({ type: z.literal('drainEmbeddings') }),
   z.object({ type: z.literal('removeSession'), id: z.string() }),
   z.object({ type: z.literal('replacePeople'), people: z.array(PersonRecord) }),
   /** Each indexed session's `indexKey`, by id. */

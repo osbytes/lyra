@@ -72,7 +72,8 @@ import { createMeetingNotes } from '../meeting/notes'
 import { createFakeNotesWriter, createModelNotesWriter } from '../meeting/notesWriter'
 import { chooseWriter } from '../meeting/writers'
 import { searchSessions } from '../search'
-import { checkSearchIndex } from '../searchIndex/service'
+import { chunksOf } from '../searchIndex/record'
+import { checkSearchIndex, drainEmbeddings, useTestEmbedder } from '../searchIndex/service'
 import { addPerson, deletePerson } from '../voices'
 
 /** Text the smoke run writes into notes, and the key run-ui-smoke.cjs puts in the environment. */
@@ -475,6 +476,53 @@ async function checkSearchQueries(): Promise<void> {
   await expect('budget', [])
 }
 
+/**
+ * Search by meaning, end to end, with the word-hashing stand-in for the model: transcript
+ * windows, background embedding, the vector scan and fusion with keyword results.
+ */
+async function checkSemanticSearch(): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`semantic search: ${message}`)
+  }
+  await useTestEmbedder(true)
+  const garage = await createPage({ startedAt: '2026-08-01T09:00:00' })
+  await editSession(garage.id, (doc) => {
+    editDoc(doc, { title: 'Garage visit', notes: 'The car needs new tires and an oil change before the road trip.' }, 'main')
+    upsertSpeaker(doc, 'c0', { name: 'Ana' }, 'main')
+    // Four lines over a minute: two windows of at most 45 s, the second repeating the third line.
+    replaceTranscript(
+      doc,
+      [0, 20, 40, 60].map((start, i) => ({
+        id: `w${String(i)}`, rawId: null, start, end: start + 4, cluster: 'c0', confidence: null, text: `Line ${String(i)} about the garage.`
+      })),
+      'main'
+    )
+  })
+  const windows = chunksOf(await readSessionFromDisk(garage.id))
+    .filter((chunk) => chunk.field === 'transcript')
+    .map((chunk) => `${chunk.segmentId ?? '?'}:${String(chunk.start)}-${String(chunk.end)}`)
+  if (windows.join('|') !== 'w0:0-44|w2:40-64') fail(`transcript windows: ${windows.join('|')}`)
+  const stats = await drainEmbeddings()
+  if (stats.chunks === 0 || stats.embedded !== stats.chunks) fail(`not every chunk embedded: ${JSON.stringify(stats)}`)
+  const result = await checkSearchIndex()
+  if (result.mismatched.length) fail(`index out of sync for ${result.mismatched.join(', ')}`)
+
+  // "soon" is in no note, so keyword search finds nothing; the meaning is close to the garage note.
+  const query = 'car needs new tires oil change road trip soon'
+  const found = (await searchSessions(query)).find((hit) => hit.id === garage.id)
+  const match = found?.matches[0]
+  if (match?.field !== 'notes' || match.parts.some((part) => part.hit)) {
+    fail(`a match by meaning was missed or marked: ${JSON.stringify(found)}`)
+  }
+  // A plain keyword match still comes first and keeps its marks.
+  const keyword = (await searchSessions('tires')).find((hit) => hit.id === garage.id)
+  if (!keyword?.matches.some((m) => m.parts.some((part) => part.hit))) fail(`keyword match lost: ${JSON.stringify(keyword)}`)
+
+  await useTestEmbedder(false)
+  if ((await searchSessions(query)).some((hit) => hit.id === garage.id)) fail('matched by meaning with semantic search off')
+  await deletePage(garage.id)
+}
+
 /** Retention deletes only audio older than the setting, and nothing when set to forever. */
 async function checkAudioRetention(): Promise<void> {
   const fail = (message: string): never => {
@@ -694,6 +742,7 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
     await checkTranscriptModel()
     await checkSearchIndexMirror()
     await checkSearchQueries()
+    await checkSemanticSearch()
     const result: unknown = await win.webContents.executeJavaScript(`
       (async () => {
         const fail = (message) => { throw new Error(message) }

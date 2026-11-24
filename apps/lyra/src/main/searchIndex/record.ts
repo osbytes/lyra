@@ -1,6 +1,86 @@
+import { createHash } from 'node:crypto'
 import type { SessionSnapshot } from '../../shared/sessionDoc'
 import type { SessionManifest } from '../sessionStore'
-import type { SessionRecord } from './protocol'
+import type { ChunkRecord, SessionRecord } from './protocol'
+
+/** About 250 tokens: long enough to carry a thought, short enough to be about one thing. */
+const CHUNK_CHARS = 1000
+/** A transcript window also ends after this much talk. */
+const WINDOW_SECONDS = 45
+
+function chunk(
+  title: string,
+  fields: Omit<ChunkRecord, 'input' | 'hash'>
+): ChunkRecord {
+  const input = title ? `${title}\n${fields.text}` : fields.text
+  return { ...fields, input, hash: createHash('sha256').update(input).digest('hex') }
+}
+
+/** Paragraphs merged up to CHUNK_CHARS. */
+function textChunks(title: string, field: 'summary' | 'notes', text: string): ChunkRecord[] {
+  const out: ChunkRecord[] = []
+  let current = ''
+  const flush = (): void => {
+    if (current) out.push(chunk(title, { field, segmentId: null, cluster: null, start: null, end: null, text: current }))
+    current = ''
+  }
+  for (const paragraph of paragraphs(text)) {
+    if (current && current.length + paragraph.length + 2 > CHUNK_CHARS) flush()
+    current = current ? `${current}\n\n${paragraph}` : paragraph
+  }
+  flush()
+  return out
+}
+
+/**
+ * Windows of consecutive transcript lines as `Name: text`, each up to CHUNK_CHARS or
+ * WINDOW_SECONDS. Each window repeats the previous one's last line, so a thought that spans the
+ * cut is whole in one of them. A window points at its first line, to jump there.
+ */
+function transcriptChunks(title: string, snapshot: SessionSnapshot): ChunkRecord[] {
+  const names = new Map(snapshot.speakers.map((speaker) => [speaker.id, speaker.name]))
+  const lines = snapshot.transcript
+    .filter((line) => line.text.trim())
+    .map((line) => ({ line, text: `${line.cluster ? (names.get(line.cluster) ?? 'Speaker') : 'Speaker'}: ${line.text.trim()}` }))
+  const out: ChunkRecord[] = []
+  let from = 0
+  while (from < lines.length) {
+    const start = lines[from]?.line.start ?? 0
+    let to = from
+    let length = 0
+    for (const entry of lines.slice(from)) {
+      if (to > from && (length + entry.text.length > CHUNK_CHARS || entry.line.end - start > WINDOW_SECONDS)) break
+      length += entry.text.length + 1
+      to++
+    }
+    const window = lines.slice(from, to)
+    const [first] = window
+    const last = window.at(-1)
+    if (!first || !last) break
+    out.push(
+      chunk(title, {
+        field: 'transcript',
+        segmentId: first.line.id,
+        cluster: first.line.cluster,
+        start: first.line.start,
+        end: last.line.end,
+        text: window.map((entry) => entry.text).join('\n')
+      })
+    )
+    if (to >= lines.length) break
+    from = to - from > 1 ? to - 1 : to
+  }
+  return out
+}
+
+export function chunksOf(snapshot: SessionSnapshot): ChunkRecord[] {
+  const title = snapshot.title.trim()
+  return [
+    ...textChunks(title, 'summary', snapshot.summary),
+    ...textChunks(title, 'notes', snapshot.notes),
+    ...transcriptChunks(title, snapshot)
+  ]
+}
 
 /** Paragraphs of notes or a summary; a list item counts as its own paragraph. */
 export function paragraphs(text: string): string[] {
@@ -107,6 +187,7 @@ export function sessionRecordOf(id: string, manifest: SessionManifest, snapshot:
           start: line.start,
           text: line.text.trim()
         }))
-    ]
+    ],
+    chunks: chunksOf(snapshot)
   }
 }

@@ -40,9 +40,10 @@ function partsOf(text: string, ranges: readonly Range[]): SearchMatch['parts'] {
   const longest = [...merged].sort((a, b) => b[1] - b[0] - (a[1] - a[0]))[0]
   let from = 0
   let to = text.length
-  if (longest && text.length > SNIPPET_CONTEXT * 2 + 20) {
-    from = Math.max(0, longest[0] - SNIPPET_CONTEXT)
-    to = Math.min(text.length, longest[1] + SNIPPET_CONTEXT)
+  if (text.length > SNIPPET_CONTEXT * 2 + 20) {
+    // A match by meaning has no marked words: show its opening.
+    from = longest ? Math.max(0, longest[0] - SNIPPET_CONTEXT) : 0
+    to = longest ? Math.min(text.length, longest[1] + SNIPPET_CONTEXT) : SNIPPET_CONTEXT * 2
   }
   const parts: SearchMatch['parts'] = []
   let at = from

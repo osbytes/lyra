@@ -3,7 +3,9 @@ import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
 import type { SearchQuery } from '../../shared/searchQuery'
+import { PACKAGED_FLAG } from '../meeting/notesFormat'
 import { log } from '../log'
+import { ensureModelFile, type ModelFile } from '../models'
 import { notesDir } from '../pages'
 import {
   listSessions,
@@ -12,7 +14,7 @@ import {
   readSessionFromDisk,
   type SessionChange
 } from '../sessionStore'
-import { onSettingsChanged } from '../settings'
+import { getSettings, onSettingsChanged } from '../settings'
 import { listVoicePeople, onPeopleSaved, type VoicePerson } from '../voices'
 import {
   IndexResponse,
@@ -44,8 +46,27 @@ function databasePath(): string {
   return join(app.getPath('userData'), 'index', 'lyra.db')
 }
 
+/**
+ * nomic-embed-text-v1.5 (Apache-2.0), 8-bit: 768-dimension text embeddings, about 146 MB,
+ * downloaded the first time semantic search is turned on.
+ */
+const EMBEDDING_MODEL: ModelFile = {
+  name: 'nomic-embed-text-v1.5.Q8_0.gguf',
+  url: 'https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/0188c9bf409793f810680a5a431e7b899c46104c/nomic-embed-text-v1.5.Q8_0.gguf',
+  bytes: 146_146_432,
+  sha256: '3e24342164b3d94991ba9692fdc0dd08e3fd7362e0aacc396a9a5c54a544c3b7'
+}
+
+type EmbedderChoice = Extract<IndexRequest, { type: 'setEmbedder' }>['embedder']
+
+/** What the worker should embed with; sent again whenever the worker restarts. */
+let embedderChoice: EmbedderChoice = null
+
 function fork(): UtilityProcess {
-  const child = utilityProcess.fork(join(__dirname, 'indexWorker.js'), [], { serviceName: 'Lyra search index' })
+  // The worker can't ask `app` whether this is a packaged build, so it's told on its command line.
+  const child = utilityProcess.fork(join(__dirname, 'indexWorker.js'), app.isPackaged ? [PACKAGED_FLAG] : [], {
+    serviceName: 'Lyra search index'
+  })
   child.on('message', (message: unknown) => {
     const parsed = IndexResponse.safeParse(message)
     if (!parsed.success) return
@@ -82,10 +103,57 @@ function ensureReady(): Promise<void> {
   if (ready) return ready
   const child = fork()
   worker = child
-  ready = send(child, { type: 'open', path: databasePath(), notesDir: notesDir() }).then((result) => {
+  ready = send(child, { type: 'open', path: databasePath(), notesDir: notesDir() }).then(async (result) => {
     if (OpenResult.parse(result).fresh) log('search-index', 'created an empty index')
+    if (embedderChoice) await send(child, { type: 'setEmbedder', embedder: embedderChoice })
   })
   return ready
+}
+
+/**
+ * Turns semantic search on (downloading the model the first time) or off. Keyword search works
+ * either way; a failed download or load leaves it off and is logged.
+ */
+async function applySemanticSearch(enabled: boolean): Promise<void> {
+  try {
+    if (!enabled) {
+      embedderChoice = null
+      await call({ type: 'setEmbedder', embedder: null }, z.null())
+      return
+    }
+    let logged = 0
+    const modelPath = await ensureModelFile(EMBEDDING_MODEL, (received, total) => {
+      const percent = Math.floor((received / total) * 4) * 25
+      if (percent > logged) log('search-index', 'downloading the embedding model', { percent })
+      logged = Math.max(logged, percent)
+    })
+    embedderChoice = { kind: 'llama', modelPath, model: EMBEDDING_MODEL.name }
+    await call({ type: 'setEmbedder', embedder: embedderChoice }, z.null())
+    log('search-index', 'semantic search on', { model: EMBEDDING_MODEL.name })
+  } catch (error) {
+    embedderChoice = null
+    log('search-index', 'semantic search unavailable', { error: String(error) })
+  }
+}
+
+let semanticChange: Promise<void> = Promise.resolve()
+
+function setSemanticSearch(enabled: boolean): void {
+  semanticChange = semanticChange.then(() => applySemanticSearch(enabled))
+}
+
+/** Tests: embed with the word-hashing stand-in instead of the model (or with nothing). */
+export async function useTestEmbedder(on: boolean): Promise<void> {
+  await semanticChange
+  embedderChoice = on ? { kind: 'hash' } : null
+  await call({ type: 'setEmbedder', embedder: embedderChoice }, z.null())
+}
+
+/** Tests: waits until every chunk has a vector. */
+export async function drainEmbeddings(): Promise<IndexStats> {
+  await writeQueued()
+  await call({ type: 'drainEmbeddings' }, z.null())
+  return call({ type: 'stats' }, IndexStats)
 }
 
 async function call<S extends z.ZodType>(request: IndexRequest, schema: S): Promise<z.output<S>> {
@@ -227,6 +295,7 @@ export function startSearchIndex(): void {
     peopleWriting = peopleWriting.then(() => writePeople(people))
   })
   onSettingsChanged((next, previous) => {
+    if (next.semanticSearch !== previous.semanticSearch) setSemanticSearch(next.semanticSearch)
     if (next.notesDir === previous.notesDir) return
     // Another folder is another index: reopen, which starts it over, then fill it.
     reconciling = reconciling.then(async () => {
@@ -236,6 +305,7 @@ export function startSearchIndex(): void {
     startReconcile()
   })
   startReconcile()
+  if (getSettings().semanticSearch) setSemanticSearch(true)
 }
 
 /** Writes everything still waiting, then waits for a running reconcile. */

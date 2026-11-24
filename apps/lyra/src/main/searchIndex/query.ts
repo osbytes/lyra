@@ -1,6 +1,7 @@
 import type { Client, InStatement } from '@libsql/client'
 import { z } from 'zod'
 import type { SearchQuery } from '../../shared/searchQuery'
+import type { Embedder } from './embedder'
 import type { PassageHit, SessionHit } from './protocol'
 
 /**
@@ -8,7 +9,8 @@ import type { PassageHit, SessionHit } from './protocol'
  * or stem prefix (FTS5, porter), or as a close spelling of a word the notes contain; passages
  * that hold every word rank by bm25 and the field they're in. Words of three letters or more
  * also match inside longer words (the trigram table), ranked lower. Filters narrow the sessions
- * first.
+ * first. With an embedder, the chunks closest in meaning are found too, and both lists are
+ * merged by reciprocal rank fusion.
  */
 
 /** Titles and tags outrank a body match of the same quality. */
@@ -254,18 +256,106 @@ async function filteredSessions(db: Client, query: SearchQuery, limit: number): 
   })
 }
 
-export async function search(db: Client, query: SearchQuery, limit: number): Promise<SessionHit[]> {
-  const words = wordsOf(query.text)
-  if (!words.length) return filteredSessions(db, query, limit)
-  const passages = await matchPassages(db, query, words)
-  const bySession = new Map<string, { relevance: number; passages: PassageHit[] }>()
+// --- Meaning ------------------------------------------------------------------------
+
+/**
+ * How close a chunk must be to the query to count, and to the best chunk. Measured with
+ * nomic-embed-text-v1.5 on paraphrased questions: the note that answers scores 0.54–0.67,
+ * unrelated notes 0.40–0.53, so only what's near the top is kept (docs/SEARCH-INDEX.md).
+ */
+const MIN_SIMILARITY = 0.5
+const SIMILARITY_MARGIN = 0.05
+const CHUNK_LIMIT = 50
+/** Reciprocal rank fusion's damping: a session's score is Σ 1 / (RRF_K + its rank in a list). */
+const RRF_K = 60
+
+const ChunkRow = z.object({
+  session: z.string(),
+  field: z.enum(['summary', 'notes', 'transcript']),
+  segment_id: z.string().nullable(),
+  start_sec: z.number().nullable(),
+  text: z.string(),
+  similarity: z.number()
+})
+
+/** The chunks closest in meaning to the query, among the filtered sessions; exact, no index. */
+async function matchChunks(db: Client, query: SearchQuery, embedder: Embedder): Promise<z.output<typeof ChunkRow>[]> {
+  const vector = await embedder.embed(query.text, 'query')
+  const filters = filtersOf(query)
+  const result = await db.execute({
+    sql: `SELECT c.session_id AS session, c.field, c.segment_id, c.start_sec, c.text,
+        1 - vector_distance_cos(e.embedding, ?) AS similarity
+      FROM chunks c
+      JOIN embeddings e ON e.hash = c.hash AND e.model = ?
+      JOIN sessions s ON s.id = c.session_id
+      WHERE ${filters.sql}
+      ORDER BY similarity DESC LIMIT ${String(CHUNK_LIMIT)}`,
+    args: [new Uint8Array(vector.buffer, vector.byteOffset, vector.byteLength), embedder.model, ...filters.args]
+  })
+  const chunks = result.rows.map((row) => ChunkRow.parse(row))
+  const best = chunks[0]?.similarity ?? 0
+  const floor = Math.max(MIN_SIMILARITY, best - SIMILARITY_MARGIN)
+  return chunks.filter((chunk) => chunk.similarity >= floor)
+}
+
+// --- Ranking ------------------------------------------------------------------------
+
+type Group = { relevance: number; passages: PassageHit[] }
+
+function keywordGroups(passages: Map<number, PassageHit & { session: string }>): Map<string, Group> {
+  const bySession = new Map<string, Group>()
   for (const { session, ...passage } of passages.values()) {
     const group = bySession.get(session) ?? { relevance: 0, passages: [] }
     group.relevance = Math.max(group.relevance, passage.relevance)
     group.passages.push(passage)
     bySession.set(session, group)
   }
-  const ranked = [...bySession].sort((a, b) => b[1].relevance - a[1].relevance).slice(0, limit)
+  return bySession
+}
+
+/**
+ * Keyword and meaning results as one list, by reciprocal rank fusion. A session found only by
+ * meaning shows its closest chunk, unmarked (no words of the query need be in it).
+ */
+function fuse(keyword: Map<string, Group>, chunks: z.output<typeof ChunkRow>[]): Map<string, Group> {
+  const ranked = [...keyword].sort((a, b) => b[1].relevance - a[1].relevance)
+  const fused = new Map<string, Group>()
+  ranked.forEach(([id, group], rank) => {
+    fused.set(id, { relevance: 1 / (RRF_K + rank + 1), passages: group.passages })
+  })
+  const bestChunk = new Map<string, z.output<typeof ChunkRow>>()
+  for (const chunk of chunks) if (!bestChunk.has(chunk.session)) bestChunk.set(chunk.session, chunk)
+  ;[...bestChunk.values()].forEach((chunk, rank) => {
+    const group = fused.get(chunk.session) ?? { relevance: 0, passages: [] }
+    group.relevance += 1 / (RRF_K + rank + 1)
+    if (!group.passages.some((passage) => passage.field !== 'title')) {
+      group.passages.push({
+        field: chunk.field,
+        marked: chunk.text,
+        segmentId: chunk.segment_id,
+        // A window holds several speakers; its lines name them.
+        speaker: null,
+        start: chunk.start_sec,
+        relevance: chunk.similarity
+      })
+    }
+    fused.set(chunk.session, group)
+  })
+  return fused
+}
+
+export async function search(
+  db: Client,
+  query: SearchQuery,
+  limit: number,
+  embedder: Embedder | null
+): Promise<SessionHit[]> {
+  const words = wordsOf(query.text)
+  if (!words.length) return filteredSessions(db, query, limit)
+  const keyword = keywordGroups(await matchPassages(db, query, words))
+  const chunks = embedder ? await matchChunks(db, query, embedder) : []
+  const groups = chunks.length ? fuse(keyword, chunks) : keyword
+  const ranked = [...groups].sort((a, b) => b[1].relevance - a[1].relevance).slice(0, limit)
   const summaries = await summariesOf(db, ranked.map(([id]) => id))
   return ranked.flatMap(([id, group]) => {
     const summary = summaries.get(id)

@@ -7,7 +7,7 @@
  * Times inside a session are seconds (`*_sec`); dates are ISO strings.
  */
 
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 export const SCHEMA: readonly string[] = [
   `CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
@@ -171,5 +171,30 @@ export const SCHEMA: readonly string[] = [
     INSERT INTO passages_tri (passages_tri, rowid, text) VALUES ('delete', old.id, old.text);
     INSERT INTO passages_fts (rowid, text) VALUES (new.id, new.text);
     INSERT INTO passages_tri (rowid, text) VALUES (new.id, new.text);
-  END`
+  END`,
+
+  // What semantic search compares: merged paragraphs and windows of transcript lines.
+  `CREATE TABLE chunks (
+    id INTEGER PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions ON DELETE CASCADE,
+    field TEXT NOT NULL,
+    segment_id TEXT,
+    cluster TEXT,
+    start_sec REAL,
+    end_sec REAL,
+    text TEXT NOT NULL,
+    input TEXT NOT NULL,
+    hash TEXT NOT NULL
+  )`,
+  `CREATE INDEX chunks_session ON chunks (session_id)`,
+  `CREATE INDEX chunks_hash ON chunks (hash)`,
+  // Keyed by the embedded text's hash, not the chunk: re-indexing a session keeps every vector
+  // whose text didn't change. No vector index: an exact scan is fast enough at notebook scale
+  // (docs/SEARCH-INDEX.md, What we verified).
+  `CREATE TABLE embeddings (
+    hash TEXT NOT NULL,
+    model TEXT NOT NULL,
+    embedding F32_BLOB(768) NOT NULL,
+    PRIMARY KEY (hash, model)
+  )`
 ]

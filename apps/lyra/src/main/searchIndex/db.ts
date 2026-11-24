@@ -23,7 +23,8 @@ const SESSION_TABLES = [
   'tracks',
   'passes',
   'action_items',
-  'passages'
+  'passages',
+  'chunks'
 ] as const
 
 const flag = z.number().transform((value) => value !== 0)
@@ -165,9 +166,58 @@ export async function upsertSession(db: Client, s: SessionRecord): Promise<void>
           SELECT ?, value->>'field', value->>'segmentId', value->>'cluster', value->>'start', value->>'text'
           FROM json_each(?) ORDER BY key`,
         args: [id, json(s.passages)]
+      },
+      {
+        sql: `INSERT INTO chunks (session_id, field, segment_id, cluster, start_sec, end_sec, text, input, hash)
+          SELECT ?, value->>'field', value->>'segmentId', value->>'cluster', value->>'start', value->>'end',
+            value->>'text', value->>'input', value->>'hash'
+          FROM json_each(?) ORDER BY key`,
+        args: [id, json(s.chunks)]
       }
     ],
     'write'
+  )
+}
+
+/** Chunks with no vector from `model` yet, oldest first. */
+export async function chunksToEmbed(db: Client, model: string, limit: number): Promise<{ hash: string; input: string }[]> {
+  return rows(
+    db,
+    z.object({ hash: text, input: text }),
+    {
+      sql: `SELECT hash, min(input) AS input FROM chunks c
+        WHERE NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.hash = c.hash AND e.model = ?)
+        GROUP BY hash ORDER BY min(id) LIMIT ?`,
+      args: [model, limit]
+    }
+  )
+}
+
+export async function saveEmbeddings(
+  db: Client,
+  model: string,
+  vectors: { hash: string; vector: Float32Array }[]
+): Promise<void> {
+  await db.batch(
+    vectors.map(({ hash, vector }) => ({
+      sql: 'INSERT OR REPLACE INTO embeddings (hash, model, embedding) VALUES (?, ?, ?)',
+      // A copy, so the blob is exactly this vector and not the buffer it may share.
+      args: [hash, model, vector.slice().buffer]
+    })),
+    'write'
+  )
+}
+
+/**
+ * Drops vectors no chunk uses any more (text that was edited away) and, when a model is in use,
+ * other models' vectors. With semantic search off, vectors are kept for when it's back on.
+ */
+export async function pruneEmbeddings(db: Client, model: string | null): Promise<void> {
+  const orphans = 'hash NOT IN (SELECT hash FROM chunks)'
+  await db.execute(
+    model === null
+      ? `DELETE FROM embeddings WHERE ${orphans}`
+      : { sql: `DELETE FROM embeddings WHERE model != ? OR ${orphans}`, args: [model] }
   )
 }
 
@@ -266,6 +316,20 @@ export async function readSession(db: Client, id: string): Promise<SessionRecord
     }),
     of('SELECT field, segment_id, cluster, start_sec, text FROM passages WHERE session_id = ? ORDER BY id')
   )
+  const chunks = await rows(
+    db,
+    z.object({
+      field: z.enum(['summary', 'notes', 'transcript']),
+      segment_id: textOrNull,
+      cluster: textOrNull,
+      start_sec: numOrNull,
+      end_sec: numOrNull,
+      text,
+      input: text,
+      hash: text
+    }),
+    of('SELECT field, segment_id, cluster, start_sec, end_sec, text, input, hash FROM chunks WHERE session_id = ? ORDER BY id')
+  )
   return {
     id,
     title: row.title,
@@ -315,6 +379,16 @@ export async function readSession(db: Client, id: string): Promise<SessionRecord
       cluster: passage.cluster,
       start: passage.start_sec,
       text: passage.text
+    })),
+    chunks: chunks.map((row) => ({
+      field: row.field,
+      segmentId: row.segment_id,
+      cluster: row.cluster,
+      start: row.start_sec,
+      end: row.end_sec,
+      text: row.text,
+      input: row.input,
+      hash: row.hash
     }))
   }
 }
@@ -366,16 +440,21 @@ export async function readPeople(db: Client): Promise<PersonRecord[]> {
   }))
 }
 
-export async function stats(db: Client): Promise<IndexStats> {
-  const count = async (table: string): Promise<number> => {
-    const [row] = await rows(db, z.object({ n: num }), `SELECT count(*) AS n FROM ${table}`)
+export async function stats(db: Client, model: string | null): Promise<Omit<IndexStats, 'embedError'>> {
+  const count = async (stmt: InStatement): Promise<number> => {
+    const [row] = await rows(db, z.object({ n: num }), stmt)
     return row?.n ?? 0
   }
-  return IndexStats.parse({
-    sessions: await count('sessions'),
-    segments: await count('segments'),
-    speakers: await count('speakers'),
-    passages: await count('passages'),
-    people: await count('people')
+  return IndexStats.omit({ embedError: true }).parse({
+    sessions: await count('SELECT count(*) AS n FROM sessions'),
+    segments: await count('SELECT count(*) AS n FROM segments'),
+    speakers: await count('SELECT count(*) AS n FROM speakers'),
+    passages: await count('SELECT count(*) AS n FROM passages'),
+    people: await count('SELECT count(*) AS n FROM people'),
+    chunks: await count('SELECT count(*) AS n FROM chunks'),
+    embedded: await count({
+      sql: 'SELECT count(*) AS n FROM chunks c WHERE EXISTS (SELECT 1 FROM embeddings e WHERE e.hash = c.hash AND e.model = ?)',
+      args: [model]
+    })
   })
 }
