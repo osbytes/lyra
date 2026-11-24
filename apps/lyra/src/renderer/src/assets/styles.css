@@ -376,10 +376,99 @@ code {
 
 /* One row, exactly the window's height: columns scroll inside themselves, never the window. */
 .app {
+  position: relative;
   display: grid;
-  grid-template-columns: 256px minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-width, 256px) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   height: 100%;
+}
+
+.app.sidebar-closed {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/*
+ * A side panel's draggable edge, centered on its border. While the panel is closed it waits at
+ * the window's edge (below the band, clear of the caption buttons), to drag the panel back out.
+ */
+.panel-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 5;
+  width: 8px;
+  outline: none;
+  cursor: col-resize;
+  touch-action: none;
+  /* The band is a window drag region, which would otherwise take the pointer. */
+  -webkit-app-region: no-drag;
+}
+
+.panel-resizer.is-left {
+  left: calc(var(--sidebar-width, 256px) - 4px);
+}
+
+.panel-resizer.is-right {
+  right: calc(var(--details-width, 288px) - 4px);
+}
+
+.panel-resizer.is-closed {
+  top: var(--band);
+  width: 6px;
+}
+
+.panel-resizer.is-left.is-closed {
+  left: 0;
+}
+
+.panel-resizer.is-right.is-closed {
+  right: 0;
+}
+
+.panel-resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  background: transparent;
+  transition: background 120ms;
+}
+
+.panel-resizer.is-closed.is-right::after {
+  left: auto;
+  right: 0;
+}
+
+.panel-resizer.is-closed.is-left::after {
+  left: 0;
+}
+
+.panel-resizer:hover::after,
+.panel-resizer:active::after,
+.panel-resizer:focus-visible::after {
+  background: var(--accent);
+}
+
+/* With the sidebar closed, its button takes the band's left end (after macOS's traffic lights). */
+.sidebar-toggle {
+  position: absolute;
+  top: calc((var(--band) - 32px) / 2);
+  left: 12px;
+  z-index: 1;
+}
+
+.platform-darwin .sidebar-toggle {
+  left: 80px;
+}
+
+.sidebar-closed .topbar {
+  padding-left: max(var(--page-left), 56px);
+}
+
+.platform-darwin.sidebar-closed .topbar {
+  padding-left: max(var(--page-left), 124px);
 }
 
 /* Sidebar */
@@ -3375,7 +3464,7 @@ code {
 /* Details panel */
 .details {
   display: flex;
-  flex: 0 0 288px;
+  flex: 0 0 var(--details-width, 288px);
   flex-direction: column;
   min-height: 0;
   border-left: 1px solid var(--border);

@@ -11,6 +11,15 @@ const AbsolutePath = z
   .trim()
   .regex(/^(\/|[A-Za-z]:[\\/]|\\\\)/, 'must be an absolute path')
 
+/**
+ * How wide the side panels can be dragged, in pixels. Dragging past `closeBelow` closes the
+ * panel instead, so the range between it and `min` is where the edge snaps.
+ */
+export const PANEL_WIDTHS = {
+  sidebar: { min: 200, max: 420, initial: 256, closeBelow: 140 },
+  details: { min: 240, max: 520, initial: 288, closeBelow: 160 }
+} as const
+
 /** User settings, stored in `userData/settings.json`. The one definition: the type comes from it. */
 export const SettingsSchema = z.object({
   /** Folder that holds the notes. Default `~/.lyra`, or LYRA_NOTES_DIR. */
@@ -37,6 +46,10 @@ export const SettingsSchema = z.object({
   cloudBaseUrl: z.url({ protocol: /^https?$/ }).nullable(),
   /** Show a session's details (dates, tags, speakers) in a side panel instead of inline. */
   detailsPanel: z.boolean(),
+  /** Show the session list on the left. */
+  sidebar: z.boolean(),
+  sidebarWidth: z.int().min(PANEL_WIDTHS.sidebar.min).max(PANEL_WIDTHS.sidebar.max),
+  detailsWidth: z.int().min(PANEL_WIDTHS.details.min).max(PANEL_WIDTHS.details.max),
   /** The one-time "get consent before recording others" notice was acknowledged. */
   meetingNoticeSeen: z.boolean(),
   /** Search by meaning as well as by words, with a model on this computer (~146 MB). */

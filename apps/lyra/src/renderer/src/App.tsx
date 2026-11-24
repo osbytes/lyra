@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { PANEL_WIDTHS } from '../../shared/settings'
 import type { PageSummary, UpdateStatus, WhisperStatus } from '../../shared/types'
 import type { TranscriptSegment } from '../../shared/sessionDoc'
 import { DetailsPanel } from './components/DetailsPanel'
@@ -18,13 +19,15 @@ import {
   MicIcon,
   PanelIcon,
   PlusIcon,
-  SearchIcon
+  SearchIcon,
+  SidebarIcon
 } from './components/Icons'
 import { SettingsDialog } from './components/Settings'
 import { CommandPalette } from './components/CommandPalette'
 import { Sidebar } from './components/Sidebar'
 import { ConfirmDialog } from './components/ConfirmDialog'
 import { FindBar } from './components/FindBar'
+import { PanelResizer, type PanelLayout } from './components/PanelResizer'
 import { TooltipLayer } from './components/Tooltip'
 import { useDictation } from './hooks/useDictation'
 import { usePages, type OpenPage } from './hooks/usePages'
@@ -50,8 +53,14 @@ const FOLLOW_SLACK = 160
 /** How long a toast stays up. */
 const TOAST_MS = 6000
 
-/** Smallest share of the column either pane can be dragged down to. */
+/** Smallest share of the column either pane can be stepped down to with the keyboard. */
 const MIN_PANE = 0.15
+/** Smallest height either pane can be dragged down to, in pixels. */
+const MIN_PANE_PX = 120
+/** Dragging a pane shorter than this closes it, so between here and the minimum the bar snaps. */
+const CLOSE_PANE_PX = 64
+/** The page column keeps at least this much width, however wide the side panels are dragged. */
+const MIN_PAGE_PX = 420
 /** The notes pane's share of the column when the split is reset. */
 const DEFAULT_SPLIT = 0.45
 
@@ -355,10 +364,39 @@ export default function App(): React.JSX.Element {
     return () => clearTimeout(timer)
   }, [copied])
 
-  const panel = settings?.detailsPanel ?? false
+  // Mid-drag, a side panel opens and closes here first; the setting follows when the drag ends.
+  const [sidebarLive, setSidebarLive] = useState<boolean | null>(null)
+  const [detailsLive, setDetailsLive] = useState<boolean | null>(null)
+  const sidebarOpen = sidebarLive ?? settings?.sidebar ?? true
+  const panel = detailsLive ?? settings?.detailsPanel ?? false
+  const sidebarWidth = settings?.sidebarWidth ?? PANEL_WIDTHS.sidebar.initial
+  const detailsWidth = settings?.detailsWidth ?? PANEL_WIDTHS.details.initial
+  const appRef = useRef<HTMLDivElement>(null)
+  // The resizers write these straight onto the element while dragging, so React stays out of it.
+  useLayoutEffect(() => {
+    appRef.current?.style.setProperty('--sidebar-width', `${String(sidebarWidth)}px`)
+    appRef.current?.style.setProperty('--details-width', `${String(detailsWidth)}px`)
+  }, [sidebarWidth, detailsWidth])
+
   const toggleLayout = useCallback(() => {
     void updateSettings({ detailsPanel: !(settingsRef.current?.detailsPanel ?? false) })
   }, [updateSettings])
+  const toggleSidebar = useCallback(() => {
+    void updateSettings({ sidebar: !(settingsRef.current?.sidebar ?? true) })
+  }, [updateSettings])
+
+  const commitSidebar = (layout: PanelLayout): void => {
+    setSidebarLive(layout.open)
+    void updateSettings({ sidebar: layout.open, sidebarWidth: layout.width }).finally(() =>
+      setSidebarLive(null)
+    )
+  }
+  const commitDetails = (layout: PanelLayout): void => {
+    setDetailsLive(layout.open)
+    void updateSettings({ detailsPanel: layout.open, detailsWidth: layout.width }).finally(() =>
+      setDetailsLive(null)
+    )
+  }
 
   // Tags across every session, most used first, for the sidebar filter and the tag picker.
   const knownTags = useMemo(() => {
@@ -399,6 +437,9 @@ export default function App(): React.JSX.Element {
       } else if (key === '.') {
         event.preventDefault()
         toggleLayout()
+      } else if (key === '\\') {
+        event.preventDefault()
+        toggleSidebar()
       } else if (key === ',') {
         event.preventDefault()
         setShowSettings(true)
@@ -416,7 +457,7 @@ export default function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [toggleDictation, startSession, toggleLayout, undo, redo, undoLatest, currentRef])
+  }, [toggleDictation, startSession, toggleLayout, toggleSidebar, undo, redo, undoLatest, currentRef])
 
   const words = current
     ? wordCount([current.summary, current.body, ...current.transcript.map((line) => line.text)].join(' '))
@@ -457,11 +498,19 @@ export default function App(): React.JSX.Element {
     if (!box) return
     const handle = event.currentTarget
     handle.setPointerCapture(event.pointerId)
-    // A drag from a collapsed or expanded layout opens the split where the pointer is.
+    const bar = handle.getBoundingClientRect().height
+    // A drag from a collapsed or expanded layout opens the split where the pointer is. Dragged
+    // close to either end, the pane there closes; short of that, it holds at its minimum.
     const move = (next: PointerEvent): void => {
-      const share = (next.clientY - box.top) / box.height
-      setPaneMode('split')
-      setSplit(Math.min(1 - MIN_PANE, Math.max(MIN_PANE, share)))
+      const above = next.clientY - box.top
+      const below = box.height - bar - above
+      if (above < CLOSE_PANE_PX) setPaneMode('transcript')
+      else if (below < CLOSE_PANE_PX) setPaneMode('notes')
+      else {
+        const notesPx = Math.min(box.height - bar - MIN_PANE_PX, Math.max(MIN_PANE_PX, above))
+        setPaneMode('split')
+        setSplit(notesPx / box.height)
+      }
     }
     const up = (): void => {
       handle.removeEventListener('pointermove', move)
@@ -472,27 +521,67 @@ export default function App(): React.JSX.Element {
   }
 
   return (
-    <div className={`app platform-${window.api.platform}`}>
-      <Sidebar
-        pages={pages}
-        activeId={current?.id}
-        recordingId={recordingId}
-        update={update}
-        onOpen={(id) => void openPage(id)}
-        onCreate={() => void startSession()}
-        onDelete={setConfirmDelete}
-        onSettings={() => setShowSettings(true)}
-        settingsIssue={settingsIssues.length > 0}
-        onSearch={() => setShowSearch(true)}
-        tags={knownTags}
-        tagFilter={tagFilter}
-        onTagFilter={setTagFilter}
+    <div
+      ref={appRef}
+      className={`app platform-${window.api.platform}${sidebarOpen ? '' : ' sidebar-closed'}`}
+    >
+      {sidebarOpen ? (
+        <Sidebar
+          pages={pages}
+          activeId={current?.id}
+          recordingId={recordingId}
+          update={update}
+          onOpen={(id) => void openPage(id)}
+          onCreate={() => void startSession()}
+          onDelete={setConfirmDelete}
+          onSettings={() => setShowSettings(true)}
+          settingsIssue={settingsIssues.length > 0}
+          onSearch={() => setShowSearch(true)}
+          tags={knownTags}
+          tagFilter={tagFilter}
+          onTagFilter={setTagFilter}
+        />
+      ) : null}
+      <PanelResizer
+        side="left"
+        layout={{ open: sidebarOpen, width: sidebarWidth }}
+        limits={PANEL_WIDTHS.sidebar}
+        target={appRef}
+        cssVar="--sidebar-width"
+        room={() => window.innerWidth - (current && panel ? detailsWidth : 0) - MIN_PAGE_PX}
+        label="Resize sidebar"
+        onOpenChange={setSidebarLive}
+        onCommit={commitSidebar}
       />
+      {current ? (
+        <PanelResizer
+          side="right"
+          layout={{ open: panel, width: detailsWidth }}
+          limits={PANEL_WIDTHS.details}
+          target={appRef}
+          cssVar="--details-width"
+          room={() => window.innerWidth - (sidebarOpen ? sidebarWidth : 0) - MIN_PAGE_PX}
+          label="Resize details panel"
+          onOpenChange={setDetailsLive}
+          onCommit={commitDetails}
+        />
+      ) : null}
 
       <main className={current && panel ? 'workspace with-panel' : 'workspace'}>
         {/* The panel runs the full height beside this column, so its header shares the top band. */}
         <div className="workspace-main">
         <header className="topbar drag">
+          {sidebarOpen ? null : (
+            <button
+              className="icon-btn no-drag sidebar-toggle"
+              type="button"
+              aria-label="Show sidebar"
+              {...tip('Show sidebar', shortcutLabel('\\'))}
+              onClick={toggleSidebar}
+            >
+              <SidebarIcon />
+            </button>
+          )}
           {current ? (
             <>
               {/* In the band beside the actions; a long title wraps onto more lines. */}
@@ -817,6 +906,14 @@ export default function App(): React.JSX.Element {
                   }
                 ]
               : []),
+            {
+              id: 'sidebar',
+              label: sidebarOpen ? 'Hide sidebar' : 'Show sidebar',
+              keywords: 'layout sessions list',
+              shortcut: shortcutLabel('\\'),
+              icon: <SidebarIcon />,
+              run: toggleSidebar
+            },
             {
               id: 'settings',
               label: 'Settings',
