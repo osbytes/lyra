@@ -8,11 +8,21 @@ import { NotesEditor, type NotesHandle } from './components/NotesEditor'
 import { TagRow } from './components/TagRow'
 import { ScrollArea } from './components/Controls'
 import { Transcript } from './components/Transcript'
-import { CheckIcon, CopyIcon, FolderIcon, GearIcon, MicIcon, PanelIcon, PlusIcon } from './components/Icons'
+import {
+  CheckIcon,
+  CopyIcon,
+  FolderIcon,
+  GearIcon,
+  MicIcon,
+  PanelIcon,
+  PlusIcon,
+  SearchIcon
+} from './components/Icons'
 import { SettingsDialog } from './components/Settings'
 import { CommandPalette } from './components/CommandPalette'
 import { Sidebar } from './components/Sidebar'
 import { ConfirmDialog } from './components/ConfirmDialog'
+import { FindBar } from './components/FindBar'
 import { TooltipLayer } from './components/Tooltip'
 import { useDictation } from './hooks/useDictation'
 import { usePages, type OpenPage } from './hooks/usePages'
@@ -129,6 +139,9 @@ export default function App(): React.JSX.Element {
   const [showSettings, setShowSettings] = useState(false)
   const closeSettings = useCallback(() => setShowSettings(false), [])
   const [showSearch, setShowSearch] = useState(false)
+  /** Find in the open session; `request` changes each time Ctrl/Cmd+F is pressed. */
+  const [find, setFind] = useState<{ initial: string; request: number } | null>(null)
+  const closeFind = useCallback(() => setFind(null), [])
   const settingsRef = useRef(settings)
   settingsRef.current = settings
   const titleInput = useRef<HTMLInputElement>(null)
@@ -152,6 +165,8 @@ export default function App(): React.JSX.Element {
 
   const dictation = useDictation({ getDeviceId })
   const { recording, stop: stopDictation, start } = dictation
+  /** The session being recorded, which stays recording while other sessions are open. */
+  const recordingId = dictation.pageId
 
   /** Stops recording and writes the page to disk right away, so the file is complete. */
   const stop = useCallback(async () => {
@@ -188,13 +203,15 @@ export default function App(): React.JSX.Element {
 
   // Mirror recorder state to main for the tray and the overlay pill.
   const { phase, progress, micName, subscribeLevel } = dictation
-  const listeningSince = useRef<number | null>(null)
+  const [listeningSince, setListeningSince] = useState<number | null>(null)
+  const sinceRef = useRef<number | null>(null)
   useEffect(() => {
-    if (phase === 'listening') listeningSince.current ??= Date.now()
-    if (phase === 'idle') listeningSince.current = null
+    if (phase === 'listening') sinceRef.current ??= Date.now()
+    if (phase === 'idle') sinceRef.current = null
+    setListeningSince(sinceRef.current)
     window.api.reportSession({
       phase,
-      startedAt: listeningSince.current,
+      startedAt: sinceRef.current,
       micName
     })
   }, [phase, micName])
@@ -215,21 +232,24 @@ export default function App(): React.JSX.Element {
   // New lines land as each chunk is transcribed; keep them in view unless the user has scrolled
   // up to reread. The notes scroll on their own, so typing there never fights the transcript.
   const lineCount = current?.transcript.length ?? 0
+  const followHere = phase !== 'idle' && !!current && current.id === recordingId
   useEffect(() => {
     const view = scroller.current
-    if (!view || phase === 'idle' || lineCount === 0) return
+    if (!view || !followHere || lineCount === 0) return
     if (view.scrollHeight - view.scrollTop - view.clientHeight > FOLLOW_SLACK) return
     requestAnimationFrame(() => view.scrollTo({ top: view.scrollHeight, behavior: 'smooth' }))
-  }, [lineCount, phase])
+  }, [lineCount, followHere])
 
-  /** The dock: continue recording the open session, or stop. */
+  /** The dock: continue recording the open session, or stop the recording (wherever it is). */
   const toggleDictation = useCallback(() => {
     if (recording) void stop()
     else if (currentRef.current) void record(currentRef.current.id)
   }, [recording, stop, record, currentRef])
 
+  // Opening another session leaves a recording running: its lines keep landing in its own
+  // document, and the dock and sidebar show where it is.
   const openPage = async (id: string): Promise<void> => {
-    await stop()
+    setFind(null)
     await open(id)
   }
 
@@ -278,7 +298,7 @@ export default function App(): React.JSX.Element {
       label: `Deleted “${page.title || 'Untitled'}”`,
       undoneLabel: `Restored “${page.title || 'Untitled'}”`,
       run: async () => {
-        if (currentRef.current?.id === page.id) await stop()
+        if (recordingId === page.id) await stop()
         await remove(page.id)
       },
       undo: () => restore(page.id)
@@ -365,11 +385,18 @@ export default function App(): React.JSX.Element {
       } else if (key === 'k' && !event.shiftKey) {
         event.preventDefault()
         setShowSearch((open) => !open)
+      } else if (key === 'f' && !event.shiftKey && currentRef.current) {
+        event.preventDefault()
+        const selected = window.getSelection()?.toString().trim() ?? ''
+        setFind((open) => ({
+          initial: selected && !selected.includes('\n') ? selected : (open?.initial ?? ''),
+          request: (open?.request ?? 0) + 1
+        }))
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [toggleDictation, startSession, toggleLayout, undo, redo, undoLatest])
+  }, [toggleDictation, startSession, toggleLayout, undo, redo, undoLatest, currentRef])
 
   const words = current
     ? wordCount([current.summary, current.body, ...current.transcript.map((line) => line.text)].join(' '))
@@ -377,9 +404,17 @@ export default function App(): React.JSX.Element {
   const summary = current ? pages.find((page) => page.id === current.id) : undefined
   const editedAt = summary?.updatedAt
   const systemAudio = settings?.captureSystemAudio ?? true
-  const toTranscript = current?.liveMode === 'transcript'
   const listening = dictation.phase === 'listening'
-  const recordingHere = toTranscript && (listening || dictation.phase === 'finishing')
+  const recordingHere = !!current && current.id === recordingId && (listening || dictation.phase === 'finishing')
+  const recordingPage = recordingId ? pages.find((page) => page.id === recordingId) : undefined
+  const elsewhere =
+    recordingId && current && recordingId !== current.id
+      ? {
+          // An empty title reads as Untitled, like everywhere else.
+          title: recordingPage?.title ? recordingPage.title : 'Untitled',
+          onShow: () => void openPage(recordingId)
+        }
+      : null
   const pending = recordingHere ? { working: transcribing, finishing: dictation.phase === 'finishing' } : null
   const hasTranscript = !!current && (current.transcript.length > 0 || pending !== null)
 
@@ -413,6 +448,7 @@ export default function App(): React.JSX.Element {
       <Sidebar
         pages={pages}
         activeId={current?.id}
+        recordingId={recordingId}
         update={update}
         onOpen={(id) => void openPage(id)}
         onCreate={() => void startSession()}
@@ -559,6 +595,9 @@ export default function App(): React.JSX.Element {
               </>
             ) : null}
             </div>
+            {find ? (
+              <FindBar root={column} initial={find.initial} request={find.request} onClose={closeFind} />
+            ) : null}
             <DictationDock
               phase={dictation.phase}
               micName={dictation.micName}
@@ -572,6 +611,8 @@ export default function App(): React.JSX.Element {
               subscribeLevel={dictation.subscribeLevel}
               transcribing={transcribing}
               onToggle={toggleDictation}
+              startedAt={listeningSince}
+              elsewhere={elsewhere}
             >
               {dictation.recording && systemAudio && settings && !settings.meetingNoticeSeen ? (
                 <div className="banner" role="status">
@@ -657,6 +698,25 @@ export default function App(): React.JSX.Element {
                     shortcut: shortcutLabel('D', true),
                     icon: <MicIcon />,
                     run: toggleDictation
+                  },
+                  ...(elsewhere
+                    ? [
+                        {
+                          id: 'recording',
+                          label: `Go to “${elsewhere.title}” (recording)`,
+                          keywords: 'recording live current',
+                          icon: <MicIcon />,
+                          run: elsewhere.onShow
+                        }
+                      ]
+                    : []),
+                  {
+                    id: 'find',
+                    label: 'Find in session',
+                    keywords: 'search find text',
+                    shortcut: shortcutLabel('F'),
+                    icon: <SearchIcon />,
+                    run: () => setFind((open) => ({ initial: open?.initial ?? '', request: (open?.request ?? 0) + 1 }))
                   },
                   {
                     id: 'copy',

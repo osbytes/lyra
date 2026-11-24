@@ -3,7 +3,8 @@ import type { MicPrompt, SessionState } from '../../../shared/types'
 import { formatDuration } from '../lib/format'
 import { GripIcon, StopIcon } from './Icons'
 
-const BAR_COUNT = 16
+/** Same as the dock's waveform in the main window. */
+const BAR_COUNT = 20
 
 function useNow(running: boolean): number {
   const [now, setNow] = useState(Date.now)
@@ -73,6 +74,7 @@ function RecordingPill() {
   const [state, setState] = useState<SessionState | null>(null)
   const [status, setStatus] = useState('')
   const bars = useRef<(HTMLSpanElement | null)[]>([])
+  const stopButton = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     // Subscribe first, then fetch, so a change in between isn't lost.
@@ -91,8 +93,9 @@ function RecordingPill() {
       history.push(frame.level)
       history.forEach((value, i) => {
         const bar = bars.current[i]
-        if (bar) bar.style.transform = `scaleY(${0.15 + Math.min(1, value * 1.6) * 0.85})`
+        if (bar) bar.style.transform = `scaleY(${String(0.12 + Math.min(1, value * 1.6) * 0.88)})`
       })
+      stopButton.current?.style.setProperty('--level', String(Math.min(1, frame.level * 1.6)))
     })
   }, [])
 
@@ -107,11 +110,24 @@ function RecordingPill() {
         ? 'Saving…'
         : status || 'Listening'
 
+  // Laid out like the dock in the main window: stop on the left, then status, level and time.
   return (
-    <div className="overlay-pill" role="status">
+    <div className={`overlay-pill${listening ? ' is-listening' : ''}`} role="status">
       <span className="overlay-grip" aria-hidden="true">
         <GripIcon />
       </span>
+      <button
+        ref={stopButton}
+        type="button"
+        className="mic-btn overlay-stop"
+        onClick={() => {
+          window.api.requestStop()
+        }}
+        disabled={!listening}
+        aria-label="Stop recording"
+      >
+        <StopIcon />
+      </button>
       <button
         type="button"
         className="overlay-body"
@@ -120,9 +136,8 @@ function RecordingPill() {
         }}
         aria-label="Open Lyra"
       >
-        <span className={`overlay-dot${listening ? ' is-live' : ''}`} />
-        <span className="overlay-time">{formatDuration(elapsed)}</span>
-        <span className="overlay-bars" aria-hidden="true">
+        <span className="dock-status">{label}</span>
+        <span className="waveform" aria-hidden="true">
           {Array.from({ length: BAR_COUNT }, (_, i) => (
             <span
               key={i}
@@ -132,18 +147,7 @@ function RecordingPill() {
             />
           ))}
         </span>
-        <span className="overlay-live">{label}</span>
-      </button>
-      <button
-        type="button"
-        className="overlay-stop"
-        onClick={() => {
-          window.api.requestStop()
-        }}
-        disabled={!listening}
-        aria-label="Stop recording"
-      >
-        <StopIcon />
+        <span className="dock-timer">{formatDuration(elapsed)}</span>
       </button>
     </div>
   )

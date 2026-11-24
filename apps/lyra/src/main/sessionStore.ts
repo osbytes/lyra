@@ -17,6 +17,7 @@ import {
   editDoc,
   initDoc,
   replaceTranscript,
+  restoreMissingSpeakers,
   docTitle,
   snapshotOf,
   upsertSpeaker,
@@ -427,6 +428,8 @@ async function load(id: string): Promise<Entry> {
     for (const update of frames) Y.applyUpdate(doc, update)
   }, ORIGIN_LOAD)
   const entry = makeEntry(id, doc, manifest, frames.length)
+  const restored = restoreMissingSpeakers(doc, ORIGIN_MAIN)
+  if (restored) log('sessions', 'restored missing speakers', { id, speakers: restored })
   if (manifest.dirty) scheduleExport(entry, 0)
   return entry
 }

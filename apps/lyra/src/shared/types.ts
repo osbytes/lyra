@@ -246,6 +246,7 @@ export type VoicePagesApi = {
   keySource: (provider: ProviderId) => Promise<KeySource | null>
   /** Stores a provider's key encrypted with the OS keychain; null removes it. */
   setKey: (provider: ProviderId, key: string | null) => Promise<void>
+  /** Puts plain text on the system clipboard. */
   copyText: (text: string) => void
   platform: string
   /** Downloads the model if needed and loads it into memory. */
