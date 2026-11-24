@@ -92,6 +92,11 @@ setting.
   `GITHUB_TOKEN` do not trigger `release.yml`. changesets/action (the Release PR),
   `pnpm release:tag` and the Dependabot changeset job all use it, never `GITHUB_TOKEN`. The tag
   ruleset below lets only that user create `v*` tags, so the PAT must be theirs.
+- `secrets.SITE_REVALIDATE_SECRET`, and the same value as `REVALIDATE_SECRET` in the Vercel
+  project's production environment variables: a random string (`openssl rand -hex 32`).
+  `release.yml` sends it to `https://lyra.osbytes.io/api/revalidate` after publishing, so the
+  website's download links switch to the new release at once. Without it they follow within an
+  hour, since the site caches GitHub's `releases/latest` across deployments.
 - Settings → Actions → General:
   - "Workflow permissions": **Read repository contents**, and "Allow GitHub Actions to create and
     approve pull requests" **off**. Every workflow declares its own `permissions:`, so the default

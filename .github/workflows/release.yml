@@ -175,7 +175,9 @@ jobs:
         run: node scripts/release-notes.mjs "$VERSION" > release-notes.md && cat release-notes.md
 
       # only version tags publish (a tag push, or a manual run given a tag); a manual run without
-      # one stops after building and attesting
+      # one stops after building and attesting. The release starts as a draft and is published once
+      # every file is uploaded: a published release is releases/latest at once, and the website or
+      # an install reading it mid-upload would find it without its installers.
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         if: needs.version.outputs.tag != ''
         with:
@@ -183,5 +185,26 @@ jobs:
           body_path: release-notes.md
           files: out/*
           fail_on_unmatched_files: true
+          draft: true
           prerelease: ${{ contains(needs.version.outputs.tag, '-') }}
-          make_latest: ${{ needs.version.outputs.latest }}
+      - name: Publish the release
+        if: needs.version.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          LATEST: ${{ needs.version.outputs.latest }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest="$LATEST"
+
+      # the website caches releases/latest for an hour, across deployments; this makes its download
+      # links switch now. A failure only delays them, so it warns instead of failing the release.
+      - name: Refresh the website's download links
+        if: needs.version.outputs.tag != ''
+        env:
+          SECRET: ${{ secrets.SITE_REVALIDATE_SECRET }}
+        run: |
+          if [ -z "$SECRET" ]; then
+            echo "::warning::SITE_REVALIDATE_SECRET is not set; the website picks up this release within the hour"
+            exit 0
+          fi
+          curl -fsS -X POST -H "Authorization: Bearer $SECRET" https://lyra.osbytes.io/api/revalidate \
+            || echo "::warning::the website didn't refresh; it picks up this release within the hour"
