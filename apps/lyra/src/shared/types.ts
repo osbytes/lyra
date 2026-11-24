@@ -1,3 +1,6 @@
+import type { Settings } from './settings'
+import type { KeySource, ProviderId } from './ai'
+
 export type Page = {
   id: string
   title: string
@@ -5,31 +8,8 @@ export type Page = {
   updatedAt: string
 }
 
-export type NoteFormat = 'txt' | 'md'
-
-export type Settings = {
-  /** Absolute folder that holds the notes. Default `~/.lyra`. */
-  notesDir: string
-  /** Format used for new notes; both are always readable. */
-  fileFormat: NoteFormat
-  /** `null` = the system default microphone. */
-  micDeviceId: string | null
-  /** Electron accelerator for the global start/stop shortcut. */
-  hotkey: string
-  launchAtLogin: boolean
-  micPrompt: { enabled: boolean; ignoredApps: string[] }
-  /**
-   * Days to keep recorded audio after a session: `null` keeps it forever, `0` deletes it once
-   * the transcript is labeled. Transcripts are always kept.
-   */
-  audioRetentionDays: number | null
-  captureSystemAudio: boolean
-  notesEngine: 'off' | 'local' | 'claude'
-  /** Show a session's details (dates, tags, speakers) in a side panel instead of inline. */
-  detailsPanel: boolean
-  /** The one-time "get consent before recording others" notice was acknowledged. */
-  meetingNoticeSeen: boolean
-}
+export type { NoteFormat, Settings } from './settings'
+export type { KeySource, ProviderId } from './ai'
 
 export type MoveNotesResult = { moved: number; skipped: number }
 
@@ -246,9 +226,10 @@ export type VoicePagesApi = {
   onMeetingStatus: (callback: (status: MeetingStatus) => void) => () => void
   /** (Re)writes the notes section at the top of a meeting note with the chosen engine. */
   generateNotes: (pageId: string) => Promise<void>
-  hasClaudeKey: () => Promise<boolean>
-  /** Stores the key encrypted with the OS keychain; null removes it. */
-  setClaudeKey: (key: string | null) => Promise<void>
+  /** Where a provider's API key comes from, or null when there is none. */
+  keySource: (provider: ProviderId) => Promise<KeySource | null>
+  /** Stores a provider's key encrypted with the OS keychain; null removes it. */
+  setKey: (provider: ProviderId, key: string | null) => Promise<void>
   copyText: (text: string) => void
   platform: string
   /** Downloads the model if needed and loads it into memory. */

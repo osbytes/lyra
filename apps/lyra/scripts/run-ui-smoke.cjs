@@ -13,13 +13,13 @@ function removeQuietly(path) {
   }
 }
 
-process.env.VOICE_PAGES_SMOKE = '1'
-const result = spawnSync(electron, ['.'], {
-  cwd: require('node:path').join(__dirname, '..'),
-  env: process.env,
+const result = spawnSync(electron, ['.', 'smoke'], {
+  cwd: join(__dirname, '..'),
+  // A fake key, so the smoke test can prove ANTHROPIC_API_KEY is picked up and never logged.
+  env: { ...process.env, ANTHROPIC_API_KEY: 'sk-ant-smoke-not-a-real-key' },
   stdio: 'inherit'
 })
 
 // The app keeps its test profile in a per-process temp folder; clean it up.
-if (result.pid) removeQuietly(join(tmpdir(), 'voice-pages-smoke-' + result.pid))
+if (result.pid) removeQuietly(join(tmpdir(), 'lyra-task-' + result.pid))
 process.exit(result.status ?? 1)

@@ -1,10 +1,14 @@
+// pnpm screenshot                  the README shot (docs/screenshot.png)
+// pnpm screenshot --review <dir>   every UI state in both themes, for review
 const { spawnSync } = require('node:child_process')
+const { join, resolve } = require('node:path')
 const electron = require('electron')
 
-process.env.VOICE_PAGES_SCREENSHOT = '1'
-const result = spawnSync(electron, ['.'], {
-  cwd: require('node:path').join(__dirname, '..'),
-  env: process.env,
+const args = process.argv.slice(2)
+const review = args.indexOf('--review')
+if (review !== -1 && args[review + 1]) args[review + 1] = resolve(args[review + 1])
+const result = spawnSync(electron, ['.', 'screenshot', ...args], {
+  cwd: join(__dirname, '..'),
   stdio: 'inherit'
 })
 

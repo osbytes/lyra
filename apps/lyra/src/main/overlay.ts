@@ -3,6 +3,7 @@ import { app, BrowserWindow, screen } from 'electron'
 import { readFileSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { config } from './config'
 import { log } from './log'
 import type { MicPrompt, SessionState } from '../shared/types'
 import {
@@ -93,8 +94,9 @@ function createOverlay(): BrowserWindow {
   win.setAlwaysOnTop(true, 'floating')
   if (process.platform === 'darwin') win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
 
-  if (is.dev && process.env.ELECTRON_RENDERER_URL) {
-    void win.loadURL(`${process.env.ELECTRON_RENDERER_URL}#overlay`)
+  const { rendererUrl } = config()
+  if (is.dev && rendererUrl) {
+    void win.loadURL(`${rendererUrl}#overlay`)
   } else {
     void win.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'overlay' })
   }

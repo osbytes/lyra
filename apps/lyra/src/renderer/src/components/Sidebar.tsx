@@ -35,7 +35,7 @@ function updateLabel(status: UpdateStatus): string | null {
       return 'Restart to update'
     case 'error':
       return 'Update failed. Retry'
-    default:
+    case 'idle':
       return null
   }
 }

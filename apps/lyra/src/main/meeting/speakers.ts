@@ -1,7 +1,7 @@
 import { utilityProcess, type UtilityProcess } from 'electron'
 import { join } from 'node:path'
 import { log } from '../log'
-import { ensureDownload, type DownloadProgress } from '../models'
+import { ensureModelFile, type DownloadProgress, type ModelFile } from '../models'
 import type {
   DiarizeRequest,
   DiarizeResult,
@@ -10,35 +10,32 @@ import type {
   WorkerResponse
 } from './protocol'
 
-const SEGMENTATION = {
+const SEGMENTATION: ModelFile = {
   name: 'pyannote-segmentation-3.0.onnx',
-  url: 'https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/main/model.onnx',
+  url: 'https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/9403a6902bb58e3d5ae8c7e77c3422de279db2e0/model.onnx',
   bytes: 5_992_913,
-  minBytes: 5_000_000
+  sha256: '220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079'
 }
-const EMBEDDING = {
+// A GitHub release asset: the tag could be re-uploaded, so the hash is what pins it.
+const EMBEDDING: ModelFile = {
   name: 'wespeaker-en-voxceleb-resnet34-LM.onnx',
   url: 'https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34_LM.onnx',
   bytes: 26_530_550,
-  minBytes: 25_000_000
+  sha256: 'e9848563da86f263117134dfd7ad63c92355b37de492b55e325400c9d9c39012'
 }
 
 /** Downloads the segmentation and speaker-embedding models on first use (~32 MB). */
 export async function ensureSpeakerModels(onProgress?: DownloadProgress): Promise<SpeakerModels> {
   // Approximate combined progress across both files (sizes known in advance).
   const total = SEGMENTATION.bytes + EMBEDDING.bytes
-  const segmentation = await ensureDownload(
-    SEGMENTATION.name,
-    SEGMENTATION.url,
-    SEGMENTATION.minBytes,
+  const segmentation = await ensureModelFile(
+    SEGMENTATION,
     onProgress && ((received) => {
       onProgress(received, total)
     })
   )
-  const embedding = await ensureDownload(
-    EMBEDDING.name,
-    EMBEDDING.url,
-    EMBEDDING.minBytes,
+  const embedding = await ensureModelFile(
+    EMBEDDING,
     onProgress && ((received) => {
       onProgress(SEGMENTATION.bytes + received, total)
     })

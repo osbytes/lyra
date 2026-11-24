@@ -315,6 +315,16 @@ export async function deleteSessionAudio(pageId: string): Promise<void> {
   }))
 }
 
+/**
+ * Stops a recording still running when the app quits, so its WAV headers carry the real length
+ * and the manifest lists the tracks. Without this the audio of an interrupted take is unreadable.
+ */
+export async function finishRecordingForQuit(): Promise<void> {
+  if (!active) return
+  log('recorder', 'stopping for quit', { pageId: active.pageId })
+  await stop()
+}
+
 /** The session being recorded right now, if any (retention never deletes its audio). */
 export function recordingPageId(): string | null {
   return active?.pageId ?? null

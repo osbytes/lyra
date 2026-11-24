@@ -4,6 +4,33 @@ import reactHooks from 'eslint-plugin-react-hooks'
 import globals from 'globals'
 import tseslint from 'typescript-eslint'
 
+/**
+ * Files that still hold `x as T` casts from before the no-casts rule. The rule is an error
+ * everywhere else. Remove a file from this list once its casts are gone; never add one.
+ * (osbytes playbook: turn a rule on for new code and cap the existing count so it only goes down.)
+ */
+const CAST_BASELINE = [
+  'src/main/meeting/live.ts',
+  'src/main/meeting/notesFormat.ts',
+  'src/main/meeting/notesWorker.ts',
+  'src/main/meeting/pipeline.ts',
+  'src/main/meeting/relabel.ts',
+  'src/main/meeting/worker.ts',
+  'src/main/pages.ts',
+  'src/main/recorder.ts',
+  'src/main/session.ts',
+  'src/main/sessionStore.ts',
+  'src/main/settings.ts',
+  'src/main/tasks/screenshot.ts',
+  'src/main/tasks/smoke.ts',
+  'src/main/voices.ts',
+  'src/main/whisper.ts',
+  'src/renderer/src/components/Settings.tsx',
+  'src/renderer/src/lib/log.ts',
+  'src/shared/sessionDoc.ts',
+  'src/shared/transcriptOverlay.ts'
+]
+
 export default tseslint.config(
   { ignores: ['out/**', 'dist/**', 'node_modules/**', 'build/**', 'docs/**'] },
 
@@ -60,8 +87,35 @@ export default tseslint.config(
       // Electron hands out class instances from factories and events (Menu.buildFromTemplate,
       // BrowserWindow from 'browser-window-created'), which this rule misreports as unsafe.
       '@typescript-eslint/no-unsafe-class-instance-assignment': 'off',
+      // A union gains a member: every switch over it must say what to do (no silent default).
+      '@typescript-eslint/switch-exhaustiveness-check': 'error',
+      // Narrow instead of casting (`as const` is fine); see .agents/rules/typescript.md.
+      '@typescript-eslint/consistent-type-assertions': ['error', { assertionStyle: 'never' }],
       eqeqeq: ['error', 'always'],
-      'no-console': ['warn', { allow: ['warn', 'error'] }]
+      // Rules are errors or off: logging goes through log(), never the console.
+      'no-console': 'error'
+    }
+  },
+
+  {
+    files: CAST_BASELINE,
+    rules: {
+      '@typescript-eslint/consistent-type-assertions': [
+        'error',
+        { assertionStyle: 'as', objectLiteralTypeAssertions: 'allow' }
+      ]
+    }
+  },
+
+  {
+    // Configuration comes from config.ts, which parses the environment once at startup.
+    files: ['src/main/**/*.ts', 'src/preload/**/*.ts'],
+    ignores: ['src/main/config.ts'],
+    rules: {
+      'no-restricted-properties': [
+        'error',
+        { object: 'process', property: 'env', message: 'Read configuration through config() in src/main/config.ts.' }
+      ]
     }
   },
 

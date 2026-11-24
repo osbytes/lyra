@@ -10,7 +10,7 @@ import styles from './showcase.module.css'
 import { Transcript } from './Transcript'
 
 type Tab = 'transcript' | 'notes'
-type Engine = 'local' | 'claude'
+type Engine = 'local' | 'cloud'
 
 const SPEAKER_CLASS: Record<string, string | undefined> = {
   c1: styles.s1,
@@ -181,14 +181,14 @@ export function MeetingCard() {
             <button type="button" aria-pressed={engine === 'local'} onClick={() => setEngine('local')}>
               On this computer
             </button>
-            <button type="button" aria-pressed={engine === 'claude'} onClick={() => setEngine('claude')}>
-              With Claude
+            <button type="button" aria-pressed={engine === 'cloud'} onClick={() => setEngine('cloud')}>
+              Cloud model
             </button>
           </div>
           <p className={styles.engineCap}>
             {engine === 'local'
               ? 'Written by a small model on this computer with llama.cpp. Nothing leaves it.'
-              : 'Sends the transcript text to Anthropic with your own API key. Audio and voiceprints stay on this computer.'}{' '}
+              : 'Sends the transcript text to the provider you pick (Anthropic, OpenAI, Google or your own server) with your own key. Audio and voiceprints stay on this computer.'}{' '}
             Meeting notes are off until you choose one in Settings.
           </p>
         </div>

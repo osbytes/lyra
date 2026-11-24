@@ -1,8 +1,9 @@
 # TypeScript rules
 
 Enforced by `tsconfig*.json` (`strict`, `noImplicitAny`, `noUncheckedIndexedAccess`,
-`noImplicitOverride`) and `eslint.config.mjs` (typescript-eslint `strictTypeChecked` +
-`stylisticTypeChecked`). If a rule here and the tooling disagree, the tooling wins: fix the code,
+`noImplicitOverride`, `exactOptionalPropertyTypes`, `verbatimModuleSyntax`) and `eslint.config.mjs`
+(typescript-eslint `strictTypeChecked` + `stylisticTypeChecked`, plus no casts, exhaustive
+switches, no `console`, and no `process.env` outside `src/main/config.ts`). If a rule here and the tooling disagree, the tooling wins: fix the code,
 not the config.
 
 ## No `any`
@@ -11,8 +12,9 @@ not the config.
   (`@typescript-eslint/no-explicit-any`)
 - Values whose type you don't control are `unknown`: IPC payloads, `JSON.parse`, `require()` of
   native addons, `catch` variables, `fetch` bodies, files read from disk.
-- Narrow `unknown` before use with type guards, `typeof`/`instanceof`/`Array.isArray`, or a
-  validator function. Don't let an implicit `any` leak through (`no-unsafe-*` rules).
+- Narrow `unknown` before use. For any shape (IPC payloads, files, env, argv, model replies), write
+  one zod schema and derive the type with `z.infer`; parse with that schema. Don't define a type
+  and then hand-write guards for it. Don't let an implicit `any` leak through (`no-unsafe-*`).
 
 ```ts
 // Bad
@@ -32,7 +34,10 @@ const settings = sanitize(data, defaults)  // validates field by field
 - No non-null assertions (`value!`). Check and handle the missing case, or restructure so the
   type is already non-null. (`no-non-null-assertion`)
 - No `@ts-ignore` / `@ts-nocheck`. `@ts-expect-error` only with a description of why.
-- `as` casts only to narrow from `unknown` at a validated boundary, never to silence an error.
+- No `as` casts (`consistent-type-assertions`, `assertionStyle: never`; `as const` is fine).
+  Narrow with a type guard, `instanceof`, a validator or a declared type instead. Files listed in
+  `CAST_BASELINE` in `eslint.config.mjs` still hold older casts: take a file off the list once
+  its casts are gone, and never add one.
 - `eslint-disable-next-line <rule>` only with a comment on the line above explaining why the rule
   is wrong in this spot. Never disable a rule file-wide.
 
@@ -52,6 +57,8 @@ const settings = sanitize(data, defaults)  // validates field by field
 - Model states as discriminated unions (`{ state: 'idle' } | { state: 'error'; message: string }`),
   not optional-field bags.
 - String literal unions over `enum`.
+- A `switch` over a union lists every member (`switch-exhaustiveness-check`); no catch-all
+  `default`, so a new member is a compile-time decision, not a silent fall-through.
 - Annotate exported function return types. Let TypeScript infer locals.
 - Shared cross-process types live in `src/shared/types.ts`.
 - `import type` for type-only imports (`consistent-type-imports`).
@@ -78,3 +85,5 @@ const settings = sanitize(data, defaults)  // validates field by field
   constants.
 - Small, single-purpose functions. Extract a function when a block needs a comment to explain it.
 - No dead code, no commented-out code, no `console.*` outside the logging modules.
+- Configuration comes from `config()` (`src/main/config.ts`), never `process.env`; a new variable
+  goes in `src/main/envSpec.ts` and `pnpm config:docs` regenerates `docs/CONFIG.md`.

@@ -285,7 +285,7 @@ from the plan above:
   on the diarized voice it shares the most talk with. The live pass's decisions are kept in
   `raw/live.json` (`trace`) and the relabeled lines as `raw/pass-N.json`, so `pnpm replay:session`
   can re-run a session that came out wrong. `processMeeting` (diarize, then transcribe each turn)
-  remains for `LYRA_MEETING_PIPELINE=offline` and the eval.
+  remains for `pnpm smoke:meeting <file.wav> --offline` and the eval.
 - **Notes are only what the user types.** Earlier versions wrote live text into the notes and
   replaced it with the labeled transcript afterwards (`meta.liveRanges`, `removeLiveNotes`); that
   path remains for documents made that way. A live range now also counts the phrases placed so

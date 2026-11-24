@@ -50,10 +50,17 @@ function scoreFiles(refPath, hypPath) {
 
 /** Runs the real pipeline through the smoke:meeting entry point and returns its transcript. */
 function runLyra(item, output) {
-  const args = [join(__dirname, 'run-meeting-smoke.cjs'), item.wav, ...(item.system ? [item.system] : [])]
+  const args = [
+    join(__dirname, 'run-meeting-smoke.cjs'),
+    item.wav,
+    ...(item.system ? [item.system] : []),
+    '--output',
+    output,
+    ...(pipeline === 'offline' ? ['--offline'] : []),
+    ...(pipeline === 'stream' ? ['--no-relabel'] : [])
+  ]
   const result = spawnSync(process.execPath, args, {
     cwd: root,
-    env: { ...process.env, LYRA_MEETING_OUTPUT: output, LYRA_MEETING_PIPELINE: pipeline === 'offline' ? 'offline' : 'live', LYRA_RELABEL: pipeline === 'stream' ? '0' : '1' },
     stdio: ['ignore', 'ignore', 'inherit']
   })
   if (result.status !== 0 || !existsSync(output)) throw new Error(`pipeline failed on ${item.wav} (exit ${result.status})`)

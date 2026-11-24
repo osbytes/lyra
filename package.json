@@ -4,6 +4,9 @@
   "description": "Lyra monorepo: the desktop app lives in apps/lyra.",
   "license": "MIT",
   "packageManager": "pnpm@10.15.1",
+  "engines": {
+    "node": ">=22.18.0 <23"
+  },
   "scripts": {
     "dev": "turbo run dev --filter=lyra",
     "dev:web": "turbo run dev --filter=web",
