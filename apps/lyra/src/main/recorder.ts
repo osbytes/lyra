@@ -112,7 +112,10 @@ async function start(pageId: string, withSystem: boolean): Promise<number> {
   const tracks = new Map<AudioTrack, TrackFile>([['mic', await openTrack(pageId, 'mic', 0)]])
   if (withSystem) tracks.set('system', await openTrack(pageId, 'system', micBytes))
   const offset = micBytes / BYTES_PER_SECOND
-  const writer = new TakeWriter(pageId, tracks.has('system'))
+  const earlier = (await readLiveSegments(pageId)).flatMap((segment) =>
+    segment.track === 'mix' ? [] : [{ track: segment.track, start: segment.start, end: segment.end }]
+  )
+  const writer = new TakeWriter(pageId, tracks.has('system'), earlier)
   const context = await writer.begin()
   const live: LiveSegment[] = []
   const recording: Recording = {
@@ -191,20 +194,24 @@ async function finalize(file: TrackFile): Promise<void> {
   }
 }
 
+/** Earlier takes' words in `raw/live.json` (none before the first take). */
+async function readLiveSegments(pageId: string): Promise<LiveSegment[]> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(join(sessionRawDir(pageId), 'live.json'), 'utf8'))
+    const list = (parsed as { segments?: unknown }).segments
+    return Array.isArray(list) ? (list as LiveSegment[]) : []
+  } catch {
+    return []
+  }
+}
+
 /** Merges this take's words into `raw/live.json`. */
 async function saveLivePass(pageId: string, segments: LiveSegment[]): Promise<boolean> {
   if (!segments.length) return false
   const dir = sessionRawDir(pageId)
   await mkdir(dir, { recursive: true })
   const path = join(dir, 'live.json')
-  let previous: LiveSegment[] = []
-  try {
-    const parsed: unknown = JSON.parse(await readFile(path, 'utf8'))
-    const list = (parsed as { segments?: unknown }).segments
-    if (Array.isArray(list)) previous = list as LiveSegment[]
-  } catch {
-    // First take.
-  }
+  const previous = await readLiveSegments(pageId)
   const pass: RawPass = {
     id: 'live',
     kind: 'live',

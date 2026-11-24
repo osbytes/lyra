@@ -1,5 +1,5 @@
 /** `lyra smoke`: main-process checks, then the IPC bridge exercised from the renderer. */
-import { app, type BrowserWindow } from 'electron'
+import { app, clipboard, type BrowserWindow } from 'electron'
 import { existsSync } from 'node:fs'
 import { mkdir, readdir, readFile, utimes, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -777,6 +777,14 @@ async function checkTranscriptModel(): Promise<void> {
   await deletePage(id)
 }
 
+/** Copy buttons: the sandboxed preload has no clipboard module, so text goes through main. */
+async function checkCopy(win: BrowserWindow): Promise<void> {
+  const text = `lyra smoke copy ${String(Date.now())}`
+  await win.webContents.executeJavaScript(`window.api.copyText(${JSON.stringify(text)})`)
+  for (let i = 0; i < 50 && clipboard.readText() !== text; i++) await new Promise((done) => setTimeout(done, 20))
+  if (clipboard.readText() !== text) throw new Error('copyText did not reach the clipboard')
+}
+
 export async function runUiSmoke(win: BrowserWindow): Promise<void> {
   try {
     checkConfigParsing()
@@ -790,6 +798,7 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
     await checkSearchIndexMirror()
     await checkSearchQueries()
     await checkSemanticSearch()
+    await checkCopy(win)
     const result: unknown = await win.webContents.executeJavaScript(`
       (async () => {
         const fail = (message) => { throw new Error(message) }

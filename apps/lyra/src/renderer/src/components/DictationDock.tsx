@@ -37,8 +37,12 @@ type Props = {
   subscribeLevel: SubscribeLevel
   /** Speech is waiting to be transcribed. */
   transcribing: boolean
-  /** Starts or stops recording into the open session. */
+  /** Starts or stops recording into the open session (or stops the one recording elsewhere). */
   onToggle: () => void
+  /** When the recording began (ms since epoch), so the timer survives switching sessions. */
+  startedAt: number | null
+  /** Recording a session other than the open one: its title, and a way back to it. */
+  elsewhere: { title: string; onShow: () => void } | null
   micDeviceId: string | null
   onMicChange: (deviceId: string | null) => void
   systemAudio: boolean
@@ -103,16 +107,15 @@ function Meters({ subscribe, systemAudio }: { subscribe: SubscribeLevel; systemA
   )
 }
 
-function useElapsed(running: boolean): number {
-  const [elapsed, setElapsed] = useState(0)
+function useElapsed(startedAt: number | null): number {
+  const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
-    if (!running) return
-    const startedAt = Date.now()
-    setElapsed(0)
-    const timer = setInterval(() => setElapsed(Date.now() - startedAt), 250)
+    if (startedAt === null) return
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), 250)
     return () => clearInterval(timer)
-  }, [running])
-  return elapsed
+  }, [startedAt])
+  return startedAt === null ? 0 : Math.max(0, now - startedAt)
 }
 
 function statusText(phase: DictationPhase, status: WhisperStatus, transcribing: boolean): string {
@@ -342,10 +345,10 @@ function useDockDrag() {
 }
 
 export function DictationDock(props: Props) {
-  const { phase, status, error, notice, subscribeLevel, transcribing, onToggle } = props
+  const { phase, status, error, notice, subscribeLevel, transcribing, onToggle, elsewhere } = props
   const listening = phase === 'listening'
   const busy = phase === 'starting' || phase === 'finishing'
-  const elapsed = useElapsed(listening)
+  const elapsed = useElapsed(listening ? props.startedAt : null)
   const button = useRef<HTMLButtonElement>(null)
   const drag = useDockDrag()
   const label = statusText(phase, status, transcribing)
@@ -385,8 +388,21 @@ export function DictationDock(props: Props) {
           className="mic-btn"
           onClick={onToggle}
           disabled={busy}
-          aria-label={listening ? 'Stop recording' : 'Continue recording this session'}
-          {...tip(listening ? 'Stop' : 'Continue session · adds to the end', shortcutLabel('D', true))}
+          aria-label={
+            listening
+              ? elsewhere
+                ? `Stop recording “${elsewhere.title}”`
+                : 'Stop recording'
+              : 'Continue recording this session'
+          }
+          {...tip(
+            listening
+              ? elsewhere
+                ? `Stop recording “${elsewhere.title}”`
+                : 'Stop'
+              : 'Continue session · adds to the end',
+            shortcutLabel('D', true)
+          )}
         >
           {listening ? <StopIcon /> : <MicIcon />}
         </button>
@@ -398,6 +414,17 @@ export function DictationDock(props: Props) {
           >
             {label}
           </span>
+        ) : null}
+
+        {elsewhere && (listening || busy) ? (
+          <button
+            type="button"
+            className="dock-elsewhere"
+            onClick={elsewhere.onShow}
+            {...tip('Go to the session being recorded')}
+          >
+            {elsewhere.title}
+          </button>
         ) : null}
 
         {listening ? (

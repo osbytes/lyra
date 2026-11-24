@@ -8,6 +8,7 @@ import {
   newSpeakerId,
   renumberSpeakers,
   replaceTranscript,
+  snapshotOf,
   speakersOf,
   SURE_MATCH,
   upsertSpeaker,
@@ -242,10 +243,11 @@ async function relabel(pageId: string): Promise<void> {
     seconds: +((Date.now() - started) / 1000).toFixed(1)
   })
 
-  // A recording started on this session meanwhile, or its lines changed: this pass is stale.
-  const now = await readSession(pageId)
-  const ids = (snapshot: typeof now): string => snapshot.transcript.map((line) => line.id).join(',')
-  if (recordingPageId() === pageId || ids(now) !== ids(before)) {
+  const ids = (transcript: readonly { id: string }[]): string => transcript.map((line) => line.id).join(',')
+  const stale = (transcript: readonly { id: string }[]): boolean =>
+    recordingPageId() === pageId || ids(transcript) !== ids(before.transcript)
+  // Bail before naming the voices, which also teaches saved voiceprints from this pass.
+  if (stale((await readSession(pageId)).transcript)) {
     log('relabel', 'session changed while diarizing; left as is', { pageId })
     broadcast({ pageId, state: 'done', progress: 1 })
     return
@@ -259,17 +261,22 @@ async function relabel(pageId: string): Promise<void> {
   const passId = await nextPassId(pageId)
   const idOf = new Map<number, string>()
   const fields = new Map<string, Omit<SpeakerEntry, 'id'>>()
-  await editSession(pageId, (doc) => {
-    const old = new Map(before.speakers.map((speaker) => [speaker.id, speaker]))
-    for (const speaker of named) {
-      const id = continues.get(speaker.cluster) ?? null
-      const kept = id ? old.get(id) : undefined
-      const fresh = id ?? newSpeakerId(doc)
-      idOf.set(speaker.cluster, fresh)
-      // The user's name for a voice outranks Lyra's guess at it.
-      fields.set(
-        fresh,
-        kept?.confirmed
+  let segments: NewSegment[] = []
+
+  // One edit, checked inside it: a recording started on this session meanwhile, or its lines
+  // changed, makes this pass stale. Checking earlier left a gap (naming the voices takes a while)
+  // in which a new take's lines could be replaced and their speaker removed under them.
+  const applied = await editSession(pageId, (doc) => {
+    if (stale(snapshotOf(doc).transcript)) return false
+    doc.transact(() => {
+      const old = new Map(before.speakers.map((speaker) => [speaker.id, speaker]))
+      for (const speaker of named) {
+        const id = continues.get(speaker.cluster) ?? null
+        const kept = id ? old.get(id) : undefined
+        const fresh = id ?? newSpeakerId(doc)
+        idOf.set(speaker.cluster, fresh)
+        // The user's name for a voice outranks Lyra's guess at it.
+        const entry = kept?.confirmed
           ? { ...kept, matches: speaker.matches }
           : {
               name: speaker.name,
@@ -278,21 +285,34 @@ async function relabel(pageId: string): Promise<void> {
               confidence: speaker.confidence,
               matches: speaker.matches
             }
-      )
-      // Reserve the id so the next newSpeakerId doesn't hand it out again.
-      if (!id) upsertSpeaker(doc, fresh, fields.get(fresh) ?? {}, ORIGIN_RELABEL)
-    }
+        fields.set(fresh, entry)
+        // Written now so the next newSpeakerId doesn't hand the id out again.
+        upsertSpeaker(doc, fresh, entry, ORIGIN_RELABEL)
+      }
+      segments = lines.map((line, index) => ({
+        id: `${passId}-s${String(index)}`,
+        rawId: `${passId}-s${String(index)}`,
+        start: line.words[0]?.start ?? 0,
+        end: line.words.at(-1)?.end ?? 0,
+        cluster: idOf.get(line.speaker) ?? null,
+        confidence: null,
+        text: line.words.map((word) => word.text).join('').trim()
+      }))
+      replaceTranscript(doc, segments, ORIGIN_RELABEL)
+      // Voices nobody speaks as any more.
+      const used = new Set(fields.keys())
+      const map = speakersOf(doc)
+      for (const id of [...(map?.keys() ?? [])]) if (!used.has(id)) map?.delete(id)
+      renumberSpeakers(doc, ORIGIN_RELABEL)
+    }, ORIGIN_RELABEL)
+    return true
   })
+  if (!applied) {
+    log('relabel', 'session changed while diarizing; left as is', { pageId })
+    broadcast({ pageId, state: 'done', progress: 1 })
+    return
+  }
 
-  const segments: NewSegment[] = lines.map((line, index) => ({
-    id: `${passId}-s${String(index)}`,
-    rawId: `${passId}-s${String(index)}`,
-    start: line.words[0]?.start ?? 0,
-    end: line.words.at(-1)?.end ?? 0,
-    cluster: idOf.get(line.speaker) ?? null,
-    confidence: null,
-    text: line.words.map((word) => word.text).join('').trim()
-  }))
   const pass: RawPass = {
     id: passId,
     kind: 'diarized',
@@ -316,17 +336,6 @@ async function relabel(pageId: string): Promise<void> {
   await mkdir(sessionRawDir(pageId), { recursive: true })
   await writeFile(join(sessionRawDir(pageId), `${passId}.json`), JSON.stringify(pass), 'utf8')
 
-  await editSession(pageId, (doc) => {
-    doc.transact(() => {
-      for (const [id, speaker] of fields) upsertSpeaker(doc, id, speaker, ORIGIN_RELABEL)
-      replaceTranscript(doc, segments, ORIGIN_RELABEL)
-      // Voices nobody speaks as any more.
-      const used = new Set(fields.keys())
-      const map = speakersOf(doc)
-      for (const id of [...(map?.keys() ?? [])]) if (!used.has(id)) map?.delete(id)
-      renumberSpeakers(doc, ORIGIN_RELABEL)
-    }, ORIGIN_RELABEL)
-  })
   await updateManifest(pageId, (manifest) => ({
     ...manifest,
     passes: [...manifest.passes, { id: passId, kind: 'diarized', createdAt: pass.createdAt, model: pass.model }]

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import type { PageSummary, UpdateStatus } from '../../../shared/types'
 import lyraIcon from '../assets/lyra-icon.png'
 import { dayGroup, shortcutLabel } from '../lib/format'
@@ -10,6 +10,8 @@ import { tip } from './Tooltip'
 type Props = {
   pages: PageSummary[]
   activeId: string | undefined
+  /** The session being recorded, marked in the list (and pinned on top when it's further down). */
+  recordingId: string | null
   update: UpdateStatus
   onOpen: (id: string) => void
   onCreate: () => void
@@ -17,7 +19,7 @@ type Props = {
   onSettings: () => void
   /** A setting needs attention (e.g. the shortcut is taken): flags the Settings button. */
   settingsIssue: boolean
-  /** Opens the full-text search palette. */
+  /** Opens the search palette (fuzzy titles, plus the notes and transcripts). */
   onSearch: () => void
   /** Every tag in use, with counts, most used first. */
   tags: readonly (readonly [string, number])[]
@@ -58,6 +60,7 @@ function groupByDay(pages: PageSummary[]): Group[] {
 export function Sidebar({
   pages,
   activeId,
+  recordingId,
   update,
   onOpen,
   onCreate,
@@ -69,18 +72,84 @@ export function Sidebar({
   tagFilter,
   onTagFilter
 }: Props) {
-  const [query, setQuery] = useState('')
   const menu = useContextMenu()
 
-  const groups = useMemo(() => {
-    const needle = query.trim().toLowerCase()
-    const visible = pages.filter(
-      (page) =>
-        (!needle || `${page.title} ${page.preview} ${page.tags.join(' ')}`.toLowerCase().includes(needle)) &&
-        (!tagFilter || page.tags.includes(tagFilter))
-    )
-    return groupByDay(visible)
-  }, [pages, query, tagFilter])
+  const groups = useMemo(
+    () => groupByDay(pages.filter((page) => !tagFilter || page.tags.includes(tagFilter))),
+    [pages, tagFilter]
+  )
+  // A recording that isn't in the first group (an older session continued, or one filtered out)
+  // is pinned above the list, so it's always in view.
+  const recording = recordingId ? pages.find((page) => page.id === recordingId) : undefined
+  const pinned = recording && !groups[0]?.pages.some((page) => page.id === recording.id) ? recording : undefined
+
+  const row = (page: PageSummary): React.JSX.Element => (
+    <div
+      key={page.id}
+      className={`page-row${page.id === activeId ? ' active' : ''}${page.id === recordingId ? ' is-recording' : ''}`}
+      onContextMenu={(event) => {
+        menu.open(event, page.title || 'Untitled', [
+          { label: 'Open', run: () => onOpen(page.id) },
+          {
+            label: 'Show in folder',
+            icon: <FolderIcon />,
+            run: () => void window.api.revealPage(page.id)
+          },
+          'separator',
+          {
+            label: 'Delete…',
+            icon: <TrashIcon />,
+            shortcut: 'Del',
+            danger: true,
+            run: () => onDelete(page)
+          }
+        ])
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'Delete' || (event.key === 'Backspace' && event.metaKey)) {
+          event.preventDefault()
+          onDelete(page)
+        }
+      }}
+    >
+      <button
+        type="button"
+        className="page-item"
+        aria-current={page.id === activeId ? 'page' : undefined}
+        onClick={() => {
+          onOpen(page.id)
+        }}
+      >
+        <span className="page-title">
+          {page.id === recordingId ? (
+            <span className="rec-dot" role="img" aria-label="Recording" {...tip('Recording')} />
+          ) : null}
+          {page.title || 'Untitled'}
+        </span>
+        <span className="page-preview">
+          {page.speakers > 1 ? (
+            <span className="page-speakers">
+              <PeopleIcon />
+              {page.speakers} speakers
+            </span>
+          ) : null}
+          {page.speakers > 1 ? ' · ' : null}
+          {page.preview || 'Empty session'}
+        </span>
+      </button>
+      <button
+        type="button"
+        className="page-delete"
+        aria-label={`Delete ${page.title || 'Untitled'}`}
+        {...tip('Delete session')}
+        onClick={() => {
+          onDelete(page)
+        }}
+      >
+        <TrashIcon />
+      </button>
+    </div>
+  )
 
   const label = updateLabel(update)
   const onUpdate = (): void => {
@@ -98,29 +167,17 @@ export function Sidebar({
       </div>
 
       <div className="sidebar-tools">
-        <label className="search">
+        <button
+          className="search"
+          type="button"
+          onClick={onSearch}
+          aria-label={`Search sessions (${shortcutLabel('K')})`}
+          {...tip('Search titles, notes and transcripts', shortcutLabel('K'))}
+        >
           <SearchIcon />
-          <input
-            type="search"
-            value={query}
-            onChange={(event) => {
-              setQuery(event.target.value)
-            }}
-            placeholder="Search"
-            aria-label="Search sessions"
-          />
-          {query ? null : (
-            <button
-              className="search-shortcut"
-              type="button"
-              onClick={onSearch}
-              {...tip('Search notes and transcripts', shortcutLabel('K'))}
-              aria-label={`Search notes and transcripts (${shortcutLabel('K')})`}
-            >
-              <kbd>{shortcutLabel('K')}</kbd>
-            </button>
-          )}
-        </label>
+          <span className="search-placeholder">Search</span>
+          <kbd className="search-kbd">{shortcutLabel('K')}</kbd>
+        </button>
         <button
           className="new-page-btn"
           type="button"
@@ -159,26 +216,20 @@ export function Sidebar({
         </div>
       ) : null}
 
+      {pinned ? (
+        <section className="page-pinned" aria-label="Recording now">
+          <h2 className="page-group-label">Recording now</h2>
+          {row(pinned)}
+        </section>
+      ) : null}
+
       <ScrollArea as="nav" className="page-list" aria-label="Sessions">
         {groups.length === 0 ? (
-          tagFilter && !query ? (
+          tagFilter ? (
             <div className="page-list-empty">
               <p>No sessions tagged #{tagFilter}.</p>
               <button className="btn" type="button" onClick={() => onTagFilter(null)}>
                 Show all sessions
-              </button>
-            </div>
-          ) : query ? (
-            <div className="page-list-empty">
-              <p>No sessions match “{query.trim()}”.</p>
-              <button
-                className="btn"
-                type="button"
-                onClick={() => {
-                  setQuery('')
-                }}
-              >
-                Clear search
               </button>
             </div>
           ) : (
@@ -188,68 +239,7 @@ export function Sidebar({
           groups.map((group) => (
             <section key={group.label} className="page-group" aria-label={group.label}>
               <h2 className="page-group-label">{group.label}</h2>
-              {group.pages.map((page) => (
-                <div
-                  key={page.id}
-                  className={`page-row${page.id === activeId ? ' active' : ''}`}
-                  onContextMenu={(event) => {
-                    menu.open(event, page.title || 'Untitled', [
-                      { label: 'Open', run: () => onOpen(page.id) },
-                      {
-                        label: 'Show in folder',
-                        icon: <FolderIcon />,
-                        run: () => void window.api.revealPage(page.id)
-                      },
-                      'separator',
-                      {
-                        label: 'Delete…',
-                        icon: <TrashIcon />,
-                        shortcut: 'Del',
-                        danger: true,
-                        run: () => onDelete(page)
-                      }
-                    ])
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Delete' || (event.key === 'Backspace' && event.metaKey)) {
-                      event.preventDefault()
-                      onDelete(page)
-                    }
-                  }}
-                >
-                  <button
-                    type="button"
-                    className="page-item"
-                    aria-current={page.id === activeId ? 'page' : undefined}
-                    onClick={() => {
-                      onOpen(page.id)
-                    }}
-                  >
-                    <span className="page-title">{page.title || 'Untitled'}</span>
-                    <span className="page-preview">
-                      {page.speakers > 1 ? (
-                        <span className="page-speakers">
-                          <PeopleIcon />
-                          {page.speakers} speakers
-                        </span>
-                      ) : null}
-                      {page.speakers > 1 ? ' · ' : null}
-                      {page.preview || 'Empty session'}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    className="page-delete"
-                    aria-label={`Delete ${page.title || 'Untitled'}`}
-                    {...tip('Delete session')}
-                    onClick={() => {
-                      onDelete(page)
-                    }}
-                  >
-                    <TrashIcon />
-                  </button>
-                </div>
-              ))}
+              {group.pages.map(row)}
             </section>
           ))
         )}

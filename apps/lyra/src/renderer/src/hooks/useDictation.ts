@@ -44,6 +44,8 @@ export function useDictation({ getDeviceId }: Options) {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [progress, setProgress] = useState<TranscriptProgress | null>(null)
+  /** The session being recorded (or starting, or finishing), wherever the window has navigated. */
+  const [pageId, setPageId] = useState<string | null>(null)
 
   const session = useRef<Session | null>(null)
   /** The session being recorded, until its last chunks are transcribed after a stop. */
@@ -78,6 +80,7 @@ export function useDictation({ getDeviceId }: Options) {
     setError(null)
     setNotice(null)
     setProgress(null)
+    setPageId(record.pageId)
     setPhase('starting')
     const fail = (caught: unknown): void => {
       log('dictation', 'error', String(caught))
@@ -190,6 +193,7 @@ export function useDictation({ getDeviceId }: Options) {
     } catch (caught) {
       log('dictation', 'failed to start', String(caught))
       fail(caught)
+      setPageId(null)
       setPhase('idle')
     } finally {
       if (starting.current === attempt) starting.current = null
@@ -203,6 +207,7 @@ export function useDictation({ getDeviceId }: Options) {
         // Still warming up: give up on this start now rather than after the model loads.
         starting.current.cancelled = true
         starting.current = null
+        setPageId(null)
         setPhase('idle')
       }
       return
@@ -214,6 +219,7 @@ export function useDictation({ getDeviceId }: Options) {
     recordingPage.current = null
     setProgress(null)
     setMicName('')
+    setPageId(null)
     setPhase('idle')
     log('dictation', 'stopped')
   }, [])
@@ -225,6 +231,7 @@ export function useDictation({ getDeviceId }: Options) {
   return {
     phase,
     recording: phase === 'listening' || phase === 'starting',
+    pageId,
     progress,
     micName,
     error,

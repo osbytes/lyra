@@ -1,4 +1,4 @@
-import { clipboard, contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer } from 'electron'
 import type {
   HotkeyStatus,
   MeetingStatus,
@@ -95,7 +95,7 @@ const api: VoicePagesApi = {
   generateNotes: (pageId) => ipcRenderer.invoke('notes:generate', pageId),
   keySource: (provider) => ipcRenderer.invoke('secrets:keySource', provider),
   setKey: (provider, key) => ipcRenderer.invoke('secrets:setKey', provider, key),
-  copyText: (text) => clipboard.writeText(text),
+  copyText: (text) => ipcRenderer.send('clipboard:write', text),
   platform: process.platform,
   warmUp: () => ipcRenderer.invoke('whisper:warmUp'),
   log: (scope, message, data) => ipcRenderer.send('log:write', scope, message, data),

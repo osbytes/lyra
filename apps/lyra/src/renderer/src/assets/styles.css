@@ -418,42 +418,61 @@ code {
   color: var(--text-subtle);
 }
 
-.search:focus-within {
+.search {
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.search:hover {
+  border-color: var(--border-strong);
+}
+
+.search:focus-visible {
   border-color: var(--accent);
+  outline: none;
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
-.search input {
+.search-placeholder {
   flex: 1;
   min-width: 0;
-  border: 0;
-  outline: none;
-  background: transparent;
   font-size: 13px;
 }
 
-.search input::placeholder {
-  color: var(--text-subtle);
-}
-
-.search-shortcut {
-  display: flex;
+.search-kbd {
   flex-shrink: 0;
-  padding: 0;
-  border: 0;
-  background: transparent;
-}
-
-.search-shortcut kbd {
   padding: 0 5px;
   font-size: 11px;
   line-height: 18px;
   box-shadow: none;
 }
 
-.search-shortcut:hover kbd {
-  background: var(--surface-hover);
-  color: var(--text);
+/* The session being recorded: a live dot by its title, and pinned on top when it's further down. */
+.rec-dot {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--record);
+  box-shadow: 0 0 0 3px var(--record-soft);
+  vertical-align: 1px;
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.page-pinned {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 8px 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.page-pinned .page-group-label {
+  color: var(--record);
 }
 
 .new-page-btn {
@@ -1035,6 +1054,25 @@ code {
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.dock-elsewhere {
+  max-width: 160px;
+  overflow: hidden;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dock-elsewhere:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
 }
 
 .dock-divider {
@@ -2630,13 +2668,14 @@ code {
 .overlay-pill {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 8px;
   height: 100vh;
-  padding: 4px;
-  border: 1px solid var(--border);
+  padding: 4px 4px 4px 2px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
   border-radius: 999px;
   background: color-mix(in srgb, var(--surface) 94%, transparent);
   cursor: grab;
+  user-select: none;
   -webkit-app-region: drag;
 }
 
@@ -2644,19 +2683,29 @@ code {
   display: grid;
   flex: 0 0 auto;
   place-items: center;
-  width: 14px;
+  width: 12px;
   height: 100%;
   color: var(--text-subtle);
+  opacity: 0.6;
+}
+
+/* The dock's mic button, as Stop: shares .mic-btn and its level ring (.is-listening). */
+.overlay-stop {
+  -webkit-app-region: no-drag;
+}
+
+.overlay-stop:disabled {
+  cursor: default;
 }
 
 .overlay-body {
   display: flex;
   flex: 1;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
   height: 100%;
-  padding: 0 8px 0 6px;
+  padding: 0 12px 0 4px;
   border: 0;
   border-radius: 999px;
   background: transparent;
@@ -2670,72 +2719,13 @@ code {
   background: var(--surface-hover);
 }
 
-.overlay-dot {
-  flex-shrink: 0;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--text-subtle);
-}
-
-.overlay-dot.is-live {
-  background: var(--record);
-  box-shadow: 0 0 0 3px var(--record-soft);
-}
-
-.overlay-time {
-  flex-shrink: 0;
-  color: var(--text-muted);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-
-.overlay-bars {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  gap: 2px;
-  height: 16px;
-}
-
-.overlay-bars span {
-  width: 2px;
-  height: 100%;
-  border-radius: 1px;
-  background: var(--accent);
-  transform: scaleY(0.15);
-  transition: transform 80ms linear;
-}
-
-.overlay-live {
+.overlay-body .dock-status {
+  flex: 1;
   min-width: 0;
-  overflow: hidden;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.overlay-stop {
-  display: grid;
-  flex-shrink: 0;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  border: 0;
-  border-radius: 50%;
-  background: var(--record);
-  color: #ffffff;
-  cursor: pointer;
-  -webkit-app-region: no-drag;
-}
-
-.overlay-stop svg {
-  width: 14px;
-  height: 14px;
-}
-
-.overlay-stop:disabled {
-  opacity: 0.5;
+.overlay-body .dock-timer {
+  text-align: right;
 }
 
 .overlay-prompt {
@@ -3950,4 +3940,75 @@ p.line-text {
 
 .btn.primary.is-danger:hover:not(:disabled) {
   background: color-mix(in srgb, var(--danger) 85%, black);
+}
+
+/* Find in session (Ctrl/Cmd+F): floats at the top right of the column, over the notes. */
+.find-bar {
+  position: absolute;
+  z-index: var(--layer-dialog);
+  top: 8px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 40px;
+  padding: 4px 4px 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  animation: rise 120ms ease-out;
+}
+
+.find-bar input {
+  width: 200px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font-size: 13px;
+}
+
+.find-bar input::placeholder {
+  color: var(--text-subtle);
+}
+
+.find-count {
+  min-width: 64px;
+  padding: 0 6px;
+  color: var(--text-subtle);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.find-count.is-empty {
+  color: var(--danger);
+}
+
+.find-bar .icon-btn {
+  width: 28px;
+  height: 28px;
+}
+
+.find-bar .icon-btn:disabled {
+  opacity: 0.4;
+}
+
+.find-bar .icon-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.find-prev svg {
+  transform: rotate(180deg);
+}
+
+::highlight(lyra-find) {
+  background-color: color-mix(in srgb, #facc15 40%, transparent);
+  color: inherit;
+}
+
+::highlight(lyra-find-current) {
+  background-color: #f59e0b;
+  color: #18181f;
 }

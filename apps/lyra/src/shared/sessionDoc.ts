@@ -627,6 +627,34 @@ export function renumberSpeakers(doc: Y.Doc, origin: unknown): void {
   }, origin)
 }
 
+/**
+ * Gives every line's speaker an entry: a line can point at a speaker that's gone (a relabel that
+ * raced a new take used to remove one under it), and then nothing can name or move it. Each
+ * missing one comes back as a placeholder "Speaker N". Returns how many were restored.
+ */
+export function restoreMissingSpeakers(doc: Y.Doc, origin: unknown): number {
+  const speakers = speakersOf(doc)
+  if (!speakers) return 0
+  const missing = new Set<string>()
+  for (const line of docTranscript(doc).toArray()) {
+    const id = line.get('cluster')
+    if (typeof id === 'string' && !speakers.has(id)) missing.add(id)
+  }
+  if (!missing.size) return 0
+  doc.transact(() => {
+    for (const id of missing) {
+      upsertSpeaker(
+        doc,
+        id,
+        { name: 'Speaker 1', personId: null, confirmed: false, confidence: null, matches: [] },
+        origin
+      )
+    }
+    renumberSpeakers(doc, origin)
+  }, origin)
+  return missing.size
+}
+
 /** Moves every line of speaker `from` to `into`, then removes `from`. */
 export function mergeSpeakers(doc: Y.Doc, from: string, into: string, origin: unknown): void {
   doc.transact(() => {

@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  clipboard,
   desktopCapturer,
   dialog,
   ipcMain,
@@ -233,6 +234,10 @@ function registerIpc(): void {
     log(String(scope), String(message), data)
   })
   ipcMain.handle('whisper:warmUp', () => warmUp())
+  // Sandboxed preloads no longer get Electron's clipboard module, so copying goes through main.
+  ipcMain.on('clipboard:write', (_event, text: unknown) => {
+    if (typeof text === 'string') clipboard.writeText(text)
+  })
 }
 
 
