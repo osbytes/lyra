@@ -4,11 +4,13 @@ import { log } from '../log'
 import { ensureModelFile, hasModelFile, type DownloadProgress, type ModelFile } from '../models'
 import {
   chunkTranscript,
+  cleanTitle,
+  MeetingNotes,
   PACKAGED_FLAG,
-  parseNotes,
-  parseTitle,
-  type MeetingNotes
+  tidyNotes,
+  TitleSuggestion
 } from './notesFormat'
+import type { NotesWriter } from './notesWriter'
 import type { NotesWorkerRequest, NotesWorkerResponse } from './notesWorker'
 
 const MODEL: ModelFile = {
@@ -58,41 +60,46 @@ function ask(modelPath: string, prompts: string[], task: NotesWorkerRequest['tas
 }
 
 /**
- * Meeting notes from a local model (~2 GB, downloaded on first use). Long
- * meetings are summarized in parts, then the partial notes are merged.
+ * Meeting notes from a local model (~2 GB, downloaded on first use). Long meetings are
+ * summarized in parts, then the partial notes are merged.
  */
-export async function localNotes(transcript: string, onDownload?: DownloadProgress): Promise<MeetingNotes> {
+async function localNotes(transcript: string, onDownload?: DownloadProgress): Promise<MeetingNotes> {
   const modelPath = await ensureModelFile(MODEL, onDownload)
   const chunks = chunkTranscript(transcript, CHUNK_CHARS)
-  const partials = (await ask(
+  const answers = await ask(
     modelPath,
     chunks.map((chunk, i) =>
       chunks.length > 1
-        ? `Transcript, part ${i + 1} of ${chunks.length}:\n\n${chunk}`
+        ? `Transcript, part ${String(i + 1)} of ${String(chunks.length)}:\n\n${chunk}`
         : `Transcript:\n\n${chunk}`
     )
-  )).map(parseNotes)
-
+  )
+  // The grammar makes the model emit this shape; parsing is the check, not a hope.
+  const partials = answers.map((answer) => MeetingNotes.parse(answer))
   const [only] = partials
-  if (partials.length === 1 && only) return only
+  if (partials.length === 1 && only) return tidyNotes(only)
   const [merged] = await ask(modelPath, [
     'Merge these partial meeting notes (JSON, one per part of the meeting, in order) into one ' +
       'set of notes. Remove duplicates.\n\n' +
       JSON.stringify(partials)
   ])
-  return parseNotes(merged)
+  return tidyNotes(MeetingNotes.parse(merged))
 }
 
-/** The local model is on disk already (a title alone never starts its ~2 GB download). */
-export function hasLocalNotesModel(): Promise<boolean> {
-  return hasModelFile(MODEL)
-}
-
-/** A title suggestion from the local model; null if it gave nothing usable. */
-export async function localTitle(text: string): Promise<string | null> {
-  const modelPath = await ensureModelFile(MODEL)
-  const [result] = await ask(modelPath, [`Note:\n\n${text}`], 'title')
-  return parseTitle(result)
+/** The NotesWriter for the on-device model; it never sends anything off this computer. */
+export function createLocalNotesWriter(): NotesWriter {
+  return {
+    name: 'local',
+    notes: localNotes,
+    async title(text) {
+      const modelPath = await ensureModelFile(MODEL)
+      const [answer] = await ask(modelPath, [`Note:\n\n${text}`], 'title')
+      const parsed = TitleSuggestion.safeParse(answer)
+      return parsed.success ? cleanTitle(parsed.data.title) : null
+    },
+    // A title alone never starts the ~2 GB download.
+    canTitle: () => hasModelFile(MODEL)
+  }
 }
 
 export function stopNotesWorker(): void {

@@ -13,8 +13,7 @@ import {
 import { overrideSettings } from '../settings'
 import { assignSpeaker, processMeeting } from '../meeting/pipeline'
 import { listPeople } from '../voices'
-import { generateNotes } from '../meeting/notes'
-import { suggestTitle } from '../meeting/title'
+import type { Services } from '../services'
 import { replayRecording } from '../meeting/replay'
 import { relabeled } from '../meeting/relabel'
 import { trackPath } from '../recorder'
@@ -27,7 +26,7 @@ type MeetingTask = Extract<Task, { kind: 'meeting' }>
  * Dev check: runs the real speaker pipeline (models, diarization, Whisper) on a
  * 16 kHz mono WAV and prints the labeled note. `pnpm smoke:meeting <file.wav>`
  */
-export async function runMeetingFixture(task: MeetingTask): Promise<void> {
+export async function runMeetingFixture(task: MeetingTask, services: Services): Promise<void> {
   const wavPath = task.mic
   try {
     const page = await createPage()
@@ -93,14 +92,14 @@ export async function runMeetingFixture(task: MeetingTask): Promise<void> {
     if (engine) {
       overrideSettings({ notesEngine: engine })
       const notesStarted = Date.now()
-      await generateNotes(page.id)
+      await services.notes.generateNotes(page.id)
       const withNotes = await readSession(page.id)
       const notesTook = ((Date.now() - notesStarted) / 1000).toFixed(1)
       process.stdout.write(`meeting-fixture notes (${engine}, ${notesTook} s):\n${withNotes.summary}\n`)
       // The recording ended before the engine was turned on, so ask for the title here.
       const before = withNotes.title
       const titleStarted = Date.now()
-      await suggestTitle(page.id)
+      await services.titles.suggestTitle(page.id)
       const titled = (await readSession(page.id)).title
       const titleTook = ((Date.now() - titleStarted) / 1000).toFixed(1)
       process.stdout.write(`meeting-fixture title (${engine}, ${titleTook} s): "${before}" -> "${titled}"\n`)

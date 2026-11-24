@@ -2,6 +2,7 @@ import { app, type BrowserWindow } from 'electron'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { Services } from '../services'
 import { overrideSettings } from '../settings'
 import { isTaskName, parseTask, type Task } from './args'
 import { runMeetingFixture } from './meeting'
@@ -37,7 +38,7 @@ export function prepareTaskProfile(task: Task): void {
 }
 
 /** Runs `task` once the main window has loaded; each task exits the app with its result. */
-export function runTaskIn(win: BrowserWindow, task: Task): void {
+export function runTaskIn(win: BrowserWindow, task: Task, services: Services): void {
   if (task.kind === 'screenshot') win.setContentSize(1280, 800)
   win.webContents.once('did-finish-load', () => {
     switch (task.kind) {
@@ -48,7 +49,7 @@ export function runTaskIn(win: BrowserWindow, task: Task): void {
         void captureScreenshot(win, task.reviewDir)
         return
       case 'meeting':
-        void runMeetingFixture(task)
+        void runMeetingFixture(task, services)
         return
     }
   })

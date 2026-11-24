@@ -258,10 +258,10 @@ export function Privacy() {
                 <tr>
                   <td>Meeting transcript</td>
                   <td>
-                    <span className={cx(styles.tag, styles.tagOpt)}>Only if you pick Claude for notes</span>
+                    <span className={cx(styles.tag, styles.tagOpt)}>Only if you pick a cloud model for notes</span>
                     <small>
-                      Meeting notes are off by default. With Claude, the transcript text goes to Anthropic’s API with
-                      your own key, kept in the system keychain. Audio and voiceprints are never sent.
+                      Meeting notes are off by default. With a cloud model, the transcript text goes to the provider you
+                      pick (Anthropic, OpenAI, Google or your own server) with your own key, kept in the system keychain. Audio and voiceprints are never sent.
                     </small>
                   </td>
                 </tr>

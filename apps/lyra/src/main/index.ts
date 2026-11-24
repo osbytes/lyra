@@ -33,8 +33,8 @@ import { registerOverlay, watchMainWindow } from './overlay'
 import { getMainWindow, registerSessionIpc, setMainWindow, showMainWindow } from './session'
 import { getSettings, onSettingsChanged, updateSettings } from './settings'
 import { registerMeetingPipeline } from './meeting/pipeline'
-import { registerMeetingNotes } from './meeting/notes'
-import { registerTitleSuggestions } from './meeting/title'
+import { registerKeyIpc } from './secrets'
+import { createServices, type Services } from './services'
 import { stopNotesWorker } from './meeting/notesLocal'
 import { stopSpeakerWorker } from './meeting/speakers'
 import { relabelSession } from './meeting/relabel'
@@ -78,6 +78,9 @@ if (task) prepareTaskProfile(task)
 
 /** Set once the user really quits, so closing the window can mean "hide" until then. */
 let quitting = false
+
+/** Built once the app is ready and the configuration has been checked. */
+let services: Services | null = null
 
 // One Lyra at a time: a second launch focuses the first instead.
 if (startup.error) {
@@ -159,7 +162,7 @@ function createWindow(): void {
     if (url !== mainWindow.webContents.getURL()) event.preventDefault()
   })
 
-  if (task) runTaskIn(mainWindow, task)
+  if (task && services) runTaskIn(mainWindow, task, services)
 
   const { rendererUrl } = config()
   if (is.dev && rendererUrl) {
@@ -295,8 +298,10 @@ void app.whenReady().then(() => {
     })
   }
   registerMeetingPipeline()
-  registerMeetingNotes()
-  registerTitleSuggestions()
+  services = createServices()
+  services.notes.register()
+  services.titles.register()
+  registerKeyIpc()
   registerUpdater({ enabled: !isTestRun })
   if (!isTestRun) {
     createTray()

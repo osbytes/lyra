@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import type { ClaudeKeySource, Settings as SettingsValue } from '../../../shared/types'
+import { PROVIDERS, ProviderId, type KeySource } from '../../../shared/ai'
+import type { Settings as SettingsValue } from '../../../shared/types'
 import {
-  claudeKeyChanged,
+  keyChanged,
   hotkeyProblem,
   useHotkeyStatus,
   type SettingsIssue,
@@ -58,7 +59,9 @@ const CHANGE_LABELS: Partial<Record<keyof SettingsValue, string>> = {
   captureSystemAudio: 'Changed computer audio capture',
   audioRetentionDays: 'Changed how long audio is kept',
   notesEngine: 'Changed session summaries',
-  claudeModel: 'Changed the Claude model',
+  cloudProvider: 'Changed the summary provider',
+  cloudModel: 'Changed the summary model',
+  cloudBaseUrl: 'Changed the server address',
   micPrompt: 'Changed the microphone prompt'
 }
 
@@ -159,14 +162,10 @@ function StorageSection({ settings, update }: SectionProps) {
 const SUMMARY_ENGINES = [
   { value: 'off', label: 'Off' },
   { value: 'local', label: 'On this computer' },
-  { value: 'claude', label: 'With Claude' }
+  { value: 'cloud', label: 'Cloud model' }
 ] as const
 
-const KEY_HINTS: Record<ClaudeKeySource | 'none', string> = {
-  keychain: 'Saved in your system keychain.',
-  environment: 'From ANTHROPIC_API_KEY. A key saved here is used instead.',
-  none: 'From console.anthropic.com.'
-}
+const PROVIDER_OPTIONS = ProviderId.options.map((id) => ({ value: id, label: PROVIDERS[id].label }))
 
 const DEFAULT_HOTKEY = 'CommandOrControl+Shift+Space'
 
@@ -265,47 +264,92 @@ function RecordingSection({ settings, update }: SectionProps) {
   )
 }
 
+/** A text setting saved when the field loses focus or on Enter, not on every keystroke. */
+function CommitInput({
+  value,
+  placeholder,
+  label,
+  onCommit
+}: {
+  value: string | null
+  placeholder: string
+  label: string
+  /** Resolves to what was saved: a value the settings schema rejects is not kept. */
+  onCommit: (next: string | null) => Promise<string | null>
+}) {
+  const [text, setText] = useState(value ?? '')
+  // Undo, or another window, can change the saved value under the field.
+  useEffect(() => {
+    setText(value ?? '')
+  }, [value])
+  const commit = (): void => {
+    const trimmed = text.trim()
+    const next = trimmed ? trimmed : null
+    if (next === value) return
+    void onCommit(next).then((saved) => {
+      setText(saved ?? '')
+    })
+  }
+  return (
+    <input
+      className="settings-input"
+      value={text}
+      placeholder={placeholder}
+      autoComplete="off"
+      spellCheck={false}
+      onChange={(event) => {
+        setText(event.target.value)
+      }}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') commit()
+      }}
+      aria-label={label}
+    />
+  )
+}
+
 function SummarySection({ settings, update }: SectionProps) {
-  const [keySource, setKeySource] = useState<ClaudeKeySource | null>(null)
+  const provider = settings.cloudProvider
+  const info = PROVIDERS[provider]
+  const [keySource, setKeySource] = useState<KeySource | null>(null)
   const [key, setKey] = useState('')
-  const [model, setModel] = useState(settings.claudeModel ?? '')
   const [error, setError] = useState<string | null>(null)
 
-  const refreshKeySource = (): Promise<void> => window.api.claudeKeySource().then(setKeySource)
-
   useEffect(() => {
-    void refreshKeySource()
-  }, [])
-
-  // Undo, or another window, can change the saved model under the field.
-  useEffect(() => {
-    setModel(settings.claudeModel ?? '')
-  }, [settings.claudeModel])
+    let current = true
+    void window.api.keySource(provider).then((source) => {
+      if (current) setKeySource(source)
+    })
+    return () => {
+      current = false
+    }
+  }, [provider])
 
   const saveKey = async (value: string | null): Promise<void> => {
     setError(null)
     try {
-      await window.api.setClaudeKey(value)
-      // Removing a saved key can fall back to ANTHROPIC_API_KEY, so ask rather than assume.
-      await refreshKeySource()
+      await window.api.setKey(provider, value)
+      // Removing a saved key can fall back to the environment, so ask rather than assume.
+      setKeySource(await window.api.keySource(provider))
       setKey('')
-      claudeKeyChanged()
+      keyChanged()
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not save the key')
     }
   }
 
-  const hasKey = keySource !== null
-  const missingKey = settings.notesEngine === 'claude' && !hasKey
-  const saveModel = (): void => {
-    const trimmed = model.trim()
-    const next = trimmed ? trimmed : null
-    if (next === settings.claudeModel) return
-    // An id the settings check rejects is not saved; show what was kept.
-    void update({ claudeModel: next }).then((saved) => {
-      setModel(saved.claudeModel ?? '')
-    })
-  }
+  const missingKey = settings.notesEngine === 'cloud' && info.needsKey && keySource === null
+  const keyHint =
+    keySource === 'keychain'
+      ? 'Saved in your system keychain.'
+      : keySource === 'environment'
+        ? `From ${info.keyEnv ?? 'the environment'}. A key saved here is used instead.`
+        : info.keyHelp
+  const destination =
+    provider === 'openai-compatible'
+      ? `the server at ${settings.cloudBaseUrl ?? 'the address below'}`
+      : `${info.label}’s API`
 
   return (
     <Section title="Summaries">
@@ -326,17 +370,51 @@ function SummarySection({ settings, update }: SectionProps) {
           2 GB; long sessions can take a few minutes.
         </p>
       ) : null}
-      {settings.notesEngine === 'claude' ? (
+      {settings.notesEngine === 'cloud' ? (
         <>
           <p className="settings-notice is-warning">
-            Sends the session’s transcript to Anthropic’s API to write the summary. Audio and
-            voiceprints stay on this computer. Uses your own API key and is billed to your account.
+            Sends the session’s transcript to {destination} to write the summary. Audio and
+            voiceprints stay on this computer.
+            {info.needsKey ? ' Uses your own API key and is billed to your account.' : ''}
           </p>
+          <Row label="Provider" hint="Any of these, through one interface; switch whenever you like.">
+            <Select
+              label="Provider"
+              value={provider}
+              options={PROVIDER_OPTIONS}
+              onChange={(cloudProvider) => {
+                // Model ids don't carry over between providers.
+                void update({ cloudProvider, cloudModel: null })
+              }}
+            />
+          </Row>
+          <Row
+            label="Model"
+            hint={
+              info.defaultModel
+                ? `Leave empty for ${info.defaultModel}.`
+                : 'The model id, as the provider names it.'
+            }
+          >
+            <CommitInput
+              label="Model"
+              value={settings.cloudModel}
+              placeholder={info.defaultModel ?? 'model id'}
+              onCommit={(cloudModel) => update({ cloudModel }).then((saved) => saved.cloudModel)}
+            />
+          </Row>
+          {info.needsBaseUrl ? (
+            <Row label="Server address" hint="Ollama, LM Studio, llama.cpp or any OpenAI-compatible API.">
+              <CommitInput
+                label="Server address"
+                value={settings.cloudBaseUrl}
+                placeholder="http://localhost:11434/v1"
+                onCommit={(cloudBaseUrl) => update({ cloudBaseUrl }).then((saved) => saved.cloudBaseUrl)}
+              />
+            </Row>
+          ) : null}
           <div className={missingKey ? 'settings-group has-issue' : 'settings-group'}>
-            <Row
-              label="Claude API key"
-              hint={KEY_HINTS[keySource ?? 'none']}
-            >
+            <Row label="API key" hint={keyHint}>
               {keySource === 'keychain' ? (
                 <button className="btn" type="button" onClick={() => void saveKey(null)}>
                   Remove key
@@ -347,7 +425,6 @@ function SummarySection({ settings, update }: SectionProps) {
                     className="settings-input"
                     type="password"
                     value={key}
-                    placeholder="sk-ant-…"
                     autoComplete="off"
                     onChange={(event) => {
                       setKey(event.target.value)
@@ -355,7 +432,7 @@ function SummarySection({ settings, update }: SectionProps) {
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' && key.trim()) void saveKey(key)
                     }}
-                    aria-label="Claude API key"
+                    aria-label={`${info.label} API key`}
                   />
                   <button
                     className="btn"
@@ -375,26 +452,6 @@ function SummarySection({ settings, update }: SectionProps) {
               </p>
             ) : null}
           </div>
-          <Row
-            label="Claude model"
-            hint="Leave empty for Lyra’s default (or ANTHROPIC_MODEL when it’s set)."
-          >
-            <input
-              className="settings-input"
-              value={model}
-              placeholder="claude-opus-5-5"
-              autoComplete="off"
-              spellCheck={false}
-              onChange={(event) => {
-                setModel(event.target.value)
-              }}
-              onBlur={saveModel}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') saveModel()
-              }}
-              aria-label="Claude model"
-            />
-          </Row>
           {error ? <p className="settings-notice is-error">{error}</p> : null}
         </>
       ) : null}

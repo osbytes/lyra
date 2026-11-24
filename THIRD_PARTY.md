@@ -31,7 +31,8 @@ The main ones; the full list is `pnpm-lock.yaml`, and each release attaches an S
 | `@kutalia/whisper-node-addon` (whisper.cpp) | MIT |
 | `sherpa-onnx-node` | Apache-2.0 |
 | `node-llama-cpp` (llama.cpp) | MIT |
-| `@anthropic-ai/sdk` (only when Claude summaries are on) | Apache-2.0 |
+| `ai` (AI SDK) and `@ai-sdk/anthropic`, `@ai-sdk/openai`, `@ai-sdk/google`, `@ai-sdk/openai-compatible` (only when cloud summaries are on) | Apache-2.0 |
+| `zod` | MIT |
 | `yjs` | MIT |
 | `fuse.js` | Apache-2.0 |
 | `electron-updater` | MIT |

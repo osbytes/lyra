@@ -1,68 +1,49 @@
-import { isAbsolute } from 'node:path'
-import { ENV_VARS, type EnvName } from './envSpec'
+import { type z } from 'zod'
+import type { ProviderId } from '../shared/ai'
+import { EnvVars, type EnvName } from './envSpec'
+
+const HF_DEFAULT = 'https://huggingface.co'
 
 /**
- * The environment, parsed once at startup. Nothing else in the main process reads `process.env`;
- * it asks `config()`. A value that is set but wrong stops the app with a message naming the
- * variable, rather than being ignored. Unset and empty mean the same thing.
+ * The environment, parsed once at startup with the schema in `envSpec.ts`. Nothing else in the
+ * main process reads `process.env` (lint enforces it); it asks `config()`. A value that is set but
+ * wrong stops the app with a message naming the variable, rather than being ignored.
  */
-export type Config = {
-  notesDir: string | null
-  modelsDir: string | null
+const ConfigSchema = EnvVars.transform((env) => ({
+  notesDir: env.LYRA_NOTES_DIR ?? null,
+  modelsDir: env.LYRA_MODELS_DIR ?? null,
   /** No trailing slash. */
-  hfEndpoint: string
-  anthropicApiKey: string | null
-  anthropicBaseUrl: string | null
-  anthropicModel: string | null
-  rendererUrl: string | null
-}
+  hfEndpoint: env.HF_ENDPOINT ?? HF_DEFAULT,
+  /** Keys and endpoints by provider, as the providers' own SDKs name them. */
+  apiKeys: {
+    anthropic: env.ANTHROPIC_API_KEY ?? null,
+    openai: env.OPENAI_API_KEY ?? null,
+    google: env.GOOGLE_GENERATIVE_AI_API_KEY ?? null,
+    'openai-compatible': null
+  } satisfies Record<ProviderId, string | null>,
+  baseUrls: {
+    anthropic: env.ANTHROPIC_BASE_URL ?? null,
+    openai: env.OPENAI_BASE_URL ?? null
+  },
+  rendererUrl: env.ELECTRON_RENDERER_URL ?? null
+}))
+
+export type Config = z.output<typeof ConfigSchema>
 
 export class ConfigError extends Error {
   override name = 'ConfigError'
 }
 
-const HF_DEFAULT = 'https://huggingface.co'
 
-type Env = Readonly<Record<string, string | undefined>>
-
-function read(env: Env, name: EnvName): string | null {
-  const value = env[name]?.trim()
-  return value ? value : null
-}
-
-function path(env: Env, name: EnvName): string | null {
-  const value = read(env, name)
-  if (value !== null && !isAbsolute(value)) {
-    throw new ConfigError(`${name} must be an absolute path (got "${value}")`)
-  }
-  return value
-}
-
-function url(env: Env, name: EnvName): string | null {
-  const value = read(env, name)
-  if (value === null) return null
-  let protocol: string
-  try {
-    protocol = new URL(value).protocol
-  } catch {
-    throw new ConfigError(`${name} must be a URL (got "${value}")`)
-  }
-  if (protocol !== 'https:' && protocol !== 'http:') {
-    throw new ConfigError(`${name} must be an http or https URL (got "${value}")`)
-  }
-  return value.replace(/\/+$/, '')
-}
-
-export function parseConfig(env: Env): Config {
-  return {
-    notesDir: path(env, 'LYRA_NOTES_DIR'),
-    modelsDir: path(env, 'LYRA_MODELS_DIR'),
-    hfEndpoint: url(env, 'HF_ENDPOINT') ?? HF_DEFAULT,
-    anthropicApiKey: read(env, 'ANTHROPIC_API_KEY'),
-    anthropicBaseUrl: url(env, 'ANTHROPIC_BASE_URL'),
-    anthropicModel: read(env, 'ANTHROPIC_MODEL'),
-    rendererUrl: url(env, 'ELECTRON_RENDERER_URL')
-  }
+/** Parses `env`; throws ConfigError naming each variable that is set but malformed. */
+export function parseConfig(env: Readonly<Record<string, string | undefined>>): Config {
+  const result = ConfigSchema.safeParse(env)
+  if (result.success) return result.data
+  const problems = result.error.issues.map((issue) => {
+    const name = String(issue.path[0] ?? 'environment')
+    return `${name} ${issue.message} (got "${env[name] ?? ''}")`
+  })
+  throw new ConfigError(problems.join('; '))
 }
 
 let current: Config | null = null
@@ -85,8 +66,9 @@ export function checkConfig(): ConfigError | null {
 }
 
 /** Which variables are set, without their values, for the startup log line. */
-export function configSummary(): string[] {
-  return ENV_VARS.flatMap((spec) => (read(process.env, spec.name) === null ? [] : [spec.name]))
+export function configSummary(): EnvName[] {
+  const names = Object.keys(EnvVars.shape).filter((name): name is EnvName => name in EnvVars.shape)
+  return names.filter((name) => (process.env[name]?.trim() ?? '') !== '')
 }
 
 /** `url` with the Hugging Face host swapped for HF_ENDPOINT, so a mirror serves every model. */

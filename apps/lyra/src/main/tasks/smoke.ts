@@ -54,7 +54,7 @@ import {
   toggleHighlight,
   type TranscriptEdit
 } from '../../shared/transcriptOverlay'
-import { overrideSettings } from '../settings'
+import { getSettings, overrideSettings } from '../settings'
 import { assignSpeaker } from '../meeting/pipeline'
 import { defaultTitle, partOfDay } from '../sessionTitle'
 import { trackPath } from '../recorder'
@@ -63,6 +63,12 @@ import { flushLog, log, logPath } from '../log'
 import { parseConsentStore } from '../micwatch'
 import { ConfigError, parseConfig } from '../config'
 import { parseTask } from './args'
+import { MockLanguageModelV4 } from 'ai/test'
+import type { ProviderId } from '../../shared/ai'
+import { parseSettings, type Settings } from '../../shared/settings'
+import { createMeetingNotes } from '../meeting/notes'
+import { createFakeNotesWriter, createModelNotesWriter } from '../meeting/notesWriter'
+import { chooseWriter } from '../meeting/writers'
 import { searchSessions } from '../search'
 
 /** Text the smoke run writes into notes, and the key run-ui-smoke.cjs puts in the environment. */
@@ -85,6 +91,102 @@ async function checkLogIsContentFree(): Promise<void> {
   if (leaked.length) throw new Error(`log: contains note content or a key (${leaked.join(', ')})`)
 }
 
+/** Older and hand-edited settings files: migrated, and a bad field falls back on its own. */
+function checkSettingsSchema(): void {
+  const base = getSettings()
+  const old = parseSettings({ notesEngine: 'claude', keepMeetingAudio: true, hotkey: 42, fileFormat: 'md' }, base)
+  if (old.notesEngine !== 'cloud' || old.cloudProvider !== 'anthropic' || old.audioRetentionDays !== null) {
+    throw new Error(`settings: 0.3 file not migrated: ${JSON.stringify(old)}`)
+  }
+  if (old.hotkey !== base.hotkey || old.fileFormat !== 'md') throw new Error('settings: a bad field took good ones with it')
+  if (parseSettings('not an object', base).notesDir !== base.notesDir) throw new Error('settings: junk input')
+}
+
+/**
+ * The NotesWriter seam: Settings choose the writer, the AI SDK adapter turns a model's structured
+ * output into notes, and the notes service writes them, all without a network or a real model.
+ */
+async function checkNotesWriters(): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`notes writers: ${message}`)
+  }
+  const notes = {
+    decisions: [' Ship Friday '],
+    actionItems: [{ owner: 'Sam', task: 'Fix the installer' }, { owner: '', task: 'Update the changelog' }],
+    openQuestions: [''],
+    summary: ' Planned the release. '
+  }
+  const local = createFakeNotesWriter({ notes, title: 'Local title' })
+  const withSettings = (patch: Partial<Settings>, keys: Partial<Record<ProviderId, string>> = {}) =>
+    chooseWriter({
+      settings: () => ({ ...getSettings(), ...patch }),
+      apiKey: (provider) => Promise.resolve(keys[provider] ?? null),
+      baseUrls: { anthropic: null, openai: null },
+      local
+    })
+  if ((await withSettings({ notesEngine: 'off' })) !== null) fail('off still chose a writer')
+  if ((await withSettings({ notesEngine: 'local' })) !== local) fail('local did not choose the local writer')
+  const refused = async (patch: Partial<Settings>, mention: string): Promise<void> => {
+    const message = await withSettings(patch).then(
+      () => '',
+      (error: unknown) => (error instanceof Error ? error.message : String(error))
+    )
+    if (!message.includes(mention)) fail(`${JSON.stringify(patch)} was not refused (${message})`)
+  }
+  await refused({ notesEngine: 'cloud', cloudProvider: 'anthropic' }, 'API key')
+  await refused({ notesEngine: 'cloud', cloudProvider: 'openai', cloudModel: null }, 'model')
+  await refused({ notesEngine: 'cloud', cloudProvider: 'openai-compatible', cloudModel: 'llama3', cloudBaseUrl: null }, 'server address')
+  const cloud = await withSettings({ notesEngine: 'cloud', cloudProvider: 'anthropic' }, { anthropic: 'sk-test' })
+  if (cloud?.name !== 'Anthropic (claude-opus-5-5)') fail(`cloud writer: ${cloud?.name ?? 'none'}`)
+
+  // The AI SDK adapter against a mock model: structured output parsed by the zod schema, tidied.
+  const model = new MockLanguageModelV4({
+    doGenerate: () =>
+      Promise.resolve({
+        content: [{ type: 'text', text: JSON.stringify(notes) }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: {
+          inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
+          outputTokens: { total: 10, text: 10, reasoning: 0 }
+        },
+        warnings: []
+      })
+  })
+  const written = await createModelNotesWriter(model, 'mock').notes('Sam: I will fix the installer.')
+  if (written.summary !== 'Planned the release.' || written.decisions.join() !== 'Ship Friday') {
+    fail(`adapter did not tidy: ${JSON.stringify(written)}`)
+  }
+  if (written.actionItems[1]?.owner !== 'Unassigned' || written.openQuestions.length) fail('adapter kept empty entries')
+  const bad = new MockLanguageModelV4({
+    doGenerate: () =>
+      Promise.resolve({
+        content: [{ type: 'text', text: '{"summary": 3}' }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: {
+          inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+          outputTokens: { total: 1, text: 1, reasoning: 0 }
+        },
+        warnings: []
+      })
+  })
+  const rejected = await createModelNotesWriter(bad, 'mock').notes('x').then(
+    () => '',
+    (error: unknown) => (error instanceof Error ? error.message : String(error))
+  )
+  if (!rejected.includes('expected shape')) fail(`malformed output was accepted (${rejected})`)
+
+  // The notes service writes what its writer returns into the session.
+  const page = await createPage()
+  await editSession(page.id, (doc) => {
+    replaceTranscript(doc, [{ id: 'n0', rawId: 'n0', start: 0, end: 2, cluster: null, confidence: null, text: 'We ship Friday.' }], 'seed')
+  })
+  const service = createMeetingNotes({ writer: () => Promise.resolve(local) })
+  await service.generateNotes(page.id)
+  const summary = (await readSession(page.id)).summary
+  if (!summary.includes('Fix the installer') || local.asked.length !== 1) fail(`service summary: ${JSON.stringify(summary)}`)
+  await deletePage(page.id)
+}
+
 /** The environment and task arguments: standard names read, bad values refused by name. */
 function checkConfigParsing(): void {
   const fail = (message: string): never => {
@@ -102,13 +204,16 @@ function checkConfigParsing(): void {
   const parsed = parseConfig({
     HF_ENDPOINT: 'https://hf-mirror.example/',
     ANTHROPIC_API_KEY: ' sk-test ',
-    ANTHROPIC_MODEL: 'claude-test',
+    OPENAI_API_KEY: 'sk-openai',
+    GOOGLE_GENERATIVE_AI_API_KEY: '',
     LYRA_NOTES_DIR: ''
   })
-  if (parsed.hfEndpoint !== 'https://hf-mirror.example' || parsed.anthropicApiKey !== 'sk-test') {
-    fail(`parsed wrong: ${JSON.stringify(parsed)}`)
+  if (parsed.hfEndpoint !== 'https://hf-mirror.example' || parsed.apiKeys.anthropic !== 'sk-test') {
+    fail(`parsed wrong: ${JSON.stringify(parsed.hfEndpoint)}`)
   }
-  if (parsed.notesDir !== null || parsed.anthropicModel !== 'claude-test') fail('empty is not unset')
+  if (parsed.apiKeys.openai !== 'sk-openai' || parsed.apiKeys.google !== null || parsed.notesDir !== null) {
+    fail('keys or empty values parsed wrong')
+  }
   if (parseConfig({}).hfEndpoint !== 'https://huggingface.co') fail('HF_ENDPOINT default')
   refuses(() => parseConfig({ HF_ENDPOINT: 'not a url' }), 'HF_ENDPOINT')
   refuses(() => parseConfig({ ANTHROPIC_BASE_URL: 'file:///etc' }), 'ANTHROPIC_BASE_URL')
@@ -120,7 +225,7 @@ function checkConfigParsing(): void {
     fail(`meeting task: ${JSON.stringify(meeting)}`)
   }
   refuses(() => parseTask(['meeting']), 'WAV')
-  refuses(() => parseTask(['meeting', '/a.wav', '--notes', 'cloud']), '--notes')
+  refuses(() => parseTask(['meeting', '/a.wav', '--notes', 'claude']), '--notes')
   refuses(() => parseTask(['smoke', '--bogus']), '--bogus')
 }
 
@@ -444,6 +549,8 @@ async function checkTranscriptModel(): Promise<void> {
 export async function runUiSmoke(win: BrowserWindow): Promise<void> {
   try {
     checkConfigParsing()
+    checkSettingsSchema()
+    await checkNotesWriters()
     checkConsentParser()
     await checkSessionStore()
     await checkAudioRetention()
@@ -501,13 +608,18 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
         if (restoredTwice) fail('restorePage restored a session that was not deleted')
         await window.api.deletePage(session.id)
         // The key comes from the keychain or ANTHROPIC_API_KEY; a throwaway profile has no keychain key.
-        const keySource = await window.api.claudeKeySource()
+        const keySource = await window.api.keySource('anthropic')
         if (keySource !== null && keySource !== 'environment') fail('unexpected Claude key source ' + keySource)
-        const badModel = await window.api.updateSettings({ claudeModel: 'not a model id!' })
-        if (badModel.claudeModel !== null) fail('a malformed Claude model was saved')
-        const model = await window.api.updateSettings({ claudeModel: 'claude-test-model' })
-        if (model.claudeModel !== 'claude-test-model') fail('the Claude model was not saved')
-        await window.api.updateSettings({ claudeModel: null })
+        if ((await window.api.keySource('openai-compatible')) !== null) fail('a key appeared for a local server')
+        const badProvider = await window.api.keySource('not-a-provider').then(() => false, () => true)
+        if (!badProvider) fail('keySource accepted an unknown provider')
+        const badModel = await window.api.updateSettings({ cloudModel: 'not a model id!' })
+        if (badModel.cloudModel !== null) fail('a malformed model id was saved')
+        const model = await window.api.updateSettings({ cloudProvider: 'openai-compatible', cloudModel: 'llama3.1:8b', cloudBaseUrl: 'http://localhost:11434/v1' })
+        if (model.cloudModel !== 'llama3.1:8b' || model.cloudBaseUrl !== 'http://localhost:11434/v1') fail('the cloud model was not saved')
+        const badUrl = await window.api.updateSettings({ cloudBaseUrl: 'ftp://nope' })
+        if (badUrl.cloudBaseUrl !== 'http://localhost:11434/v1') fail('a non-http server address was saved')
+        await window.api.updateSettings({ cloudProvider: 'anthropic', cloudModel: null, cloudBaseUrl: null })
 
         const missingPerson = await window.api.restorePerson('no-such-person').then(() => true, () => false)
         if (missingPerson) fail('restorePerson accepted an unknown id')

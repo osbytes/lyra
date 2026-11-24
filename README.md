@@ -26,7 +26,7 @@
 - **Mic prompts** (optional): when Zoom, Teams, or Discord turns on your mic, Lyra offers to record
 - **Meetings**: Ctrl/Cmd+Shift+M records your mic and the computer's audio, then labels who said what
 - **Voices**: save people's voices so their names show up in transcripts automatically
-- **Meeting notes** (optional): summary, decisions, and action items, written on your computer or, if you opt in, with Claude
+- **Meeting notes** (optional): summary, decisions, and action items, written on your computer or, if you opt in, by a cloud model you choose (Anthropic, OpenAI, Google, or your own OpenAI-compatible server)
 - **On-device speech**: transcription with [Whisper](https://github.com/ggml-org/whisper.cpp), speakers with [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx), notes with [llama.cpp](https://github.com/ggml-org/llama.cpp)
 
 ## Quick start
@@ -50,7 +50,7 @@ On macOS, capturing a call's audio needs Screen Recording permission.
 
 ## Privacy
 
-Everything runs on this computer by default. The only exception is meeting notes **with Claude**, which you have to switch on yourself. It sends the meeting transcript (never audio or voiceprints) to Anthropic's API using your own key, which is stored in the system keychain. Recording other people usually requires their consent.
+Everything runs on this computer by default. The only exception is meeting notes **with a cloud model**, which you have to switch on yourself. It sends the meeting transcript (never audio or voiceprints) to the provider you pick, using your own key, which is stored in the system keychain. Recording other people usually requires their consent.
 
 ## Build
 

@@ -36,7 +36,7 @@ no telemetry and makes no third-party requests at runtime (fonts are self-hosted
 the server only).
 
 - `src/main/` — Electron main process: files, settings, Whisper, tray/hotkeys/overlay, mic watcher, recorder, updater. Node APIs live here only.
-- `src/main/meeting/` — speaker pipeline (diarization worker, voiceprints) and meeting notes (local worker, Claude). Workers run in `utilityProcess`.
+- `src/main/meeting/` — speaker pipeline (diarization worker, voiceprints) and meeting notes (`NotesWriter`: the local worker, or any AI SDK provider). Workers run in `utilityProcess`.
 - `src/preload/` — the `window.api` bridge. Thin: `ipcRenderer.invoke`/`on` wrappers, no logic.
 - `src/renderer/src/` — React UI, audio capture (`audio/`), hooks, text helpers. Browser APIs only.
 - `src/shared/types.ts` — types shared across processes, including the `VoicePagesApi` contract.
@@ -46,7 +46,7 @@ the server only).
   `components/Transcript.tsx` edits the transcript and speakers through the same document.
   Design: [docs/SESSION-MODEL.md](docs/SESSION-MODEL.md) (repo root).
 - `src/main/config.ts` + `src/main/envSpec.ts` — the environment, parsed once at startup. Standard
-  names (`ANTHROPIC_*`, `HF_ENDPOINT`) where one exists, `LYRA_` only for Lyra's own.
+  names (the AI SDK providers' `*_API_KEY` / `*_BASE_URL`, `HF_ENDPOINT`) where one exists, `LYRA_` only for Lyra's own.
 - `src/main/tasks/` — one-off tasks the app binary runs from its command line (`smoke`,
   `screenshot`, `meeting`); the `pnpm` scripts launch them.
 - `scripts/` — build, release and smoke-test launchers (CommonJS).
@@ -65,6 +65,10 @@ the server only).
 - **Logging:** use `log(scope, message, data)` (`src/main/log.ts`, `src/renderer/src/lib/log.ts`),
   not `console.*`. Log ids, counts and timings, never note text, transcripts or keys (the UI
   smoke test checks the log file).
+- **Schemas:** a shape that crosses a boundary (IPC, disk, env, argv, a model's reply) is one zod
+  schema; its type is `z.infer` of it. Don't write a type and a separate validator.
+- **Models:** code that needs a model takes a `NotesWriter` (or another interface) as a
+  dependency; only `src/main/meeting/writers.ts` constructs AI SDK providers.
 - **Config:** read the environment through `config()`, never `process.env` (lint enforces it).
   A new variable goes in `envSpec.ts`; prefer an existing standard name over a `LYRA_` one.
 - **Style:** match surrounding code. Prettier-style formatting: 2 spaces, single quotes, no

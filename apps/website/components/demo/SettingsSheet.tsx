@@ -17,7 +17,7 @@ const RETENTION: readonly { value: Retention; label: string }[] = [
 const ENGINES: readonly { value: NotesEngine; label: string }[] = [
   { value: 'off', label: 'Off' },
   { value: 'local', label: 'On this computer' },
-  { value: 'claude', label: 'With Claude' }
+  { value: 'cloud', label: 'Cloud model' }
 ]
 
 function Row({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
@@ -98,9 +98,9 @@ export function SettingsSheet({ onClose, newSessionShortcut }: Props) {
               meetings can take a few minutes.
             </p>
           ) : null}
-          {settings.notesEngine === 'claude' ? (
+          {settings.notesEngine === 'cloud' ? (
             <p className="settings-notice is-warning">
-              Sends the meeting transcript to Anthropic’s API to write the notes. Audio and voiceprints stay on this
+              Sends the meeting transcript to the provider you pick to write the notes. Audio and voiceprints stay on this
               computer. Uses your own API key and is billed to your account.
             </p>
           ) : null}

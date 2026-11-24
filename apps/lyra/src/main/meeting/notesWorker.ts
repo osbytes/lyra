@@ -5,12 +5,13 @@
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type * as NodeLlamaCpp from 'node-llama-cpp'
-import type { Llama, LlamaModel } from 'node-llama-cpp'
+import type { GbnfJsonObjectSchema, Llama, LlamaModel } from 'node-llama-cpp'
+import { z } from 'zod'
 import {
-  NOTES_SCHEMA,
+  MeetingNotes,
   NOTES_SYSTEM_PROMPT,
   PACKAGED_FLAG,
-  TITLE_SCHEMA,
+  TitleSuggestion,
   TITLE_SYSTEM_PROMPT
 } from './notesFormat'
 
@@ -60,13 +61,22 @@ async function getModel(modelPath: string): Promise<{ llama: Llama; model: Llama
   return { llama, model: loaded.model }
 }
 
+/**
+ * The JSON Schema for a grammar, generated from the same zod schema the answer is parsed with.
+ * node-llama-cpp types this parameter from literal schemas only; it checks the schema itself when
+ * it builds the grammar, and the reply is parsed against the zod schema in notesLocal.ts.
+ */
+function grammarSchema(schema: z.ZodObject): GbnfJsonObjectSchema {
+  return z.toJSONSchema(schema, { target: 'draft-07' }) as GbnfJsonObjectSchema
+}
+
 async function answer(request: NotesWorkerRequest): Promise<unknown[]> {
   const { LlamaChatSession } = await loadLlamaModule()
   const { llama: runtime, model } = await getModel(request.modelPath)
   const title = request.task === 'title'
   const grammar = title
-    ? await runtime.createGrammarForJsonSchema(TITLE_SCHEMA)
-    : await runtime.createGrammarForJsonSchema(NOTES_SCHEMA)
+    ? await runtime.createGrammarForJsonSchema(grammarSchema(TitleSuggestion))
+    : await runtime.createGrammarForJsonSchema(grammarSchema(MeetingNotes))
   const results: unknown[] = []
   for (const prompt of request.prompts) {
     const context = await model.createContext({ contextSize: CONTEXT_SIZE })

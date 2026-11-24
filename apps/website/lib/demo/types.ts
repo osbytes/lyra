@@ -47,7 +47,7 @@ export type Session = {
 }
 
 export type Retention = 'none' | '7' | '30' | 'always'
-export type NotesEngine = 'off' | 'local' | 'claude'
+export type NotesEngine = 'off' | 'local' | 'cloud'
 
 export type Settings = {
   retention: Retention

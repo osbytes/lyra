@@ -230,16 +230,16 @@ export async function captureScreenshot(win: BrowserWindow, reviewDir: string | 
           await settle()
           await save(reviewDir, `settings-${tab}-${theme}.png`)
           if (tab === 'sessions') {
-            // Summaries with Claude: the key row (no key in a throwaway profile) and the model.
+            // Cloud summaries: provider, model and key rows (no key in a throwaway profile).
             await win.webContents.executeJavaScript(
-              `[...document.querySelectorAll('button')].find((b) => b.textContent === 'With Claude')?.click()`
+              `[...document.querySelectorAll('button')].find((b) => b.textContent === 'Cloud model')?.click()`
             )
             await settle()
             await win.webContents.executeJavaScript(
-              `document.querySelector('[aria-label="Claude model"]')?.scrollIntoView({ block: 'center' })`
+              `document.querySelector('[aria-label="Model"]')?.scrollIntoView({ block: 'center' })`
             )
             await settle()
-            await save(reviewDir, `settings-claude-${theme}.png`)
+            await save(reviewDir, `settings-cloud-${theme}.png`)
             await win.webContents.executeJavaScript(
               `[...document.querySelectorAll('button')].find((b) => b.textContent === 'Off')?.click()`
             )

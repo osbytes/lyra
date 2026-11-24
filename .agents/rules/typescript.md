@@ -12,8 +12,9 @@ not the config.
   (`@typescript-eslint/no-explicit-any`)
 - Values whose type you don't control are `unknown`: IPC payloads, `JSON.parse`, `require()` of
   native addons, `catch` variables, `fetch` bodies, files read from disk.
-- Narrow `unknown` before use with type guards, `typeof`/`instanceof`/`Array.isArray`, or a
-  validator function. Don't let an implicit `any` leak through (`no-unsafe-*` rules).
+- Narrow `unknown` before use. For any shape (IPC payloads, files, env, argv, model replies), write
+  one zod schema and derive the type with `z.infer`; parse with that schema. Don't define a type
+  and then hand-write guards for it. Don't let an implicit `any` leak through (`no-unsafe-*`).
 
 ```ts
 // Bad

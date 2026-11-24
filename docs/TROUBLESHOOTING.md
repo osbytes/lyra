@@ -38,11 +38,12 @@ that isn't `http`/`https`. The message names it. Fix or unset it; the variables 
 Another app holds the same global shortcut. Settings shows a badge on General when registration
 failed; pick a different shortcut there.
 
-## Claude summaries don't run
+## Cloud summaries don't run
 
-Settings → Sessions shows a badge when summaries are set to Claude without a key. A key saved
-there wins over `ANTHROPIC_API_KEY`. Errors from the API (a bad key, no credit, a model id it
-doesn't know) are shown on the session and logged under `notes`.
+Settings → Sessions shows a badge when cloud summaries are missing something: an API key, a model
+(OpenAI and Google have no default), or the server address for an OpenAI-compatible server. A
+key saved there wins over the provider's environment variable. Errors from the provider (a bad
+key, no credit, a model id it doesn't know) are shown on the session and logged under `notes`.
 
 ## Quitting takes a few seconds
 

@@ -1,39 +1,30 @@
-/** Meeting notes: the schema both engines fill, and how notes sit in the note file. */
+/** Meeting notes: the schema every engine fills, and how notes sit in the note file. */
+import { z } from 'zod'
 
 /** On the notes worker's command line when the app is packaged (it can't ask `app` itself). */
 export const PACKAGED_FLAG = '--packaged'
 
-export type ActionItem = { owner: string; task: string }
+export const ActionItem = z.strictObject({
+  /** The speaker name exactly as written, or "Unassigned". */
+  owner: z.string(),
+  /** A short imperative ("Send the budget draft to finance"). */
+  task: z.string()
+})
+export type ActionItem = z.infer<typeof ActionItem>
 
-export type MeetingNotes = {
-  summary: string
-  decisions: string[]
-  actionItems: ActionItem[]
-  openQuestions: string[]
-}
-
-/** JSON schema for structured output (Claude) and grammar-constrained decoding (llama.cpp). */
-export const NOTES_SCHEMA = {
-  type: 'object',
-  // Constrained decoding fills fields in this order; extracting the concrete lists before
-  // writing the summary makes small local models much less likely to skip them.
-  properties: {
-    decisions: { type: 'array', items: { type: 'string' } },
-    actionItems: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: { owner: { type: 'string' }, task: { type: 'string' } },
-        required: ['owner', 'task'],
-        additionalProperties: false
-      }
-    },
-    openQuestions: { type: 'array', items: { type: 'string' } },
-    summary: { type: 'string' }
-  },
-  required: ['decisions', 'actionItems', 'openQuestions', 'summary'],
-  additionalProperties: false
-} as const
+/**
+ * What every engine fills: the AI SDK's structured output, and llama.cpp's grammar (from
+ * `z.toJSONSchema`). Field order matters: constrained decoding fills fields in this order, and
+ * extracting the concrete lists before writing the summary makes small local models much less
+ * likely to skip them.
+ */
+export const MeetingNotes = z.strictObject({
+  decisions: z.array(z.string()),
+  actionItems: z.array(ActionItem),
+  openQuestions: z.array(z.string()),
+  summary: z.string()
+})
+export type MeetingNotes = z.infer<typeof MeetingNotes>
 
 export const NOTES_SYSTEM_PROMPT = [
   'You write meeting notes from a transcript. Lines look like "[hh:mm:ss] Name: what they said".',
@@ -49,13 +40,8 @@ export const NOTES_SYSTEM_PROMPT = [
   'Use only what the transcript says. Be brief.'
 ].join('\n')
 
-/** A session title suggestion: the schema both engines fill. */
-export const TITLE_SCHEMA = {
-  type: 'object',
-  properties: { title: { type: 'string' } },
-  required: ['title'],
-  additionalProperties: false
-} as const
+/** A session title suggestion: what every engine fills. */
+export const TitleSuggestion = z.strictObject({ title: z.string() })
 
 export const TITLE_SYSTEM_PROMPT = [
   'You title a note from a voice notebook. It holds what was said (lines may look like',
@@ -68,11 +54,8 @@ export const TITLE_SYSTEM_PROMPT = [
 /** Longest title kept from a model; anything past it is cut at a word. */
 const MAX_TITLE = 80
 
-/** Validates a title suggestion; null when there is nothing usable in it. */
-export function parseTitle(value: unknown): string | null {
-  if (!value || typeof value !== 'object') return null
-  const { title } = value as Record<string, unknown>
-  if (typeof title !== 'string') return null
+/** A model's title, tidied (quotes, slugs, length); null when there is nothing usable in it. */
+export function cleanTitle(title: string): string | null {
   let clean = title
     .replace(/\s+/g, ' ')
     .trim()
@@ -89,35 +72,16 @@ export function parseTitle(value: unknown): string | null {
 /** Separates generated notes (above) from the labeled transcript (below) in the export. */
 export const TRANSCRIPT_DIVIDER = '──── Transcript ────'
 
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((entry) => typeof entry === 'string')
-}
-
-/** Validates model output; throws if it doesn't match the schema. */
-export function parseNotes(value: unknown): MeetingNotes {
-  if (!value || typeof value !== 'object') throw new Error('Notes were not an object')
-  const raw = value as Record<string, unknown>
-  const items = raw.actionItems
-  if (
-    typeof raw.summary !== 'string' ||
-    !isStringArray(raw.decisions) ||
-    !isStringArray(raw.openQuestions) ||
-    !Array.isArray(items)
-  ) {
-    throw new Error('Notes did not match the expected shape')
-  }
-  const actionItems = items.flatMap((item: unknown): ActionItem[] => {
-    if (!item || typeof item !== 'object') return []
-    const entry = item as Record<string, unknown>
-    return typeof entry.task === 'string'
-      ? [{ owner: typeof entry.owner === 'string' ? entry.owner : 'Unassigned', task: entry.task }]
-      : []
-  })
+/** Notes as a model returned them, trimmed, with empty entries dropped. */
+export function tidyNotes(notes: MeetingNotes): MeetingNotes {
+  const lines = (items: string[]): string[] => items.map((item) => item.trim()).filter(Boolean)
   return {
-    summary: raw.summary.trim(),
-    decisions: raw.decisions.map((d) => d.trim()).filter(Boolean),
-    actionItems,
-    openQuestions: raw.openQuestions.map((q) => q.trim()).filter(Boolean)
+    summary: notes.summary.trim(),
+    decisions: lines(notes.decisions),
+    actionItems: notes.actionItems
+      .map((item) => ({ owner: item.owner.trim() || 'Unassigned', task: item.task.trim() }))
+      .filter((item) => item.task),
+    openQuestions: lines(notes.openQuestions)
   }
 }
 
