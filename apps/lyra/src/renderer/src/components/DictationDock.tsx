@@ -114,6 +114,22 @@ function Sources({
   const summary = `${micLabel}${systemAudio ? ' and computer audio' : ''}`
   const rect = open ? anchor.current?.getBoundingClientRect() : undefined
 
+  // Focus stays on the anchor when the popover opens, so Escape is heard on the window. A nested
+  // dropdown that handled Escape itself has already prevented it and closes alone.
+  useEffect(() => {
+    if (!open) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      event.preventDefault()
+      setOpen(false)
+      anchor.current?.focus()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
   return (
     <>
       <button
@@ -153,12 +169,6 @@ function Sources({
               }}
               onMouseDown={(event) => {
                 event.stopPropagation()
-              }}
-              onKeyDown={(event) => {
-                if (event.key === 'Escape') {
-                  setOpen(false)
-                  anchor.current?.focus()
-                }
               }}
             >
               <strong>What to record</strong>
@@ -264,8 +274,11 @@ function useDockDrag() {
   }, [apply])
 
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
-    if (event.button !== 0 || onButton(event.target)) return
     const target = event.currentTarget
+    // Popovers render in a portal, but React still bubbles their events here: only the dock's
+    // own DOM starts a drag, or the whole backdrop would become a drag handle.
+    if (!(event.target instanceof Node) || !target.contains(event.target)) return
+    if (event.button !== 0 || onButton(event.target)) return
     const start = { x: event.clientX, y: event.clientY, offset: offset.current }
     target.setPointerCapture(event.pointerId)
     setDragging(true)
