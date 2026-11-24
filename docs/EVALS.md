@@ -23,12 +23,17 @@ Every run uses the same model files: they are pinned by revision and sha256
 
 ## Results
 
-None recorded here yet. Speaker and diarization changes report the `eval:calls` table before and
-after in their pull request (AGENTS.md); the next such run should also add its table below with
-the date, the commit and the number of scenarios.
+Speaker and diarization changes report the `eval:sessions` and `eval:calls` tables before and
+after in their pull request (AGENTS.md) and add their rows below with the date, the commit and
+the number of sessions or scenarios. Sessions WER is high because of overlapping speech and Whisper base on
+context-free read sentences; speaker errors are cpWER minus WER.
 
 | Date | Commit | Suite | Pipeline | n | WER | cpWER | DER |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-11-24 | b5e98d6 (before #48) | sessions v2, seed 1 | live | 16 (75 min) | 46.0% | 78.3% | 40.1% |
+| 2026-11-24 | #48 | sessions v2, seed 1 | live | 16 (75 min) | 45.6% | 51.9% | 14.1% |
+| 2026-11-24 | b5e98d6 (before #48) | calls | live | 11 | 10.9% | 44.6% | 25.1% |
+| 2026-11-24 | #48 | calls | live | 11 | 10.2% | 24.7% | 11.3% |
 
 ## Not yet
 
