@@ -48,6 +48,18 @@
   --font-body: 'Charter', 'Iowan Old Style', 'Source Serif Pro', Georgia, serif;
   --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, monospace;
 
+  /* The window's top band: brand, page toolbar and panel title share it, and every column's
+     content starts right below it. On Windows the window controls sit in it too. */
+  --band: 56px;
+  /* Room the Windows caption buttons take at the band's right end (Electron's titleBarOverlay). */
+  --caption-buttons: 0px;
+
+  /* The page's text column. Bars outside the scrolling page (the title band, the transcript
+     bar) line up with it using --page-left, which allows for the page's scrollbar. */
+  --page-width: 712px;
+  --page-inset: 48px;
+  --scrollbar-size: 10px;
+
   --layer-dialog: 50;
   /* Speaker picker, split panel and transcript toast float above the page and its dialogs. */
   --layer-popover: 60;
@@ -362,9 +374,11 @@ code {
 
 /* Layout */
 
+/* One row, exactly the window's height: columns scroll inside themselves, never the window. */
 .app {
   display: grid;
-  grid-template-columns: 256px 1fr;
+  grid-template-columns: 256px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   height: 100%;
 }
 
@@ -374,15 +388,27 @@ code {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   border-right: 1px solid var(--border);
   background: var(--bg-sidebar);
 }
 
+/*
+ * Sidebar grid: hover fills and boxes sit 8px from the edges, and text starts 16px in, so the
+ * brand, the search placeholder's icon, the tag chips, group labels and session titles share
+ * one left edge.
+ */
 .sidebar-header {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
-  height: 56px;
+  height: var(--band);
   padding: 0 16px;
+}
+
+/* Windows draws its caption buttons in the band (titleBarOverlay); this is the room they take. */
+.platform-win32 {
+  --caption-buttons: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw));
 }
 
 .platform-darwin .sidebar-header {
@@ -401,7 +427,7 @@ code {
 .sidebar-tools {
   display: flex;
   gap: 8px;
-  padding: 0 12px 16px;
+  padding: 0 8px 12px;
 }
 
 .search {
@@ -492,12 +518,25 @@ code {
   background: var(--surface-hover);
 }
 
+/*
+ * The list always keeps room for its scrollbar on the right, so that room is the right margin:
+ * an 8px gutter and 8px of left padding put the rows the same distance from both edges.
+ */
 .page-list {
   display: flex;
   flex: 1;
   flex-direction: column;
   gap: 16px;
-  padding: 0 8px 16px;
+  min-height: 0;
+  padding: 0 0 16px 8px;
+}
+
+.scroll-area.page-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.scroll-area.page-list::-webkit-scrollbar-thumb {
+  border-width: 2px;
 }
 
 .page-list-empty {
@@ -532,7 +571,6 @@ code {
 .page-row {
   position: relative;
   display: flex;
-  border: 1px solid transparent;
   border-radius: var(--radius-md);
 }
 
@@ -541,9 +579,7 @@ code {
 }
 
 .page-row.active {
-  border-color: var(--border);
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
+  background: var(--surface-active);
 }
 
 .page-item {
@@ -552,7 +588,7 @@ code {
   flex-direction: column;
   gap: 2px;
   min-width: 0;
-  padding: 8px 36px 8px 8px;
+  padding: 8px 8px 8px 8px;
   border: 0;
   border-radius: var(--radius-md);
   background: transparent;
@@ -576,7 +612,7 @@ code {
   font-size: 13px;
 }
 
-/* Kept in its own slot so revealing it never moves the title; always shown on the open page. */
+/* Kept in its own slot so revealing it never moves the title. */
 .page-delete {
   position: absolute;
   top: 8px;
@@ -593,9 +629,15 @@ code {
   transition: opacity 120ms ease-out;
 }
 
+/* Hover or keyboard focus only: a delete one click away on the open page invites mistakes. */
+/* The title and preview give way to the delete button only while it shows. */
+.page-row:hover .page-item,
+.page-row:focus-within .page-item {
+  padding-right: 36px;
+}
+
 .page-row:hover .page-delete,
-.page-row.active .page-delete,
-.page-delete:focus-visible {
+.page-row:focus-within .page-delete {
   opacity: 1;
 }
 
@@ -606,6 +648,7 @@ code {
 
 .sidebar-footer {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
@@ -651,21 +694,51 @@ code {
 /* Workspace */
 
 .workspace {
+  /* Declared here, not on :root, so it picks up the panel layout's narrower --page-inset. */
+  --page-left: max(
+    var(--page-inset),
+    calc((100% - var(--scrollbar-size) - var(--page-width)) / 2 + var(--page-inset))
+  );
+
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+.workspace-main {
   position: relative;
   display: flex;
+  flex: 1;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
 }
 
+/*
+ * The session's title and its actions share the band. The title lines up with the page's text
+ * column and wraps at its width; the actions stay on the band's first line.
+ */
 .topbar {
   display: flex;
   flex: 0 0 auto;
+  align-items: flex-start;
+  gap: 16px;
+  min-height: var(--band);
+  padding: 0 12px 0 var(--page-left);
+}
+
+.topbar-actions {
+  display: flex;
+  flex-shrink: 0;
   align-items: center;
-  justify-content: flex-end;
-  gap: 12px;
-  height: 56px;
-  padding: 0 16px;
+  gap: 8px;
+  height: var(--band);
+  margin-left: auto;
+}
+
+/* Without the panel, the toolbar ends where the window's caption buttons begin. */
+.workspace:not(.with-panel) .topbar {
+  padding-right: calc(12px + var(--caption-buttons));
 }
 
 /* Fixed width so "Saving…" and "Saved" swap without nudging the Copy button. */
@@ -679,15 +752,12 @@ code {
   font-size: 13px;
 }
 
-.save-state::before {
+/* Saving is automatic, so the steady state is quiet; only a save in progress gets a dot. */
+.save-state.is-saving::before {
   content: '';
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--success);
-}
-
-.save-state.is-saving::before {
   background: var(--text-subtle);
 }
 
@@ -717,22 +787,29 @@ code {
 .page {
   display: flex;
   flex-direction: column;
-  max-width: 712px;
+  max-width: var(--page-width);
   min-height: 100%;
   margin: 0 auto;
-  padding: 24px 48px 176px;
+  padding: 4px var(--page-inset) 176px;
 }
 
 .title-input {
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: calc(var(--page-width) - 2 * var(--page-inset));
+  margin: 10px 0 0;
   padding: 0;
   border: 0;
   outline: none;
   background: transparent;
-  font-size: 32px;
+  color: var(--text);
+  font: inherit;
+  font-size: 28px;
   font-weight: 700;
   letter-spacing: -0.025em;
-  line-height: 1.2;
+  line-height: 36px;
+  resize: none;
+  field-sizing: content;
 }
 
 .title-input::placeholder,
@@ -744,7 +821,7 @@ code {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 12px;
-  margin: 8px 0 32px;
+  margin: 0 0 24px;
   color: var(--text-muted);
   font-size: 13px;
 }
@@ -1199,7 +1276,9 @@ code {
 
 /* Dialog + settings */
 
+/* A dialog covers the band, so clicks on its backdrop close it rather than drag the window. */
 .modal-backdrop {
+  -webkit-app-region: no-drag;
   position: fixed;
   z-index: var(--layer-dialog);
   inset: 0;
@@ -1577,14 +1656,20 @@ code {
   flex: 0 0 200px;
   flex-direction: column;
   gap: 2px;
-  padding: 16px 8px;
+  padding: 0 8px 16px;
   border-right: 1px solid var(--border);
   background: var(--bg-sidebar);
 }
 
+/* Shares the 56px band and rule of the header beside it, so both titles sit on one line. */
 .settings-nav h2 {
-  margin: 0;
-  padding: 4px 8px 16px;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  height: 57px;
+  margin: 0 -8px 8px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
   font-size: 16px;
   font-weight: 600;
 }
@@ -1724,6 +1809,14 @@ code {
   background: var(--surface-sunken);
 }
 
+/* A note that belongs to the row above it: no band or rule of its own, so it reads as that row's. */
+.settings-card > .settings-notice.is-footnote {
+  padding-top: 0;
+  border-top: 0;
+  background: none;
+  font-size: 12px;
+}
+
 .settings-card > .settings-notice:last-child {
   border-radius: 0 0 var(--radius-lg) var(--radius-lg);
 }
@@ -1846,7 +1939,8 @@ code {
 .person {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
+  min-height: 48px;
   padding: 8px 0;
 }
 
@@ -1854,8 +1948,38 @@ code {
   border-top: 1px solid var(--border);
 }
 
-.person .settings-input {
+.person-name {
   flex: 1;
+  min-width: 0;
+  height: 32px;
+  margin-left: -8px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-weight: 500;
+}
+
+.person-name:hover {
+  border-color: var(--border);
+}
+
+.person-name:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  background: var(--surface);
+}
+
+.person-make-self {
+  height: 28px;
+}
+
+.person-delete:hover {
+  background: var(--record-soft);
+  color: var(--danger);
 }
 
 .person-meta {
@@ -1933,11 +2057,95 @@ code {
 .summary {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
   margin: 0 0 32px;
-  padding: 16px;
+  padding: 12px 16px 16px;
   border-radius: var(--radius-lg);
   background: var(--surface-sunken);
+}
+
+.summary-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+}
+
+.summary-badge {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.summary-edit {
+  height: 28px;
+  margin-left: auto;
+}
+
+.summary-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.summary-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.summary-section h3 {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.summary-section p {
+  margin: 0;
+}
+
+.summary-section ul {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding-left: 20px;
+}
+
+.summary-section li.summary-task {
+  margin-left: -20px;
+  list-style: none;
+}
+
+.summary-task label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.summary-task input {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  margin: 4px 0 0;
+  accent-color: var(--accent);
+}
+
+.summary-task.done span {
+  color: var(--text-subtle);
+  text-decoration: line-through;
+}
+
+.summary-section b {
+  font-weight: 600;
 }
 
 .summary .editor,
@@ -2892,13 +3100,6 @@ code {
   font-size: 12px;
 }
 
-/* Two columns when the details panel is open: the page, and the panel beside it. */
-.workspace-body {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-}
-
 .workspace-column {
   position: relative;
   display: flex;
@@ -2913,12 +3114,8 @@ code {
   color: var(--text);
 }
 
-.with-panel .page {
-  padding-inline: 40px;
-}
-
-.with-panel .title-input {
-  margin-bottom: 24px;
+.with-panel {
+  --page-inset: 40px;
 }
 
 /* Dock: what the session records. */
@@ -3113,7 +3310,7 @@ code {
 /* Sidebar tag filters: scroll sideways, the edge fades to say so. */
 .tag-filters {
   position: relative;
-  margin: -4px 0 12px;
+  margin: 0 0 12px;
 }
 
 .tag-filters::after {
@@ -3130,7 +3327,7 @@ code {
 .tag-filters-scroll {
   display: flex;
   gap: 4px;
-  padding: 0 12px;
+  padding: 0 8px;
 }
 
 .filter-chip {
@@ -3180,10 +3377,32 @@ code {
   display: flex;
   flex: 0 0 288px;
   flex-direction: column;
-  gap: 24px;
-  padding: 8px 16px 24px;
+  min-height: 0;
   border-left: 1px solid var(--border);
   background: var(--bg);
+}
+
+.details-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  height: var(--band);
+  padding: 0 calc(16px + var(--caption-buttons)) 0 16px;
+}
+
+.details-header h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.details-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 24px;
+  min-height: 0;
+  padding: 8px 16px 24px;
 }
 
 .details-section {
@@ -3343,8 +3562,8 @@ code {
 }
 
 .scroll-area::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
 }
 
 .scroll-area::-webkit-scrollbar-track,
@@ -3448,55 +3667,112 @@ code {
   padding-bottom: 176px;
 }
 
+.notes-pane.is-collapsed,
+.transcript-pane.is-collapsed {
+  display: none;
+}
+
+/* The transcript reads on the page's own background; the bar above it does the separating. */
 .transcript-pane {
   flex: 1 1 0;
-  background: var(--surface-sunken);
 }
 
 .transcript-page {
   padding-top: 16px;
 }
 
-.pane-divider {
+/*
+ * The transcript's header is also the divider: drag it to share the column, double-click to
+ * reset, or step through notes / split / transcript with its buttons. It spans the column so
+ * the split reads as one edge, with a grip that is always visible.
+ */
+.transcript-bar {
   position: relative;
+  display: flex;
   flex: 0 0 auto;
-  height: 9px;
-  margin: -4px 0;
-  z-index: 2;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  /* The title lines up with the page's text column, the buttons with the window's edge. */
+  padding: 0 12px 0 var(--page-left);
+  border-block: 1px solid var(--border);
+  background: var(--bg-sidebar);
   cursor: row-resize;
-  outline: none;
+  user-select: none;
 }
 
-.pane-divider::before {
-  content: '';
-  position: absolute;
-  inset: 4px 0 auto;
-  height: 1px;
-  background: var(--border);
+.transcript-bar:hover .transcript-grip::after,
+.transcript-grip:focus-visible::after {
+  background: var(--text-subtle);
 }
 
-.pane-divider::after {
-  content: '';
+.transcript-grip {
   position: absolute;
-  top: 2px;
+  top: 0;
   left: 50%;
-  width: 36px;
-  height: 5px;
-  border-radius: 3px;
+  width: 64px;
+  height: 12px;
+  outline: none;
+  transform: translateX(-50%);
+}
+
+.transcript-grip::after {
+  content: '';
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  width: 32px;
+  height: 4px;
+  border-radius: 2px;
   background: var(--border-strong);
   transform: translateX(-50%);
-  opacity: 0;
-  transition: opacity 120ms;
+  transition: background 120ms;
 }
 
-.pane-divider:hover::after,
-.pane-divider:focus-visible::after,
-.pane-divider:active::after {
-  opacity: 1;
+.transcript-bar-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
 }
 
-.pane-divider:focus-visible::before {
-  background: var(--accent);
+.transcript-bar-count {
+  color: var(--text-subtle);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.transcript-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--record);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.transcript-live::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.transcript-bar-tools {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+  cursor: default;
+}
+
+.transcript-bar-tools .icon-btn {
+  width: 28px;
+  height: 28px;
+}
+
+/* The collapsed bar sits along the column's bottom edge; the dock floats above it, not over it. */
+.transcript-collapsed .dock-area:not(.is-top) {
+  bottom: 64px;
 }
 
 /* Notes: a rich-text editor (Tiptap) over the markdown the session keeps. */
@@ -3620,26 +3896,6 @@ code {
 
 .transcript-pane .page {
   padding-bottom: 176px;
-}
-
-.transcript-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 12px;
-}
-
-.transcript-hint {
-  flex: 1;
-  min-width: 0;
-  color: var(--text-subtle);
-  font-size: 12px;
-}
-
-.transcript-mode button {
-  height: 24px;
-  padding: 0 10px;
-  font-size: 12px;
 }
 
 .lines {
@@ -3932,6 +4188,10 @@ p.line-text {
 
 .confirm-buttons .btn {
   height: 36px;
+}
+
+.btn.primary.is-danger:focus-visible {
+  outline-color: var(--danger);
 }
 
 .btn.primary.is-danger {

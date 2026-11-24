@@ -244,7 +244,7 @@ function RecordingSection({ settings, update }: SectionProps) {
           onChange={(captureSystemAudio) => void update({ captureSystemAudio })}
         />
       </Row>
-      <p className="settings-notice">
+      <p className="settings-notice is-footnote">
         Recording other people usually requires their consent. Session audio, transcripts and
         voiceprints stay on this computer.
       </p>

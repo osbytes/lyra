@@ -7,6 +7,8 @@ import { log } from '../lib/log'
 import { ConfirmDialog } from './ConfirmDialog'
 import { useContextMenu } from './ContextMenu'
 import { TrashIcon } from './Icons'
+import { tip } from './Tooltip'
+import { speakerTone } from '../lib/speakerTone'
 
 const ENROLL_SECONDS = 20
 
@@ -197,8 +199,12 @@ function PersonRow({ person, people }: { person: Person; people: readonly Person
         ])
       }}
     >
+      <span className="speaker-avatar" data-tone={speakerTone(people, person.id)} aria-hidden="true">
+        {(name.trim()[0] ?? '?').toUpperCase()}
+      </span>
+      {/* Reads as the name until hovered or focused: renaming is occasional, reading is constant. */}
       <input
-        className="settings-input"
+        className="person-name"
         value={name}
         onChange={(event) => {
           setName(event.target.value)
@@ -220,12 +226,18 @@ function PersonRow({ person, people }: { person: Person; people: readonly Person
       {person.self ? (
         <span className="person-self">You</span>
       ) : (
-        <button className="btn ghost" type="button" onClick={makeSelf}>
-          This is me
+        <button className="btn ghost person-make-self" type="button" onClick={makeSelf}>
+          Set as me
         </button>
       )}
-      <button className="btn ghost danger" type="button" onClick={() => setConfirming(true)}>
-        Delete
+      <button
+        className="icon-btn person-delete"
+        type="button"
+        aria-label={`Delete ${person.name}’s voice`}
+        {...tip('Delete voice')}
+        onClick={() => setConfirming(true)}
+      >
+        <TrashIcon />
       </button>
       {confirming ? (
         <ConfirmDialog

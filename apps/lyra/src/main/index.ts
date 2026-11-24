@@ -113,6 +113,20 @@ function isWebUrl(raw: string): boolean {
   }
 }
 
+/** The app's top band (`--band` in styles.css), which the window controls share. */
+const BAND_HEIGHT = 56
+
+/**
+ * Windows draws its caption buttons over the app's own top band instead of a separate title
+ * bar, so the brand, the page toolbar and the window controls sit on one line. The buttons
+ * take the page background (`--bg`) and muted text colour of the current theme.
+ */
+function captionOverlay(): { color: string; symbolColor: string; height: number } {
+  return nativeTheme.shouldUseDarkColors
+    ? { color: '#16161b', symbolColor: '#a3a3b2', height: BAND_HEIGHT }
+    : { color: '#ffffff', symbolColor: '#5d5d6b', height: BAND_HEIGHT }
+}
+
 function createWindow(): void {
   const icon = appIcon()
   const mainWindow = new BrowserWindow({
@@ -126,7 +140,9 @@ function createWindow(): void {
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#16161b' : '#ffffff',
     ...(process.platform === 'darwin'
       ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 16, y: 18 } }
-      : {}),
+      : process.platform === 'win32'
+        ? { titleBarStyle: 'hidden' as const, titleBarOverlay: captionOverlay() }
+        : {}),
     ...(icon.isEmpty() ? {} : { icon }),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -139,6 +155,11 @@ function createWindow(): void {
   })
   setMainWindow(mainWindow)
   watchMainWindow(mainWindow)
+  if (process.platform === 'win32') {
+    const recolor = (): void => mainWindow.setTitleBarOverlay(captionOverlay())
+    nativeTheme.on('updated', recolor)
+    mainWindow.on('closed', () => nativeTheme.off('updated', recolor))
+  }
   attachEditMenu(mainWindow)
 
   // Closing the window hides it; Lyra keeps running in the tray for the global hotkey.
