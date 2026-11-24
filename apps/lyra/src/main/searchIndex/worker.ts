@@ -5,6 +5,7 @@
 import { createClient, type Client } from '@libsql/client'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { z } from 'zod'
 import * as db from './db'
 import { IndexEnvelope, type IndexRequest, type IndexResponse } from './protocol'
@@ -21,8 +22,8 @@ async function handle(request: IndexRequest): Promise<unknown> {
     case 'open': {
       client?.close()
       mkdirSync(dirname(request.path), { recursive: true })
-      // `file:` plus the plain path: libsql reads the rest of the URL as the path as-is.
-      client = createClient({ url: `file:${request.path}` })
+      // A real file URL: a plain `file:` + path breaks on a '#' or '%' in it (a user name).
+      client = createClient({ url: pathToFileURL(request.path).href })
       return { fresh: await db.prepare(client, request.notesDir) }
     }
     case 'upsertSession':
