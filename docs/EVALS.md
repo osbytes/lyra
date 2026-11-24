@@ -7,8 +7,11 @@ claims about accuracy quote this file, with its date and sample size, or are not
 
 | Command (in `apps/lyra`) | Audio | Scores | Needs |
 | --- | --- | --- | --- |
+| `pnpm eval:sessions` | Real voices (LibriSpeech dev-clean + test-clean, 80 speakers, CC BY 4.0) laid out as conversations: 2 to 6 people at one desk mic in different seats, hybrid meetings and calls with Opus remote audio and speaker bleed, music or a video playing, a fan, backchannels, crosstalk, a speaker who moves, an hour-long meeting when named. Versioned and seeded (`--seeds`); `--enroll` saves the owner's voice first | WER, cpWER, DER, speaker count | ffmpeg; downloads ~690 MB of LibriSpeech once and the models |
 | `pnpm eval:calls` | Synthetic calls and rooms made with system text-to-speech: speaker bleed, clipping, quick turns, crosstalk, similar voices | WER, cpWER, DER, speaker count | Windows (SAPI voices) or macOS (`say`, no similar-voice cases); downloads the models |
 | `pnpm eval:ami` | Real meetings from the AMI corpus (`--meetings`, `--minutes`, `--mic`) | WER, cpWER, DER | Downloads AMI audio and the models |
+| `node scripts/eval/cluster-lab.cjs` | The sessions, without Whisper | DER and speaker count for each voice model, window size and clustering bar | The models |
+| `node scripts/eval/voice-scores.cjs` | The sessions' enroll.wav against each speaker | How a saved voice scores against its owner and everyone else | The models |
 | `pnpm replay:session <id>` | A recorded session's kept audio | Who spoke each line; scores with `--reference` | The session's audio still kept |
 
 `--pipeline live` (the default, what the app runs), `stream` (live identification alone, no

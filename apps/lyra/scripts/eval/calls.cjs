@@ -21,6 +21,7 @@
 const { mkdirSync, writeFileSync } = require('node:fs')
 const { join } = require('node:path')
 const { render } = require('./tts.cjs')
+const { addAt, random, reverb, speakerBleed } = require('./acoustics.cjs')
 const { RATE, readWav, writeWav } = require('./wav.cjs')
 
 const L = 'local'
@@ -95,68 +96,6 @@ const SCENARIOS = {
 }
 
 const GAP = 0.6
-
-/** Small seeded PRNG, so a scenario is the same audio on every run. */
-function random(seed) {
-  let a = seed >>> 0
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0
-    let t = Math.imul(a ^ (a >>> 15), 1 | a)
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-}
-
-function addAt(target, source, at, gain = 1) {
-  for (let i = 0; i < source.length && at + i < target.length; i++) target[at + i] += source[i] * gain
-}
-
-/** What the mic hears from laptop speakers: late, duller, with a little room. */
-function speakerBleed(remote, gain) {
-  const out = new Float32Array(remote.length)
-  // One-pole low-pass: laptop speakers and the room eat the highs.
-  let state = 0
-  const dull = new Float32Array(remote.length)
-  for (let i = 0; i < remote.length; i++) {
-    state += 0.35 * (remote[i] - state)
-    dull[i] = state
-  }
-  for (const [delayMs, tap] of [[30, 1], [70, 0.35], [130, 0.15]]) {
-    addAt(out, dull, Math.round((delayMs / 1000) * RATE), gain * tap)
-  }
-  return out
-}
-
-/** Reverberation time of a furnished office or meeting room, in seconds. */
-const RT60 = 0.5
-
-/**
- * A small Schroeder reverb (four combs into two all-passes): what a room adds between a talker
- * and a desk mic. `wet` is how much of the sound is room rather than direct path. Each comb's
- * feedback is set so its echoes fall 60 dB in RT60.
- */
-function reverb(dry, wet) {
-  const combs = [1557, 1617, 1491, 1422].map((delay) => [delay, 10 ** ((-3 * delay) / RATE / RT60)])
-  const out = new Float32Array(dry.length)
-  for (const [delay, feedback] of combs) {
-    const line = new Float32Array(delay)
-    for (let i = 0, j = 0; i < dry.length; i++, j = (j + 1) % delay) {
-      const echo = line[j]
-      line[j] = dry[i] + echo * feedback
-      out[i] += echo / combs.length
-    }
-  }
-  for (const [delay, gain] of [[225, 0.5], [556, 0.5]]) {
-    const line = new Float32Array(delay)
-    for (let i = 0, j = 0; i < out.length; i++, j = (j + 1) % delay) {
-      const delayed = line[j]
-      const input = out[i]
-      line[j] = input + delayed * gain
-      out[i] = delayed - input * gain
-    }
-  }
-  return dry.map((value, i) => value * (1 - wet) + out[i] * wet * 2)
-}
 
 /** Builds one scenario's mic.wav, system.wav (when it has one) and reference. */
 function prepare(dataDir, name) {

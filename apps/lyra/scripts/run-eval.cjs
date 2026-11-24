@@ -2,10 +2,14 @@
 //
 //   pnpm eval:calls                                 # synthetic call scenarios (bleed, clipping, quick turns, crosstalk)
 //   pnpm eval:calls --scenarios call-speakers,call-quick-turns
+//   pnpm eval:sessions                              # real voices laid out as room, hybrid and call sessions
+//   pnpm eval:sessions --sessions room-2-desk,hybrid-2+1 --seeds 3   # three draws of each
+//   LYRA_SESSIONS_CORPUS=mini pnpm eval:sessions                     # the 126 MB corpus instead
 //   pnpm eval:ami                                   # ES2004a, IS1009a, TS3003a; first 10 min; far-field mic
 //   pnpm eval:ami --meetings ES2004a --minutes 5 --mic Mix-Headset
 //   pnpm eval:ami --minutes 0                       # whole meetings (slow)
 //   node scripts/run-eval.cjs --score ref.json hyp.json   # score any two transcripts
+//   --enroll                  sessions: save the first person's voice (enroll.wav) before replaying
 //   --pipeline live|stream|offline   live (default) replays the audio as a recording, as the app
 //                             runs it: live identification, then relabeling once it stops; stream
 //                             is live identification alone; offline is the diarize-then-transcribe
@@ -20,6 +24,7 @@ const { existsSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs'
 const { join, resolve } = require('node:path')
 const ami = require('./eval/ami.cjs')
 const calls = require('./eval/calls.cjs')
+const sessions = require('./eval/sessions.cjs')
 const { score } = require('./eval/metrics.cjs')
 
 const root = join(__dirname, '..')
@@ -31,6 +36,8 @@ function arg(name, fallback) {
 
 const list = (value) => value.split(',').filter(Boolean)
 const pipeline = arg('pipeline', 'live')
+/** Sessions only: save the owner's enroll.wav as a voice first, as a user who set up People. */
+const enroll = process.argv.includes('--enroll')
 const pct = (value) => `${(value * 100).toFixed(1)}%`.padStart(7)
 
 function report(id, result) {
@@ -57,7 +64,8 @@ function runLyra(item, output) {
     '--output',
     output,
     ...(pipeline === 'offline' ? ['--offline'] : []),
-    ...(pipeline === 'stream' ? ['--no-relabel'] : [])
+    ...(pipeline === 'stream' ? ['--no-relabel'] : []),
+    ...(enroll && item.enroll ? ['--enroll', item.enroll] : [])
   ]
   const result = spawnSync(process.execPath, args, {
     cwd: root,
@@ -73,6 +81,17 @@ function plan(dataset, dataDir) {
     const names = list(arg('scenarios', Object.keys(calls.SCENARIOS).join(',')))
     return { options: { scenarios: names }, items: names.map((name) => ({ name, prepare: async () => calls.prepare(dataDir, name) })) }
   }
+  if (dataset === 'sessions') {
+    const names = list(arg('sessions', sessions.DEFAULT_SESSIONS.join(',')))
+    const seeds = Number(arg('seeds', '1'))
+    const ids = sessions.sessionIds(names, seeds)
+    const corpus = process.env.LYRA_SESSIONS_CORPUS ?? 'librispeech'
+    return {
+      label: `sessions-${corpus}`,
+      options: { sessions: names, seeds, corpus, version: sessions.DATASET_VERSION },
+      items: ids.map((name) => ({ name, prepare: () => sessions.prepare(dataDir, name) }))
+    }
+  }
   if (dataset === 'ami') {
     const meetings = list(arg('meetings', ami.DEFAULT_MEETINGS.join(',')))
     const minutes = Number(arg('minutes', '10'))
@@ -83,7 +102,7 @@ function plan(dataset, dataDir) {
       items: meetings.map((meeting) => ({ name: meeting, prepare: () => ami.prepare(dataDir, meeting, { mic, minutes }) }))
     }
   }
-  throw new Error(`unknown --dataset ${dataset}; use calls or ami`)
+  throw new Error(`unknown --dataset ${dataset}; use calls, sessions or ami`)
 }
 
 async function main() {
@@ -92,10 +111,10 @@ async function main() {
 
   const dataset = arg('dataset', 'calls')
   const dataDir = resolve(process.env.LYRA_EVAL_DATA ?? join(root, 'eval-data'))
-  const { options, items } = plan(dataset, dataDir)
+  const { label, options, items } = plan(dataset, dataDir)
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   if (!['live', 'stream', 'offline'].includes(pipeline)) throw new Error('--pipeline must be live, stream or offline')
-  const outDir = join(dataDir, 'results', `${dataset}-${pipeline}-${stamp}`)
+  const outDir = join(dataDir, 'results', `${label ?? dataset}-${pipeline}-${stamp}`)
   mkdirSync(outDir, { recursive: true })
 
   // One build up front; run-meeting-smoke.cjs launches the built app.

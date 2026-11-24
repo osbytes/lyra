@@ -5,6 +5,7 @@
 //   --no-relabel          keep the live pass's speakers (no relabel after stop)
 //   --notes local|claude  also write meeting notes (local downloads a ~2 GB model)
 //   --output <file.json>  write the labeled segments for the eval scorers
+//   --enroll <file.wav>   first save this as the laptop owner's voice, as People would
 // Downloads the speech and speaker models on first use (~180 MB); set LYRA_MODELS_DIR to keep them.
 const { spawnSync } = require('node:child_process')
 const { mkdtempSync, rmSync } = require('node:fs')
@@ -28,7 +29,9 @@ if (!args[0] || args[0].startsWith('--')) {
 }
 // The app runs from apps/lyra, so paths given relative to here are made absolute first.
 const forApp = args.map((arg, i) =>
-  !arg.startsWith('--') && (i < 2 || args[i - 1] === '--output') && args[i - 1] !== '--notes' ? resolve(arg) : arg
+  !arg.startsWith('--') && (i < 2 || args[i - 1] === '--output' || args[i - 1] === '--enroll') && args[i - 1] !== '--notes'
+    ? resolve(arg)
+    : arg
 )
 
 const home = mkdtempSync(join(tmpdir(), 'lyra-meeting-'))

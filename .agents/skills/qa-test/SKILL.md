@@ -28,6 +28,13 @@ run from before the change (`eval-data/results/<run>/results.json`):
   streaming Whisper, live speaker identification, then the relabel pass after stop. `stream` scores
   live identification alone (what the window shows while recording), `offline` the
   diarize-then-transcribe pipeline. Compare the same pipeline before and after a change.
+- `pnpm eval:sessions` (in `apps/lyra`): real people's voices (Mini LibriSpeech, downloaded once,
+  decoded with ffmpeg) laid out as conversations, the closest thing to real sessions: two to four
+  people at one desk mic at different distances, hybrid meetings with remote people on the system
+  track, calls, quick turns, and `room-2-music` with music playing on the computer. Each also has
+  `enroll.wav` for testing a saved voice. Start here for speaker changes; `--sessions a,b` runs a
+  subset. For clustering or threshold changes, `scripts/eval/cluster-lab.cjs` and
+  `scripts/eval/voice-scores.cjs` answer in seconds what an eval run answers in an hour.
 - `pnpm eval:calls` (in `apps/lyra`): generated calls with exact ground truth. `call-speakers` has
   the remote voice bleeding into the mic from laptop speakers; `call-speakers-loud` adds a clipped
   system track; `call-quick-turns` / `room-quick-turns` have one-word replies; `call-crosstalk`

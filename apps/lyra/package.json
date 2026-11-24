@@ -19,6 +19,7 @@
     "smoke:ui": "electron-vite build && node scripts/run-ui-smoke.cjs",
     "smoke:meeting": "electron-vite build && node scripts/run-meeting-smoke.cjs",
     "eval:calls": "node scripts/run-eval.cjs --dataset calls",
+    "eval:sessions": "node scripts/run-eval.cjs --dataset sessions",
     "eval:ami": "node scripts/run-eval.cjs --dataset ami",
     "replay:session": "node scripts/replay-session.cjs",
     "screenshot": "electron-vite build && node scripts/capture-screenshot.cjs",
