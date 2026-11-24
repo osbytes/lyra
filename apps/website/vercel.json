@@ -2,5 +2,5 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "nextjs",
   "installCommand": "cd ../.. && pnpm install --frozen-lockfile --filter web...",
-  "ignoreCommand": "git diff --quiet HEAD^ HEAD -- . ../../pnpm-lock.yaml ../lyra/src/renderer/src/assets/styles.css"
+  "ignoreCommand": "node scripts/ignore-build.mjs"
 }
