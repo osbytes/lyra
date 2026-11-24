@@ -466,7 +466,7 @@ async function checkSearchQueries(): Promise<void> {
   await expect('xyzzy', [])
   const said = (await searchSessions('revenue europe')).find((hit) => hit.id === budget)
   const line = said?.matches.find((match) => match.field === 'transcript')
-  if (!line || line.speaker !== 'Ana' || line.line !== 'q0' || line.start !== 0) {
+  if (line?.speaker !== 'Ana' || line.line !== 'q0' || line.start !== 0) {
     return fail(`transcript hit: ${JSON.stringify(said)}`)
   }
   const marked = line.parts.filter((part) => part.hit).map((part) => part.text.toLowerCase())
