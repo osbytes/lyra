@@ -7,7 +7,7 @@
  * Times inside a session are seconds (`*_sec`); dates are ISO strings.
  */
 
-export const SCHEMA_VERSION = 1
+export const SCHEMA_VERSION = 2
 
 export const SCHEMA: readonly string[] = [
   `CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
@@ -156,6 +156,8 @@ export const SCHEMA: readonly string[] = [
   `CREATE VIRTUAL TABLE passages_tri USING fts5(
     text, content='passages', content_rowid='id', tokenize='trigram'
   )`,
+  // Every distinct word (stemmed) and how many passages hold it: what typo correction picks from.
+  `CREATE VIRTUAL TABLE passages_vocab USING fts5vocab(passages_fts, 'row')`,
   `CREATE TRIGGER passages_ai AFTER INSERT ON passages BEGIN
     INSERT INTO passages_fts (rowid, text) VALUES (new.id, new.text);
     INSERT INTO passages_tri (rowid, text) VALUES (new.id, new.text);

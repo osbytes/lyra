@@ -104,7 +104,10 @@ export type SearchMatch = {
   line: string | null
 }
 
-/** A session that matched a search, best match first; `score` is 0 (exact) to 1. */
+/**
+ * A session that matched a search, best match first. `score` is the relevance (higher is
+ * better; 0 when only filters matched), comparable within one search only.
+ */
 export type SearchHit = PageSummary & { score: number; matches: SearchMatch[] }
 
 export type WhisperStatus =

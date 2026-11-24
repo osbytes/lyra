@@ -2,6 +2,7 @@ import { app, utilityProcess, type UtilityProcess } from 'electron'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
+import type { SearchQuery } from '../../shared/searchQuery'
 import { log } from '../log'
 import { notesDir } from '../pages'
 import {
@@ -18,6 +19,7 @@ import {
   IndexStats,
   OpenResult,
   PersonRecord,
+  SessionHit,
   SessionRecord,
   type IndexEnvelope,
   type IndexRequest
@@ -245,6 +247,15 @@ export async function flushSearchIndex(): Promise<void> {
 async function writeQueued(): Promise<void> {
   await Promise.all([...reading, peopleWriting])
   await Promise.all([...queued.keys()].map((id) => write(id)))
+}
+
+/**
+ * Sessions matching `query`, best first. Pending edits are written first, so a note saved a
+ * moment ago is found.
+ */
+export async function searchIndex(query: SearchQuery, limit: number): Promise<SessionHit[]> {
+  await writeQueued()
+  return call({ type: 'search', query, limit }, z.array(SessionHit))
 }
 
 /** On quit: writes what's waiting and closes, without waiting for a reconcile to finish. */

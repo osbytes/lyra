@@ -412,6 +412,7 @@ async function migrateNote(id: string): Promise<Entry> {
   }
   writeFileSync(docPath(id), frame(Y.encodeStateAsUpdate(doc)))
   writeManifest(manifest)
+  emitChange({ kind: 'saved', id, manifest, snapshot: snapshotOf(doc) })
   log('sessions', 'created session from note', { id })
   return makeEntry(id, doc, manifest, 1)
 }
@@ -864,6 +865,7 @@ export async function createSession(options: CreateSessionOptions = {}): Promise
         dirty: false
       }
       writeManifest(manifest)
+      emitChange({ kind: 'saved', id, manifest, snapshot: snapshotOf(doc) })
       const entry = makeEntry(id, doc, manifest, 1)
       open.set(id, entry)
       release(entry)

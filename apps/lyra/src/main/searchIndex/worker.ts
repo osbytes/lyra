@@ -8,6 +8,7 @@ import { dirname } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { z } from 'zod'
 import * as db from './db'
+import { invalidateVocabulary, search } from './query'
 import { IndexEnvelope, type IndexRequest, type IndexResponse } from './protocol'
 
 let client: Client | null = null
@@ -24,13 +25,18 @@ async function handle(request: IndexRequest): Promise<unknown> {
       mkdirSync(dirname(request.path), { recursive: true })
       // A real file URL: a plain `file:` + path breaks on a '#' or '%' in it (a user name).
       client = createClient({ url: pathToFileURL(request.path).href })
+      invalidateVocabulary()
       return { fresh: await db.prepare(client, request.notesDir) }
     }
+    case 'search':
+      return search(open(), request.query, request.limit)
     case 'upsertSession':
       await db.upsertSession(open(), request.session)
+      invalidateVocabulary()
       return null
     case 'removeSession':
       await db.removeSession(open(), request.id)
+      invalidateVocabulary()
       return null
     case 'replacePeople':
       await db.replacePeople(open(), request.people)

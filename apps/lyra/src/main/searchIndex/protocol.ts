@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { SearchQuery } from '../../shared/searchQuery'
 
 /**
  * Messages between main and the index worker (a utilityProcess that owns the search database).
@@ -98,7 +99,34 @@ export const IndexStats = z.object({
 })
 export type IndexStats = z.infer<typeof IndexStats>
 
+/** One passage that matched, with the matched words between \u0001 and \u0002. */
+export const PassageHit = z.object({
+  field: Field,
+  marked: z.string(),
+  segmentId: z.string().nullable(),
+  speaker: z.string().nullable(),
+  start: z.number().nullable(),
+  relevance: z.number()
+})
+export type PassageHit = z.infer<typeof PassageHit>
+
+/** A matching session: its list-view summary, how well it matched (higher is better), and why. */
+export const SessionHit = z.object({
+  id: z.string(),
+  title: z.string(),
+  updatedAt: z.string(),
+  preview: z.string(),
+  tags: z.array(z.string()),
+  speakers: z.number().int(),
+  startedAt: z.string(),
+  seconds: z.number().nullable(),
+  relevance: z.number(),
+  passages: z.array(PassageHit)
+})
+export type SessionHit = z.infer<typeof SessionHit>
+
 export const IndexRequest = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('search'), query: SearchQuery, limit: z.number().int().positive() }),
   /** Opens (or creates) the database for a notes folder; another folder's index is dropped. */
   z.object({ type: z.literal('open'), path: z.string(), notesDir: z.string() }),
   z.object({ type: z.literal('upsertSession'), session: SessionRecord }),

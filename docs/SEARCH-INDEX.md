@@ -1,6 +1,6 @@
 # Search index (libSQL) and semantic search
 
-Status: Phase 1 implemented (2026-11-24); Phases 2 and 3 follow in stacked PRs.
+Status: Phases 1 and 2 implemented (2026-11-24); Phase 3 follows in a stacked PR.
 
 A local libSQL database that mirrors everything Lyra persists about sessions and people, so the app
 can search by text, meaning, speaker, person, tag and date in one query. It's the base for
@@ -141,36 +141,39 @@ export debounce keep that from reindexing on every word.
 
 ## Querying
 
-One search entry point in the worker; `searchSessions` in main becomes a thin call to it.
+The search box still sends one string over IPC (`searchPages`). Main parses it with
+`parseSearchQuery` (`src/shared/searchQuery.ts`, shared so the window can show what it understood):
 
-```ts
-type SearchQuery = {
-  text: string
-  people?: string[]          // person ids
-  speakers?: string[]        // speaker names, for unnamed or unmatched voices
-  tags?: string[]
-  from?: string; to?: string // started_at range
-  fields?: SearchField[]
-}
-```
+| Filter | Matches |
+| --- | --- |
+| `person:ana`, `speaker:"Speaker 2"` | sessions where a speaker's name, or the saved person it's linked to, starts with the value (case-insensitive) |
+| `tag:design` | sessions with that tag (normalised like tags are) |
+| `after:2026-11`, `before:2026-12-01` | sessions that started in that range (ISO date prefixes; `after` inclusive) |
 
-1. **Filter** in SQL to the candidate sessions (joins on `tags`, `speakers`, `sessions`).
-2. **Keyword:** `passages_fts MATCH` (word and stem matches, `bm25` with the current field boosts)
-   unioned with `passages_tri` for partial words. Highlights from `highlight()`.
-3. **Semantic:** embed the query, exact `vector_distance_cos` scan over `chunks JOIN embeddings`
-   restricted to the candidates, top 50.
-4. **Merge** per session with reciprocal rank fusion (k = 60). Each hit keeps its best few
-   passages; a semantic-only match shows its chunk as one un-highlighted run, which
-   `SearchMatch.parts` already supports.
+Then the worker (`searchIndex/query.ts`):
 
-The command palette gains filter tokens (`person:dillon`, `tag:design`, `after:2026-11-01`) parsed
-in the renderer into `SearchQuery`. The query shape crosses IPC, so it's one zod schema, and the
-channel follows the `add-ipc-channel` skill. The keyword results return first; semantic results
-fold in when ready, so typing stays as fast as today.
+1. **Filter** sessions in SQL. With no words left, the result is the filtered sessions, newest first.
+2. **Words** are letters and digits only (so nothing typed is FTS5 syntax). Each word matches as a
+   prefix through the porter tokenizer (`"budg"*`, `"meetings"*` → `meet*`); every word must
+   appear in the passage.
+3. **Typos:** a word that matches nothing is respelled from the index's vocabulary
+   (`passages_vocab`, an `fts5vocab` table, cached in the worker until the next write): words
+   within one edit (two from seven letters), or stems within reach of the word cut to their
+   length ("meetign" → "meet"); the three most common are ORed in.
+4. **Parts of words:** when every word has three letters or more, the trigram table also matches
+   them inside longer words ("illo" → "Dillon"), at half weight.
+5. **Rank:** a passage scores its field's weight (title 3, tags 2.5, summary 1.2, notes and
+   transcript 1) plus its bm25; a session scores its best passage. Each hit keeps its five best
+   passages (titles aside), with the matched words marked by `highlight()`.
 
-Fuse.js stays until FTS5 matches it on a fixed set of queries, including typos (Phase 2). Trigram
-covers partial words but not misspellings; if typo tolerance matters, keep Fuse over the
-candidate passages that FTS returns, or add a spelling pass with the `fts5vocab` table.
+Pending index writes are flushed before each search, so a note saved a moment ago is found.
+
+Fuse.js no longer searches notes; the command palette still uses it for its commands.
+
+Phase 3 adds a semantic pass: embed the query, run an exact `vector_distance_cos` scan over
+`chunks JOIN embeddings` restricted to the filtered sessions, and merge it with the keyword
+ranking by reciprocal rank fusion (k = 60). A semantic-only match shows its chunk as one
+un-highlighted run.
 
 ## Packaging
 
@@ -193,10 +196,10 @@ Each phase ships on its own and leaves the app working.
    from the database and compares it with the files; the UI smoke test runs it after each step.
    Done when: the smoke test creates, edits, deletes, restores sessions and renames a person,
    and the index matches; a rebuild of a few hundred sessions takes seconds.
-2. **Keyword search on the index.** `searchSessions` uses FTS5 plus filters; add the palette
-   filter tokens and "sessions with this person" (People settings and speaker labels). A golden
-   query set (`pnpm eval:search`, fixture sessions with expected hits) compares it to Fuse
-   before Fuse is removed.
+2. **Keyword search on the index.** `searchSessions` uses FTS5, typo correction, trigrams and
+   the filters above. A golden query set in the UI smoke test (`checkSearchQueries`: ranking,
+   stems, prefixes, typos, partial words, each filter, highlights) pins the behaviour; the
+   renderer's existing typo case (`helo SMOKE`) still passes.
 3. **Semantic search.** Chunks, embeddings queue, the setting and model download, hybrid
    ranking. Extend `pnpm eval:search` with paraphrased queries; report recall@5 for keyword alone
    and for hybrid.
@@ -220,7 +223,5 @@ Each phase ships on its own and leaves the app working.
 - Should `voices.json` eventually move into the database as the source of truth? It's rewritten
   whole on every change and would benefit, but it would make the database something you can't
   delete. Not in this plan.
-- Typo tolerance: keep Fuse as a second pass, or accept FTS5 plus trigram? Decide on the Phase 2
-  eval results.
 - English only: Whisper runs `base.en`, so an English embedding model is fine for now. A
   multilingual model (Qwen3-Embedding-0.6B, ~640 MB) fits the same slot if that changes.

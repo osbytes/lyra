@@ -399,6 +399,82 @@ async function checkSearchIndexMirror(): Promise<void> {
   await expectInSync('at the end')
 }
 
+/**
+ * Search on the index: a fixed set of sessions and queries with the results each must give
+ * (docs/SEARCH-INDEX.md, Phase 2). Ids are compared among these sessions only.
+ */
+async function checkSearchQueries(): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`search: ${message}`)
+  }
+  const make = async (
+    startedAt: string,
+    fields: { title: string; notes: string; tag: string },
+    lines: { cluster: string; name: string; text: string }[]
+  ): Promise<string> => {
+    const page = await createPage({ startedAt })
+    await editSession(page.id, (doc) => {
+      editDoc(doc, { title: fields.title, notes: fields.notes }, 'main')
+      addTag(doc, fields.tag, 'main')
+      for (const line of lines) upsertSpeaker(doc, line.cluster, { name: line.name }, 'main')
+      replaceTranscript(
+        doc,
+        lines.map((line, i) => ({ id: `q${String(i)}`, rawId: null, start: i * 5, end: i * 5 + 4, cluster: line.cluster, confidence: null, text: line.text })),
+        'main'
+      )
+    })
+    return page.id
+  }
+  const budget = await make(
+    '2026-04-01T10:00:00',
+    { title: 'Quarterly budget review', notes: 'We discussed the marketing budgets and hiring.', tag: 'Finance' },
+    [
+      { cluster: 'c0', name: 'Ana', text: 'Revenue grew in Europe.' },
+      { cluster: 'c1', name: 'Bob', text: 'Dillon will send the deck.' }
+    ]
+  )
+  const design = await make(
+    '2026-05-10T10:00:00',
+    { title: 'Design sync', notes: 'Mockups for the onboarding flow.', tag: 'design' },
+    [{ cluster: 'c0', name: 'Carla', text: 'The meeting ran long.' }]
+  )
+  const weekly = await make(
+    '2026-07-01T10:00:00',
+    { title: 'Weekly notes', notes: 'The budget came up once, in passing.', tag: 'weekly' },
+    []
+  )
+  const ours = new Set([budget, design, weekly])
+  const ids = async (query: string): Promise<string[]> =>
+    (await searchSessions(query)).map((hit) => hit.id).filter((id) => ours.has(id))
+  const expect = async (query: string, expected: string[]): Promise<void> => {
+    const got = await ids(query)
+    if (JSON.stringify(got) !== JSON.stringify(expected)) {
+      fail(`"${query}" gave ${JSON.stringify(got)}, expected ${JSON.stringify(expected)}`)
+    }
+  }
+  await expect('budget', [budget, weekly]) // a title match outranks a notes match
+  await expect('budgets', [budget, weekly]) // stems
+  await expect('budg', [budget, weekly]) // prefixes, while typing
+  await expect('buget', [budget, weekly]) // a typo
+  await expect('meetign', [design]) // a typo of a word whose stem is shorter
+  await expect('illo', [budget]) // part of a word ("Dillon")
+  await expect('person:ana', [budget]) // filters alone, newest first
+  await expect('speaker:carla meeting', [design])
+  await expect('tag:Design', [design])
+  await expect('after:2026-06 budget', [weekly])
+  await expect('before:2026-05 budget', [budget])
+  await expect('xyzzy', [])
+  const said = (await searchSessions('revenue europe')).find((hit) => hit.id === budget)
+  const line = said?.matches.find((match) => match.field === 'transcript')
+  if (!line || line.speaker !== 'Ana' || line.line !== 'q0' || line.start !== 0) {
+    return fail(`transcript hit: ${JSON.stringify(said)}`)
+  }
+  const marked = line.parts.filter((part) => part.hit).map((part) => part.text.toLowerCase())
+  if (marked.join('|') !== 'revenue|europe') fail(`highlights: ${JSON.stringify(line.parts)}`)
+  for (const id of ours) await deletePage(id)
+  await expect('budget', [])
+}
+
 /** Retention deletes only audio older than the setting, and nothing when set to forever. */
 async function checkAudioRetention(): Promise<void> {
   const fail = (message: string): never => {
@@ -617,6 +693,7 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
     await checkAudioRetention()
     await checkTranscriptModel()
     await checkSearchIndexMirror()
+    await checkSearchQueries()
     const result: unknown = await win.webContents.executeJavaScript(`
       (async () => {
         const fail = (message) => { throw new Error(message) }
