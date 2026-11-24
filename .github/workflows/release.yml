@@ -115,7 +115,9 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
-          cache: pnpm
+          # no dependency cache for builds that get published: a cache written by another
+          # workflow run could otherwise reach the installers (zizmor: cache-poisoning)
+          package-manager-cache: false
       - name: Install patchelf
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y patchelf
