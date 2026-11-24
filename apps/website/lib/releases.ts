@@ -20,6 +20,8 @@ export const REPO = 'osbytes/lyra'
 export const REPO_URL = `https://github.com/${REPO}`
 export const RELEASES_PAGE = `${REPO_URL}/releases/latest`
 const LATEST_API = `https://api.github.com/repos/${REPO}/releases/latest`
+/** Cache tag on that fetch; release.yml expires it through app/api/revalidate once it publishes. */
+export const RELEASE_CACHE_TAG = 'latest-release'
 
 /** Installer names from apps/lyra/electron-builder.yml, the recommended one first per platform. */
 const FORMATS: readonly { suffix: string; platform: Platform; format: string }[] = [
@@ -67,8 +69,9 @@ export function parseRelease(value: unknown): Release | null {
 }
 
 /**
- * The latest published release, fetched on the server and cached for an hour, so download links
- * point straight at the installers. Falls back to the releases page if GitHub can't be reached.
+ * The latest published release, fetched on the server and cached, so download links point straight
+ * at the installers. Falls back to the releases page if GitHub can't be reached. The cache outlives
+ * deployments, so a new release shows up when release.yml expires it, or within the hour.
  */
 export async function getLatestRelease(): Promise<Release> {
   const headers: Record<string, string> = {
@@ -78,7 +81,10 @@ export async function getLatestRelease(): Promise<Release> {
   const token = process.env.GITHUB_TOKEN
   if (token) headers.Authorization = `Bearer ${token}`
   try {
-    const response = await fetch(LATEST_API, { headers, next: { revalidate: 3600 } })
+    const response = await fetch(LATEST_API, {
+      headers,
+      next: { revalidate: 3600, tags: [RELEASE_CACHE_TAG] }
+    })
     if (!response.ok) {
       console.warn(`releases: GitHub answered ${String(response.status)}; linking to the releases page`)
       return FALLBACK

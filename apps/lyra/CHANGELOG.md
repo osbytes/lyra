@@ -1,5 +1,13 @@
 # lyra
 
+## 0.3.1
+
+### Patch Changes
+
+- [#42](https://github.com/osbytes/lyra/pull/42) [`6cea0f9`](https://github.com/osbytes/lyra/commit/6cea0f91de5c8ab1d97dd6b226132f4f5724f90a) Thanks [@adavila0703](https://github.com/adavila0703)! - Updates reach you again. The 0.2.0 and 0.3.0 releases never published their installers, so Check for updates kept offering 0.1.2; 0.3.1 has everything from both.
+
+- [#41](https://github.com/osbytes/lyra/pull/41) [`bb3be08`](https://github.com/osbytes/lyra/commit/bb3be08d734bd34c7e56857f7aef3704823ab3cb) Thanks [@adavila0703](https://github.com/adavila0703)! - Lyra's messages, hints and tooltips no longer use em dashes. A transcript quote added to your notes now ends with a plain `*Name, 0:42*` attribution line.
+
 ## 0.3.0
 
 ### Minor Changes

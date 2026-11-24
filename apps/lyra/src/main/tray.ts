@@ -55,7 +55,7 @@ function refresh(state: SessionState): void {
   const recording = state.phase === 'listening' || state.phase === 'starting'
   const hotkey = getSettings().hotkey
   tray.setToolTip(
-    recording ? 'Lyra — recording' : `Lyra${hotkey ? ` — ${readableAccelerator(hotkey)} to dictate` : ''}`
+    recording ? 'Lyra · recording' : `Lyra${hotkey ? ` · ${readableAccelerator(hotkey)} to dictate` : ''}`
   )
   if (process.platform === 'darwin') tray.setTitle(recording ? '●' : '')
   tray.setContextMenu(buildMenu(state))

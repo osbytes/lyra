@@ -123,9 +123,9 @@ export function Transcript({
               data-cluster={speaker.id}
               title={
                 shown.state === 'likely' && speaker.confidence !== null
-                  ? `${percent(speaker.confidence)} voice match — click to confirm`
+                  ? `${percent(speaker.confidence)} voice match · click to confirm`
                   : shown.state === 'unknown'
-                    ? 'No saved voice matched — click to name'
+                    ? 'No saved voice matched · click to name'
                     : shown.name
               }
               onClick={() => {

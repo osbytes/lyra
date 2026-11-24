@@ -161,7 +161,7 @@ function clearPrompt(): void {
   overlay?.webContents.send('prompt:show', null)
 }
 
-/** Shows the "mic in use — start a session?" card; it hides itself after a few seconds. */
+/** Shows the "mic in use" card; it hides itself after a few seconds. */
 export function showPrompt(next: MicPrompt): void {
   if (getSessionState().phase !== 'idle') return
   prompt = next

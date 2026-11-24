@@ -54,7 +54,7 @@ async function seedScreenshotPages(withMeeting: boolean): Promise<void> {
     title: 'Team sync notes',
     body:
       'Quick recap from this morning.\n\n' +
-      'Keep the first-run flow simple — one page, one record button. ' +
+      'Keep the first-run flow simple: one page, one record button. ' +
       'Ship sidebar delete before we rename the app in the UI.'
   })
 
@@ -74,9 +74,9 @@ async function seedScreenshotPages(withMeeting: boolean): Promise<void> {
     body:
       'Lyra should feel like a notebook, not a chatbot.\n\n' +
       'A few things worth trying next:\n' +
-      '— Rename pages inline from the sidebar\n' +
-      '— Keyboard shortcut for record / stop\n' +
-      '— Export a page as plain text or markdown\n\n' +
+      '- Rename pages inline from the sidebar\n' +
+      '- Keyboard shortcut for record / stop\n' +
+      '- Export a page as plain text or markdown\n\n' +
       'The core loop is already good: open a page, talk, edit, copy, come back later.'
   })
 }

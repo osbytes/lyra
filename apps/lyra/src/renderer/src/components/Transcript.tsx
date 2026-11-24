@@ -427,7 +427,7 @@ function SpeakerPicker({
                     <i style={{ width: percent(option.score ?? 0) }} />
                   </span>
                   <span className="picker-score">
-                    {option.score === null ? '—' : percent(option.score)}
+                    {option.score === null ? '–' : percent(option.score)}
                   </span>
                 </>
               ) : option.kind === 'new' ? (
@@ -539,7 +539,7 @@ function SplitDialog({
                 <span className="split-time">{clock(line.start)}</span>
                 <span className="split-text">{line.text}</span>
                 <span className="split-score">
-                  {line.confidence === null ? '—' : percent(line.confidence)}
+                  {line.confidence === null ? '–' : percent(line.confidence)}
                 </span>
               </label>
             </li>
@@ -768,9 +768,9 @@ export function Transcript({
             aria-expanded={picker?.speaker === speaker.id && !picker.line}
             {...tip(
               stateOf(speaker) === 'likely' && speaker.confidence !== null
-                ? `${percent(speaker.confidence)} voice match — click to confirm`
+                ? `${percent(speaker.confidence)} voice match · click to confirm`
                 : stateOf(speaker) === 'unknown'
-                  ? 'No saved voice matched — click to name'
+                  ? 'No saved voice matched · click to name'
                   : speaker.name
             )}
             onClick={(event) => openPicker(speaker.id, null, event.currentTarget)}

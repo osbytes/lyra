@@ -135,7 +135,7 @@ export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
         releaseMic()
         return
       }
-      if (usedFallback) setNotice('Your chosen microphone isn’t available — using the default.')
+      if (usedFallback) setNotice('Your chosen microphone isn’t available. Using the default.')
 
       const system = record.systemAudio ? await openSystemAudio() : null
       if (cancelled()) {
@@ -146,7 +146,7 @@ export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
         return
       }
       if (record.systemAudio && !system) {
-        setNotice('Couldn’t capture computer audio — recording your microphone only.')
+        setNotice('Couldn’t capture computer audio. Recording your microphone only.')
       }
       const activeRecorder = await SessionRecorder.start(record.pageId, system !== null)
       timeline.offset = activeRecorder.offset

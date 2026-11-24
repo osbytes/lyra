@@ -65,7 +65,7 @@ function isTextField(target: EventTarget | null): boolean {
 function quoteOf(text: string, who: string | null, start: number): string {
   const said = text.replace(/\s+/g, ' ').trim()
   const by = who ? `${who}, ${clockLabel(start)}` : clockLabel(start)
-  return `> ${said}\n>\n> — *${by}*`
+  return `> ${said}\n>\n> *${by}*`
 }
 
 /** How long to wait for an opened session's transcript to render before giving up. */

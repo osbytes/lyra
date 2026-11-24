@@ -100,7 +100,7 @@ export function Editor({
         placeholder={
           preview || listening || label
             ? ''
-            : 'Start talking — or typing. Your words land here and save automatically.'
+            : 'Start talking or typing. Your words land here and save automatically.'
         }
         aria-label={label ?? 'Page body'}
       />

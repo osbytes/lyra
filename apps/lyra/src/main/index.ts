@@ -264,7 +264,7 @@ void app.whenReady().then(() => {
     callback(permission === 'media' || permission === 'clipboard-sanitized-write')
   })
   // Meetings ask for system audio via getDisplayMedia; answer with the loopback
-  // device and the primary screen (its video track is discarded) — no picker.
+  // device and the primary screen (its video track is discarded), so no picker shows.
   session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
     if (request.frame?.top !== getMainWindow()?.webContents.mainFrame) {
       callback({})

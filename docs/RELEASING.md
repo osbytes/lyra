@@ -35,7 +35,9 @@ in a way older versions cannot read says so in its `**Upgrade:**` line.
    any PR: is the changelog readable, are upgrade notes present.
 2. Before merging the release PR, build the release candidate: run `release.yml` by hand on the
    release PR's branch (`gh workflow run release --ref changeset-release/main`). A manual run
-   builds and attests the installers but doesn't publish. Download them from that run (the
+   builds and attests the installers but doesn't publish. Don't skip it: it is the only build
+   before the tag, and a release that fails on its tag never reaches users (see "A release that
+   failed"). Download the installers from that run (the
    `*-dist` artifacts), install at least one over the current release, and check that pages open,
    dictation records and transcribes, and Settings shows the new version.
 3. Merge. `version.yml` runs `pnpm release:tag`, which pushes `vX.Y.Z`. `release.yml` builds the
@@ -53,6 +55,20 @@ pre-release is never "latest" there (`allowPrerelease` is off), so a release tha
 offered to users can stay a GitHub pre-release.
 
 By hand, without the workflow: `pnpm release:version` on `main`, commit, `pnpm release:tag`.
+
+## A release that failed
+
+If `release.yml` fails on a tag, the tag exists but has no GitHub release, and `releases/latest`
+keeps offering the previous version. Re-running that run doesn't help: it uses the workflow as it
+was at the tag. Fix the cause on `main`, then publish the tag from there:
+
+```bash
+gh workflow run release --ref main -f tag=vX.Y.Z
+```
+
+That run builds the tag's own source with `main`'s workflow, attests it and publishes the release.
+It is marked latest only if no newer version tag exists, and a tag that already has a release is
+refused.
 
 ## Pre-releases
 
@@ -76,6 +92,11 @@ setting.
   `GITHUB_TOKEN` do not trigger `release.yml`. changesets/action (the Release PR),
   `pnpm release:tag` and the Dependabot changeset job all use it, never `GITHUB_TOKEN`. The tag
   ruleset below lets only that user create `v*` tags, so the PAT must be theirs.
+- `secrets.SITE_REVALIDATE_SECRET`, and the same value as `REVALIDATE_SECRET` in the Vercel
+  project's production environment variables: a random string (`openssl rand -hex 32`).
+  `release.yml` sends it to `https://lyra.osbytes.io/api/revalidate` after publishing, so the
+  website's download links switch to the new release at once. Without it they follow within an
+  hour, since the site caches GitHub's `releases/latest` across deployments.
 - Settings → Actions → General:
   - "Workflow permissions": **Read repository contents**, and "Allow GitHub Actions to create and
     approve pull requests" **off**. Every workflow declares its own `permissions:`, so the default
