@@ -1,28 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { openMicrophone, openSystemAudio, startCapture } from '../audio/capture'
 import { SessionRecorder } from '../audio/sessionRecorder'
-import { StreamingTranscriber } from '../../../shared/audio/streaming'
-import { Timeline } from '../../../shared/audio/timeline'
-import { VoiceDetector } from '../../../shared/audio/vad'
-import type { TranscriptWord } from '../../../shared/types'
+import { rms } from '../../../shared/audio/vad'
+import type { TranscriptProgress } from '../../../shared/types'
 import { log } from '../lib/log'
-import { holdBackCommand } from '../text/transcript'
 
 export type DictationPhase = 'idle' | 'starting' | 'listening' | 'finishing'
 
-type LevelListener = (level: number) => void
+/** Input levels, 0–1: the microphone, and the computer's audio when it's recorded. */
+export type Levels = { mic: number; system: number | null }
+type LevelListener = (levels: Levels) => void
 
 /** How often a diagnostic snapshot of the pipeline is logged while recording. */
 const HEARTBEAT_MS = 3000
+/** A mic this quiet for this long is muted or disconnected, not just a quiet room. */
+const SILENT_MIC_RMS = 0.0002
+const SILENT_MIC_MS = 8000
+const SILENT_MIC_NOTICE = 'Your microphone isn’t picking anything up. Check that it isn’t muted.'
 
 type Options = {
-  /** Text that precedes the dictation (title + end of page), read when recording starts. */
-  getContext: () => string
-  /**
-   * Called with each piece of confirmed text, in order, and roughly where it was said
-   * (seconds on the session's timeline).
-   */
-  onCommit: (text: string, at: Span) => void
   /** Microphone to open, read when recording starts; `null` = system default. */
   getDeviceId: () => string | null
 }
@@ -30,38 +26,32 @@ type Options = {
 /** What to record: the session's mic, and the computer's audio when that setting is on. */
 export type RecordOptions = { pageId: string; systemAudio: boolean }
 
-export type Span = { start: number; end: number }
-
 type Session = {
   stop: () => Promise<void>
 }
 
-function toBytes(pcm: Float32Array): Uint8Array {
-  return new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength)
-}
-
-function transcribe(pcm: Float32Array, prompt: string) {
-  return window.api.transcribe(toBytes(pcm), prompt)
-}
+const level = (samples: Float32Array): number => Math.min(1, rms(samples) * 14)
 
 /**
- * Microphone → voice detector → streaming transcriber.
- *
- * Confirmed words are handed to `onCommit` as soon as Whisper is sure of them;
- * `live` holds the words it is still deciding on, for display as ghost text.
+ * Records a session: microphone (and computer audio) → main, which writes the audio and
+ * transcribes it a chunk at a time at pauses (`src/main/transcriber.ts`). Nothing is transcribed
+ * here and no unconfirmed text is shown: finished lines arrive in the session document, and
+ * `progress` says whether speech is waiting to be transcribed.
  */
-export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
+export function useDictation({ getDeviceId }: Options) {
   const [phase, setPhase] = useState<DictationPhase>('idle')
-  const [live, setLive] = useState('')
   const [micName, setMicName] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [progress, setProgress] = useState<TranscriptProgress | null>(null)
 
   const session = useRef<Session | null>(null)
+  /** The session being recorded, until its last chunks are transcribed after a stop. */
+  const recordingPage = useRef<string | null>(null)
   const starting = useRef<{ cancelled: boolean } | null>(null)
   const levelListeners = useRef(new Set<LevelListener>())
-  const options = useRef({ getContext, onCommit, getDeviceId })
-  options.current = { getContext, onCommit, getDeviceId }
+  const options = useRef({ getDeviceId })
+  options.current = { getDeviceId }
 
   const subscribeLevel = useCallback((listener: LevelListener) => {
     levelListeners.current.add(listener)
@@ -69,6 +59,14 @@ export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
       levelListeners.current.delete(listener)
     }
   }, [])
+
+  useEffect(
+    () =>
+      window.api.onTranscriptProgress((next) => {
+        if (next.pageId === recordingPage.current) setProgress(next)
+      }),
+    []
+  )
 
   const start = useCallback(async (record: RecordOptions): Promise<void> => {
     if (session.current || starting.current) return
@@ -79,44 +77,16 @@ export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
     const cancelled = (): boolean => attempt.cancelled
     setError(null)
     setNotice(null)
-    setLive('')
+    setProgress(null)
     setPhase('starting')
-
-    // A trailing "new"/"next" is held until we know whether "paragraph" follows.
-    let held = ''
-    let tentative = ''
-    const timeline = new Timeline()
-    let lastSpan: Span = { start: 0, end: 0 }
-    const onWords = (words: TranscriptWord[]): void => {
-      const mapped = words.map((word) => ({
-        text: word.text,
-        start: timeline.toRecording(word.start),
-        end: timeline.toRecording(word.end)
-      }))
-      const first = mapped[0]
-      const last = mapped.at(-1)
-      if (first && last) lastSpan = { start: first.start, end: last.end }
-      window.api.appendRecordingWords(mapped)
-    }
-    const showLive = (): void => setLive(held + tentative)
     const fail = (caught: unknown): void => {
       log('dictation', 'error', String(caught))
-      setError(caught instanceof Error ? caught.message : 'Transcription failed')
-    }
-    const commit = (text: string): void => {
-      const [ready, rest] = holdBackCommand(held + text)
-      held = rest
-      if (ready) options.current.onCommit(ready, lastSpan)
-      showLive()
-    }
-    const release = (): void => {
-      if (held) options.current.onCommit(held, lastSpan)
-      held = ''
-      showLive()
+      setError(caught instanceof Error ? caught.message : 'Recording failed')
     }
 
     try {
-      // Open the mic and warm the model in parallel, but check for a cancel after each.
+      // Open the mic and load the model in parallel (the first chunk needs it within seconds),
+      // but check for a cancel after each.
       const warm = window.api.warmUp()
       const { stream, usedFallback } = await openMicrophone(options.current.getDeviceId())
       const releaseMic = (): void => {
@@ -149,52 +119,15 @@ export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
         setNotice('Couldn’t capture computer audio. Recording your microphone only.')
       }
       const activeRecorder = await SessionRecorder.start(record.pageId, system !== null)
-      timeline.offset = activeRecorder.offset
-      const streamer = new StreamingTranscriber(
-        transcribe,
-        {
-          onCommit: commit,
-          onWords,
-          onLive: (text) => {
-            tentative = text
-            showLive()
-          },
-          onError: fail
-        },
-        options.current.getContext(),
-        log
-      )
-      const hear = (frame: Float32Array): void => {
-        timeline.heard += frame.length
-        streamer.append(frame)
-      }
-      const voice = new VoiceDetector({
-        onStart: (frames) => {
-          log('vad', 'speech started', voice.stats())
-          timeline.speechStarted(frames.reduce((sum, frame) => sum + frame.length, 0))
-          frames.forEach(hear)
-        },
-        onFrame: hear,
-        onEnd: () => {
-          log('vad', 'speech ended', voice.stats())
-          void streamer.finalize().then(release, fail)
-        }
-      })
 
       let frames = 0
       let peak = 0
-      let energy = 0
+      let systemPeak = 0
+      let quietSince = Date.now()
+      let warnedSilent = false
       const capture = await startCapture(
         stream,
-        (frame) => {
-          timeline.recorded += frame.length
-          const rms = voice.push(frame)
-          frames++
-          peak = Math.max(peak, rms)
-          energy += rms
-          const level = Math.min(1, rms * 14)
-          levelListeners.current.forEach((listener) => listener(level))
-        },
+        () => undefined,
         (reason) => {
           setError(reason)
           void stopRef.current()
@@ -203,6 +136,24 @@ export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
           ...(system ? { system } : {}),
           onTracks: (mic: Float32Array, other: Float32Array | null) => {
             activeRecorder.push(mic, other)
+            frames++
+            const micRms = rms(mic)
+            peak = Math.max(peak, micRms)
+            if (other) systemPeak = Math.max(systemPeak, rms(other))
+            const now = Date.now()
+            if (micRms > SILENT_MIC_RMS) {
+              quietSince = now
+              if (warnedSilent) {
+                warnedSilent = false
+                setNotice((current) => (current === SILENT_MIC_NOTICE ? null : current))
+              }
+            } else if (!warnedSilent && now - quietSince > SILENT_MIC_MS) {
+              warnedSilent = true
+              setNotice(SILENT_MIC_NOTICE)
+              log('dictation', 'mic silent')
+            }
+            const levels: Levels = { mic: level(mic), system: other ? level(other) : null }
+            levelListeners.current.forEach((listener) => listener(levels))
           }
         }
       )
@@ -213,27 +164,21 @@ export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
         const snapshot = {
           frames,
           peakRms: +peak.toFixed(4),
-          meanRms: frames ? +(energy / frames).toFixed(4) : 0,
-          ...voice.stats(),
-          ...streamer.stats(),
+          systemPeakRms: +systemPeak.toFixed(4),
           ...capture.state()
         }
-        snapshot.noiseFloor = +snapshot.noiseFloor.toFixed(4)
-        snapshot.onsetThreshold = +snapshot.onsetThreshold.toFixed(4)
-        const stalled = frames < expected * 0.5 || snapshot.passMs > 8000
+        const stalled = frames < expected * 0.5
         log('dictation', stalled ? 'heartbeat (STALLED)' : 'heartbeat', snapshot)
-        frames = peak = energy = 0
+        frames = peak = systemPeak = 0
       }, HEARTBEAT_MS)
 
+      recordingPage.current = record.pageId
       session.current = {
         stop: async () => {
           clearInterval(heartbeat)
           capture.stop()
-          voice.flush()
-          levelListeners.current.forEach((listener) => listener(0))
-          await streamer.idle()
-          release()
-          // After the last words, so they're saved with this recording.
+          levelListeners.current.forEach((listener) => listener({ mic: 0, system: system ? 0 : null }))
+          // Main transcribes what's left before this resolves.
           await activeRecorder.stop()
         }
       }
@@ -266,7 +211,8 @@ export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
     log('dictation', 'stopping')
     setPhase('finishing')
     await current.stop()
-    setLive('')
+    recordingPage.current = null
+    setProgress(null)
     setMicName('')
     setPhase('idle')
     log('dictation', 'stopped')
@@ -279,7 +225,7 @@ export function useDictation({ getContext, onCommit, getDeviceId }: Options) {
   return {
     phase,
     recording: phase === 'listening' || phase === 'starting',
-    live,
+    progress,
     micName,
     error,
     notice,

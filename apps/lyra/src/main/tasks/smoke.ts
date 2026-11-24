@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, readdir, readFile, utimes, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { notesDir } from '../pages'
+import { ChunkedTranscriber } from '../transcriber'
 import {
   applySessionUpdate,
   closeSessionFor,
@@ -36,8 +37,6 @@ import {
   replaceTranscript,
   appendLiveSegment,
   liveModeOf,
-  livePlaced,
-  markPlaced,
   joinSplitLines,
   initDoc,
   mergeSpeakers,
@@ -443,6 +442,56 @@ async function checkAudioRetention(): Promise<void> {
 }
 
 /** Transcript edits survive a new pass, live text accumulates, and old meetings migrate. */
+/** A tone loud enough to count as speech, `seconds` long, into `out` from `at` seconds. */
+function tone(out: Float32Array, at: number, seconds: number, gain = 0.2): void {
+  const from = Math.round(at * 16000)
+  for (let i = 0; i < seconds * 16000 && from + i < out.length; i++) {
+    out[from + i] = gain * Math.sin((2 * Math.PI * 220 * i) / 16000)
+  }
+}
+
+/**
+ * Chunked transcription without Whisper: chunks are cut at pauses on each track, the far end's
+ * echo in the mic is gated out, a long stretch is cut before Whisper's 30 s window, and results
+ * come out in the order their audio started.
+ */
+async function checkChunkedTranscriber(): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`chunked transcription: ${message}`)
+  }
+  const mic = new Float32Array(50 * 16000)
+  const system = new Float32Array(50 * 16000)
+  tone(mic, 0.5, 2.5)
+  tone(system, 5, 3)
+  // The far end, played on speakers, reaches the mic a little quieter and later.
+  tone(mic, 5.05, 3, 0.16)
+  tone(mic, 10, 35)
+  const cuts: { start: number; seconds: number }[] = []
+  const out: string[] = []
+  const transcriber = new ChunkedTranscriber(
+    ['mic', 'system'],
+    0,
+    async (pcm) => {
+      cuts.push({ start: 0, seconds: pcm.length / 16000 })
+      // Later chunks finish first, to check the order results come out in.
+      await new Promise((resolve) => setTimeout(resolve, cuts.length === 1 ? 30 : 0))
+      return [{ text: ' words', start: 0, end: pcm.length / 16000 }]
+    },
+    (chunk) => out.push(`${chunk.track}@${chunk.start.toFixed(1)}`)
+  )
+  for (let at = 0; at < mic.length; at += 16000) {
+    transcriber.audio('mic', mic.subarray(at, at + 16000))
+    transcriber.audio('system', system.subarray(at, at + 16000))
+  }
+  await transcriber.finish()
+  const tracks = out.map((entry) => entry.split('@')[0] ?? '')
+  if (tracks.slice(0, 2).join(',') !== 'mic,system') fail(`chunks out of order or echo kept: ${out.join(' ')}`)
+  if (out.some((entry) => /^mic@[4-8]/.test(entry))) fail(`the far end's echo was transcribed as the mic: ${out.join(' ')}`)
+  if (cuts.some((cut) => cut.seconds > 28.5)) fail(`a chunk ran past Whisper's window: ${JSON.stringify(cuts)}`)
+  if (tracks.filter((track) => track === 'mic').length < 3) fail(`a long stretch was not cut: ${out.join(' ')}`)
+  if (transcriber.progress().queued !== 0) fail('chunks still queued after finishing')
+}
+
 async function checkTranscriptModel(): Promise<void> {
   const fail = (message: string): never => {
     throw new Error(`transcript: ${message}`)
@@ -525,14 +574,11 @@ async function checkTranscriptModel(): Promise<void> {
   overlayUndo.destroy()
   doc.destroy()
 
-  // Live speakers: phrases become lines for their speaker, one line per turn, and each placed
-  // phrase is counted so the window knows which unconfirmed words it still has to draw.
+  // Recorded lines: chunks become lines for their speaker, one line per turn.
   const live = new Y.Doc()
   initDoc(live, { title: 'Live', notes: '' }, ORIGIN_USER)
   startTranscriber(live, ORIGIN_TRANSCRIBER, 'transcript')
   if (liveModeOf(live) !== 'transcript') fail('a new take should write the transcript')
-  markPlaced(live, ORIGIN_TRANSCRIBER)
-  if (livePlaced(live) !== 1) fail('placed phrases are not counted')
   const gaps = { joinGap: 2, maxLine: 30 }
   appendLiveSegment(live, { id: 'l1', rawId: null, start: 0, end: 1, cluster: 'c0', confidence: 0.9, text: 'morning all' }, gaps, ORIGIN_TRANSCRIBER)
   appendLiveSegment(live, { id: 'l2', rawId: null, start: 1.5, end: 3, cluster: 'c0', confidence: 0.7, text: 'shall we start?' }, gaps, ORIGIN_TRANSCRIBER)
@@ -616,6 +662,7 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
     await checkSessionStore()
     await checkAudioRetention()
     await checkTranscriptModel()
+    await checkChunkedTranscriber()
     await checkSearchIndexMirror()
     const result: unknown = await win.webContents.executeJavaScript(`
       (async () => {
@@ -689,7 +736,6 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
         const meetingPage = await window.api.createPage()
         await window.api.startRecording(meetingPage.id, false)
         window.api.appendRecording('mic', new Int16Array(16000).fill(1000))
-        window.api.appendRecordingWords([{ text: ' Hello', start: 0.2, end: 0.6 }])
         const recording = await window.api.stopRecording()
         if (!recording || Math.abs(recording.seconds - 1) > 0.01 || recording.systemPath !== null) {
           fail('recording was wrong: ' + JSON.stringify(recording))

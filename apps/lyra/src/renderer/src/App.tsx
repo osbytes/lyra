@@ -19,7 +19,6 @@ import { usePages, type OpenPage } from './hooks/usePages'
 import { useSettings } from './hooks/useSettings'
 import { useSettingsIssues } from './hooks/useSettingsIssues'
 import { clockLabel, homePath, readingMinutes, relativeTime, shortcutLabel, wordCount } from './lib/format'
-import { promptFor } from './text/transcript'
 import {
   onHistory,
   perform,
@@ -33,6 +32,8 @@ import { tip } from './components/Tooltip'
 
 /** The overlay pill doesn't need every audio frame; ~12 updates a second look smooth. */
 const OVERLAY_FRAME_MS = 80
+/** Within this many pixels of the bottom, the transcript follows new lines. */
+const FOLLOW_SLACK = 160
 
 /** How long a toast stays up. */
 const TOAST_MS = 6000
@@ -97,8 +98,6 @@ function toMarkdown(page: OpenPage): string {
 }
 
 export default function App(): React.JSX.Element {
-  /** This recording's committed phrases, in the order they were sent to main. */
-  const [sent, setSent] = useState<string[]>([])
   const {
     pages,
     current,
@@ -149,37 +148,9 @@ export default function App(): React.JSX.Element {
     }
   }, [])
 
-  const onCommit = useCallback(
-    (text: string, at: { start: number; end: number }) => {
-      if (!currentRef.current) return
-      const view = scroller.current
-      // Keep new words in view, unless the user has scrolled the transcript up to reread. The
-      // notes scroll on their own, so typing there never fights the transcript.
-      const follow = !view || view.scrollHeight - view.scrollTop - view.clientHeight < 160
-      // Main voiceprints the phrase and writes it to its speaker's line; until then it's drawn
-      // as unconfirmed text, so words never blink out.
-      setSent((list) => [...list, text])
-      window.api.appendRecordingText(text, at.start, at.end)
-      if (follow) {
-        requestAnimationFrame(() => view?.scrollTo({ top: view.scrollHeight, behavior: 'smooth' }))
-      }
-    },
-    [currentRef]
-  )
-
-  // Whisper's prompt is the text just before where its words will land.
-  const getContext = useCallback(() => {
-    const page = currentRef.current
-    if (!page) return ''
-    if (page.liveMode === 'transcript') {
-      return promptFor(page.title, page.transcript.map((line) => line.text).join(' '))
-    }
-    return promptFor(page.title, page.body.slice(0, page.transcriberAt ?? page.body.length))
-  }, [currentRef])
-
   const getDeviceId = useCallback(() => settingsRef.current?.micDeviceId ?? null, [])
 
-  const dictation = useDictation({ getContext, onCommit, getDeviceId })
+  const dictation = useDictation({ getDeviceId })
   const { recording, stop: stopDictation, start } = dictation
 
   /** Stops recording and writes the page to disk right away, so the file is complete. */
@@ -191,7 +162,6 @@ export default function App(): React.JSX.Element {
   /** Records into a session: the mic, plus the computer's audio when that setting is on. */
   const record = useCallback(
     async (pageId: string) => {
-      setSent([])
       await start({ pageId, systemAudio: settingsRef.current?.captureSystemAudio ?? true })
     },
     [start]
@@ -217,7 +187,7 @@ export default function App(): React.JSX.Element {
   )
 
   // Mirror recorder state to main for the tray and the overlay pill.
-  const { phase, live, micName, subscribeLevel } = dictation
+  const { phase, progress, micName, subscribeLevel } = dictation
   const listeningSince = useRef<number | null>(null)
   useEffect(() => {
     if (phase === 'listening') listeningSince.current ??= Date.now()
@@ -229,17 +199,28 @@ export default function App(): React.JSX.Element {
     })
   }, [phase, micName])
 
-  const liveRef = useRef(live)
-  liveRef.current = live
+  const transcribing = (progress?.queued ?? 0) > 0
+  const statusRef = useRef('')
+  statusRef.current = transcribing ? 'Transcribing…' : ''
   useEffect(() => {
     let last = 0
-    return subscribeLevel((level) => {
+    return subscribeLevel((levels) => {
       const now = performance.now()
       if (now - last < OVERLAY_FRAME_MS) return
       last = now
-      window.api.reportOverlayFrame({ level, live: liveRef.current })
+      window.api.reportOverlayFrame({ level: Math.max(levels.mic, levels.system ?? 0), status: statusRef.current })
     })
   }, [subscribeLevel])
+
+  // New lines land as each chunk is transcribed; keep them in view unless the user has scrolled
+  // up to reread. The notes scroll on their own, so typing there never fights the transcript.
+  const lineCount = current?.transcript.length ?? 0
+  useEffect(() => {
+    const view = scroller.current
+    if (!view || phase === 'idle' || lineCount === 0) return
+    if (view.scrollHeight - view.scrollTop - view.clientHeight > FOLLOW_SLACK) return
+    requestAnimationFrame(() => view.scrollTo({ top: view.scrollHeight, behavior: 'smooth' }))
+  }, [lineCount, phase])
 
   /** The dock: continue recording the open session, or stop. */
   const toggleDictation = useCallback(() => {
@@ -398,9 +379,9 @@ export default function App(): React.JSX.Element {
   const systemAudio = settings?.captureSystemAudio ?? true
   const toTranscript = current?.liveMode === 'transcript'
   const listening = dictation.phase === 'listening'
-  const unplaced = sent.slice(current?.livePlaced ?? 0).join(' ')
-  const liveText = toTranscript && listening ? `${unplaced}${dictation.live}`.trim() : null
-  const hasTranscript = !!current && (current.transcript.length > 0 || liveText !== null)
+  const recordingHere = toTranscript && (listening || dictation.phase === 'finishing')
+  const pending = recordingHere ? { working: transcribing, finishing: dictation.phase === 'finishing' } : null
+  const hasTranscript = !!current && (current.transcript.length > 0 || pending !== null)
 
   const quote = (line: TranscriptSegment, text: string): void => {
     const page = currentRef.current
@@ -571,7 +552,7 @@ export default function App(): React.JSX.Element {
                       onUndo={() => void undo()}
                       showSpeakersBar={!panel}
                       pickerRequest={pickerRequest}
-                      live={liveText}
+                      transcribing={pending}
                     />
                   </div>
                 </ScrollArea>
@@ -589,6 +570,7 @@ export default function App(): React.JSX.Element {
               systemAudio={systemAudio}
               onSystemAudioChange={(captureSystemAudio) => void updateSettings({ captureSystemAudio })}
               subscribeLevel={dictation.subscribeLevel}
+              transcribing={transcribing}
               onToggle={toggleDictation}
             >
               {dictation.recording && systemAudio && settings && !settings.meetingNoticeSeen ? (
