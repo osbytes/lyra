@@ -94,7 +94,7 @@ export function SettingsSheet({ onClose, newSessionShortcut }: Props) {
           </Row>
           {settings.notesEngine === 'local' ? (
             <p className="settings-notice">
-              Runs a small model on this computer — nothing leaves it. The first time downloads about 2 GB; long
+              Runs a small model on this computer, so nothing leaves it. The first time downloads about 2 GB; long
               meetings can take a few minutes.
             </p>
           ) : null}

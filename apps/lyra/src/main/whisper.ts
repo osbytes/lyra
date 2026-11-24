@@ -140,7 +140,7 @@ function wordsFromTokens(result: { transcription?: unknown }): TranscriptWord[] 
       words.push({ text: ` ${text.trim()}`, start, end })
     }
   }
-  // Whisper marks speech that runs past the end of the buffer with "..." — not dictation.
+  // Whisper marks speech that runs past the end of the buffer with "..."; that is not dictation.
   return words
     .map((word) => ({ ...word, text: word.text.replace(/(?:\.\.\.|…)+/g, '') }))
     .filter((word) => word.text.trim())

@@ -6,8 +6,8 @@ import type { Person } from '../shared/types'
 import { log } from './log'
 
 /**
- * Saved voiceprints ("people"). Stored only in userData — never in the notes
- * folder — so they aren't synced or shared along with notes.
+ * Saved voiceprints ("people"). Stored only in userData, never in the notes
+ * folder, so they aren't synced or shared along with notes.
  */
 
 type StoredPerson = Person & { embeddings: number[][] }

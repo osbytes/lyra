@@ -333,7 +333,7 @@ async function seedScreenshotPages(): Promise<void> {
     title: 'Team sync notes',
     body:
       'Quick recap from this morning.\n\n' +
-      'Keep the first-run flow simple — one page, one record button. ' +
+      'Keep the first-run flow simple: one page, one record button. ' +
       'Ship sidebar delete before we rename the app in the UI.'
   })
 
@@ -353,9 +353,9 @@ async function seedScreenshotPages(): Promise<void> {
     body:
       'Lyra should feel like a notebook, not a chatbot.\n\n' +
       'A few things worth trying next:\n' +
-      '— Rename pages inline from the sidebar\n' +
-      '— Keyboard shortcut for record / stop\n' +
-      '— Export a page as plain text or markdown\n\n' +
+      '- Rename pages inline from the sidebar\n' +
+      '- Keyboard shortcut for record / stop\n' +
+      '- Export a page as plain text or markdown\n\n' +
       'The core loop is already good: open a page, talk, edit, copy, come back later.'
   })
 }
@@ -1105,7 +1105,7 @@ void app.whenReady().then(() => {
     callback(permission === 'media' || permission === 'clipboard-sanitized-write')
   })
   // Meetings ask for system audio via getDisplayMedia; answer with the loopback
-  // device and the primary screen (its video track is discarded) — no picker.
+  // device and the primary screen (its video track is discarded), so no picker shows.
   session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
     if (request.frame?.top !== getMainWindow()?.webContents.mainFrame) {
       callback({})

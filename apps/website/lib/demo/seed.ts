@@ -38,7 +38,7 @@ export function initialState(now: number): DemoState {
       tracks: ['mic'],
       body: [
         'Lyra should feel like a notebook, not a chatbot.',
-        'A few things worth trying next:\n— Rename pages inline from the sidebar\n— Keyboard shortcut for record / stop\n— Export a page as plain text or markdown',
+        'A few things worth trying next:\n- Rename pages inline from the sidebar\n- Keyboard shortcut for record / stop\n- Export a page as plain text or markdown',
         'The core loop is already good: open a page, talk, edit, copy, come back later.'
       ].join('\n\n')
     }),

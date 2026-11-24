@@ -22,7 +22,7 @@ const DESCRIPTION =
 
 export const metadata: Metadata = {
   metadataBase: new URL(productionHost ? `https://${productionHost}` : 'http://localhost:3100'),
-  title: 'Lyra — a local voice notebook',
+  title: 'Lyra: a local voice notebook',
   description: DESCRIPTION,
   openGraph: { title: 'Lyra', description: DESCRIPTION, type: 'website' }
 }
