@@ -112,16 +112,37 @@ export async function renamePerson(id: string, name: string): Promise<void> {
   await save(list.map((person) => (person.id === id ? { ...person, name: trimmed } : person)))
 }
 
-export async function setSelf(id: string): Promise<void> {
+/** Marks one person as "me", or nobody when `id` is null. */
+export async function setSelf(id: string | null): Promise<void> {
   const list = await load()
   await save(list.map((person) => ({ ...person, self: person.id === id })))
 }
 
+/** People deleted this run, kept in memory only so the window can undo the delete. */
+const deleted = new Map<string, { person: StoredPerson; index: number }>()
+
 /** Deletes the person and every voiceprint sample of theirs. */
 export async function deletePerson(id: string): Promise<void> {
   const list = await load()
-  await save(list.filter((person) => person.id !== id))
+  const index = list.findIndex((person) => person.id === id)
+  const person = list[index]
+  if (person) deleted.set(id, { person, index })
+  await save(list.filter((entry) => entry.id !== id))
   log('voices', 'deleted person', { id })
+}
+
+/** Undoes `deletePerson`, back in the same place in the list. */
+export async function restorePerson(id: string): Promise<void> {
+  const entry = deleted.get(id)
+  if (!entry) throw new Error('This person can no longer be restored')
+  deleted.delete(id)
+  const list = await load()
+  if (list.some((person) => person.id === id)) return
+  // Someone else may have become "me" since; they keep it.
+  const takenSelf = list.some((person) => person.self)
+  const person = { ...entry.person, self: entry.person.self && !takenSelf }
+  await save([...list.slice(0, entry.index), person, ...list.slice(entry.index)])
+  log('voices', 'restored person', { id })
 }
 
 export function cosine(a: readonly number[], b: readonly number[]): number {

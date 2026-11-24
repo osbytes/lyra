@@ -111,7 +111,7 @@ function RecordingPill() {
 
   return (
     <div className="overlay-pill" role="status">
-      <span className="overlay-grip" title="Drag to move" aria-hidden="true">
+      <span className="overlay-grip" aria-hidden="true">
         <GripIcon />
       </span>
       <button
@@ -120,7 +120,7 @@ function RecordingPill() {
         onClick={() => {
           window.api.showMainWindow()
         }}
-        title="Open Lyra"
+        aria-label="Open Lyra"
       >
         <span className={`overlay-dot${listening ? ' is-live' : ''}`} />
         <span className="overlay-time">{formatDuration(elapsed)}</span>
@@ -144,7 +144,6 @@ function RecordingPill() {
         }}
         disabled={!listening}
         aria-label="Stop recording"
-        title="Stop recording"
       >
         <StopIcon />
       </button>

@@ -862,16 +862,67 @@ export async function deleteSession(id: string): Promise<void> {
     entry.doc.destroy()
   }
   markOwnWrite(id)
-  const sidecar = join(notesDir(), sidecarName(id))
-  for (const path of [resolveInNotes(id), sidecar, join(sessionsRoot(), id)]) {
-    if (!existsSync(path)) continue
-    try {
-      await shell.trashItem(path)
-    } catch {
-      // No trash available (some Linux setups, test runs): delete instead.
-      await rm(path, { recursive: true, force: true })
-    }
+  // Set aside rather than trashed, so the window can undo the delete. What's set aside goes to
+  // the system trash when Lyra quits (or on the next start, after a crash).
+  const held = join(trashRoot(), id)
+  await discard(held)
+  await mkdir(held, { recursive: true })
+  const moves: TrashMove[] = []
+  const sidecar = sidecarName(id)
+  const files: [string, string][] = [
+    [resolveInNotes(id), 'note'],
+    [join(notesDir(), sidecar), 'sidecar'],
+    [join(sessionsRoot(), id), 'session']
+  ]
+  for (const [from, name] of files) {
+    if (!existsSync(from)) continue
+    const to = join(held, name)
+    await rename(from, to)
+    moves.push({ from, to })
   }
+  trashed.set(id, { held, moves })
+}
+
+type TrashMove = { from: string; to: string }
+
+/** Deleted sessions this run, by id: where each of their files went, to put them back. */
+const trashed = new Map<string, { held: string; moves: TrashMove[] }>()
+
+function trashRoot(): string {
+  return join(sessionsRoot(), '.trash')
+}
+
+async function discard(path: string): Promise<void> {
+  if (!existsSync(path)) return
+  try {
+    await shell.trashItem(path)
+  } catch {
+    // No trash available (some Linux setups, test runs): delete instead.
+    await rm(path, { recursive: true, force: true })
+  }
+}
+
+/** Undoes `deleteSession`: puts the note, its metadata and its session folder back. */
+export async function restoreSession(id: string): Promise<void> {
+  resolveInNotes(id)
+  const entry = trashed.get(id)
+  if (!entry) throw new Error('This session can no longer be restored')
+  const { held, moves } = entry
+  if (moves.some((move) => existsSync(move.from))) {
+    throw new Error('A session with the same name exists again')
+  }
+  markOwnWrite(id)
+  for (const move of moves) await rename(move.to, move.from)
+  trashed.delete(id)
+  await rm(held, { recursive: true, force: true })
+  notifyPagesChanged()
+}
+
+/** Sends every deleted session to the system trash; they can't be undone after this. */
+export async function emptySessionTrash(): Promise<void> {
+  trashed.clear()
+  const entries = await readdir(trashRoot()).catch(() => [])
+  for (const name of entries) await discard(join(trashRoot(), name))
 }
 
 /** Opens a session for a window: returns the full state and sends it later changes. */

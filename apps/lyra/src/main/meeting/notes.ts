@@ -28,7 +28,7 @@ function transcriptText(snapshot: SessionSnapshot): string {
 /** Writes (or rewrites) a session's generated notes (its summary, above the user's notes). */
 export async function generateNotes(pageId: string): Promise<void> {
   const engine = getSettings().notesEngine
-  if (engine === 'off') throw new Error('Meeting notes are turned off in Settings')
+  if (engine === 'off') throw new Error('Summaries are turned off in Settings → Sessions')
   const status = (state: MeetingStatus['state'], progress: number, message?: string): void => {
     broadcast({ pageId, state, progress, ...(message ? { message } : {}) })
   }
@@ -42,7 +42,7 @@ export async function generateNotes(pageId: string): Promise<void> {
     let notes
     if (engine === 'claude') {
       const key = await getClaudeKey()
-      if (!key) throw new Error('Add a Claude API key in Settings → Meeting notes')
+      if (!key) throw new Error('Add a Claude API key in Settings → Sessions')
       notes = await claudeNotes(key, transcript)
     } else {
       notes = await localNotes(transcript, (received, total) => {

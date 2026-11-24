@@ -11,7 +11,9 @@ import {
   newSpeakerId,
   ORIGIN_REMOTE,
   ORIGIN_USER,
+  mergeSpeakers,
   removeTag,
+  speakerToMergeInto,
   setSegmentEdits,
   setSegmentsCluster,
   setSegmentText,
@@ -53,6 +55,14 @@ export type NewSpeaker = { name: string; personId: string | null; confirmed: boo
 
 
 type Edit = { title?: string; body?: string }
+
+const STAMP = 'at'
+
+/** When the top step of an undo or redo stack was made, or null when it's empty. */
+function stampOf(stack: readonly { meta: Map<unknown, unknown> }[]): number | null {
+  const at = stack.at(-1)?.meta.get(STAMP)
+  return typeof at === 'number' ? at : null
+}
 
 type Replica = {
   id: string
@@ -145,6 +155,13 @@ export function usePages() {
         trackedOrigins: new Set([ORIGIN_USER]),
         captureTimeout: 600
       })
+      // Stamp each step with when it was done or undone, so App's Ctrl+Z can order document
+      // edits against actions outside the document (see lib/history).
+      const stamp = ({ stackItem }: { stackItem: { meta: Map<unknown, unknown> } }): void => {
+        stackItem.meta.set(STAMP, Date.now())
+      }
+      undo.on('stack-item-added', stamp)
+      undo.on('stack-item-updated', stamp)
 
       replica.current = {
         id,
@@ -224,6 +241,18 @@ export function usePages() {
     },
     []
   )
+  /** Names a speaker (merging into one with the same name or person), as one undo step. */
+  const nameSpeaker = useCallback(
+    (id: string, name: string, personId: string | null) =>
+      step((doc) => {
+        doc.transact(() => {
+          const into = speakerToMergeInto(doc, id, name, personId)
+          upsertSpeaker(doc, into ?? id, { name, personId, confirmed: true }, ORIGIN_USER)
+          if (into) mergeSpeakers(doc, id, into, ORIGIN_USER)
+        }, ORIGIN_USER)
+      }),
+    [step]
+  )
   const tag = useCallback(
     (name: string) => change((doc) => addTag(doc, name, ORIGIN_USER)),
     [change]
@@ -233,8 +262,10 @@ export function usePages() {
     [change]
   )
 
-  const undo = useCallback(() => replica.current?.undo.undo() !== null, [])
-  const redo = useCallback(() => replica.current?.undo.redo() !== null, [])
+  const undo = useCallback(() => !!replica.current?.undo.undo(), [])
+  const redo = useCallback(() => !!replica.current?.undo.redo(), [])
+  const undoAt = useCallback(() => stampOf(replica.current?.undo.undoStack ?? []), [])
+  const redoAt = useCallback(() => stampOf(replica.current?.undo.redoStack ?? []), [])
 
   const open = useCallback((id: string) => attach(id), [attach])
 
@@ -266,6 +297,16 @@ export function usePages() {
       else show(null)
     },
     [detach, attach, refreshList]
+  )
+
+  /** Undoes `remove`: brings the session back and opens it. */
+  const restore = useCallback(
+    async (id: string) => {
+      await window.api.restorePage(id)
+      await refreshList()
+      await attach(id)
+    },
+    [attach, refreshList]
   )
 
   useEffect(() => {
@@ -306,14 +347,18 @@ export function usePages() {
     editSegment,
     editLineOverlay,
     assignLines,
+    nameSpeaker,
     tag,
     untag,
     undo,
     redo,
+    undoAt,
+    redoAt,
     open,
     close,
     create,
     remove,
+    restore,
     flush
   }
 }

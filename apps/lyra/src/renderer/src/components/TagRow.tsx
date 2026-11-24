@@ -1,6 +1,8 @@
 import { useMemo, useRef, useState } from 'react'
 import { normalizeTag } from '../../../shared/sessionDoc'
+import { useContextMenu } from './ContextMenu'
 import { CloseIcon, PlusIcon } from './Icons'
+import { tip } from './Tooltip'
 
 type Props = {
   tags: string[]
@@ -19,6 +21,7 @@ export function TagRow({ tags, known, onAdd, onRemove }: Props) {
   const [active, setActive] = useState(0)
   const input = useRef<HTMLInputElement>(null)
   const addButton = useRef<HTMLButtonElement>(null)
+  const menu = useContextMenu()
 
   const suggestions = useMemo((): Suggestion[] => {
     const needle = normalizeTag(query)
@@ -47,12 +50,26 @@ export function TagRow({ tags, known, onAdd, onRemove }: Props) {
   return (
     <div className="tags" aria-label="Tags">
       {tags.map((tag) => (
-        <span key={tag} className="tag-chip">
+        <span
+          key={tag}
+          className="tag-chip"
+          onContextMenu={(event) => {
+            menu.open(event, `#${tag}`, [
+              { label: 'Copy tag', run: () => window.api.copyText(`#${tag}`) },
+              { label: 'Remove tag', icon: <CloseIcon />, danger: true, run: () => onRemove(tag) }
+            ])
+          }}
+        >
           <span className="tag-hash" aria-hidden="true">
             #
           </span>
           {tag}
-          <button type="button" aria-label={`Remove tag ${tag}`} onClick={() => onRemove(tag)}>
+          <button
+            type="button"
+            aria-label={`Remove tag ${tag}`}
+            {...tip('Remove tag')}
+            onClick={() => onRemove(tag)}
+          >
             <CloseIcon />
           </button>
         </span>
@@ -144,6 +161,7 @@ export function TagRow({ tags, known, onAdd, onRemove }: Props) {
           Add tag
         </button>
       )}
+      {menu.element}
     </div>
   )
 }

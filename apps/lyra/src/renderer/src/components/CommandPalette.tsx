@@ -30,7 +30,7 @@ const SCOPES: { id: Scope; label: string }[] = [
 const FIELD_LABEL: Record<SearchField, string> = {
   title: 'Title',
   tags: 'Tag',
-  summary: 'Meeting notes',
+  summary: 'Summary',
   notes: 'Notes',
   transcript: 'Transcript'
 }

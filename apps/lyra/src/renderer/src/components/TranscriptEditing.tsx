@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { TranscriptSegment } from '../../../shared/sessionDoc'
 import {
   correctRange,
@@ -12,6 +12,8 @@ import {
   type Span,
   type TranscriptEdit
 } from '../../../shared/transcriptOverlay'
+import { ContextMenu, type MenuItem } from './ContextMenu'
+import { tip } from './Tooltip'
 
 /**
  * Editing a locked transcript. Lines are drawn from what the model heard plus the user's
@@ -48,14 +50,14 @@ export function LineText({
         }
         if (piece.kind === 'replaced') {
           return (
-            <ins {...common} title={piece.original ? `Heard: “${piece.original}”` : 'Added'}>
+            <ins {...common} {...tip(piece.original ? `Heard: “${piece.original}”` : 'Added')}>
               {piece.text}
             </ins>
           )
         }
         if (piece.kind === 'deleted') {
           return (
-            <del {...common} title="Removed from the transcript">
+            <del {...common} {...tip('Removed from the transcript')}>
               {piece.text}
             </del>
           )
@@ -260,7 +262,6 @@ export type MenuRequest = {
   y: number
 }
 
-type Item = { label: ReactNode; run: () => void } | 'separator'
 
 export function LineMenu({
   line,
@@ -277,10 +278,8 @@ export function LineMenu({
   onCorrect: (span: Span, rect: DOMRect) => void
   onClose: () => void
 }) {
-  const menu = useRef<HTMLDivElement>(null)
-  const [active, setActive] = useState(0)
   const { span, edit } = request
-  const items: Item[] = []
+  const items: MenuItem[] = []
   if (!raw && edit) {
     const heard = line.original.slice(edit.start, edit.end)
     items.push({
@@ -297,7 +296,7 @@ export function LineMenu({
     const lit = isHighlighted(line.edits, span)
     items.push(
       { label: <>Correct “{short(text)}”…</>, run: () => onCorrect(span, request.rect ?? new DOMRect(request.x, request.y)) },
-      { label: 'Remove from transcript', run: () => actions.setEdits(line.id, removeRange(line.edits, span)) },
+      { label: 'Remove from transcript', danger: true, run: () => actions.setEdits(line.id, removeRange(line.edits, span)) },
       { label: lit ? 'Remove highlight' : 'Highlight', run: () => actions.setEdits(line.id, toggleHighlight(line.edits, span)) },
       { label: 'Add selection to notes', run: () => actions.quote(line, text) },
       { label: 'Copy selection', run: () => actions.copy(text) }
@@ -332,73 +331,8 @@ export function LineMenu({
       run: () => actions.setEdits(line.id, line.edits.filter((e) => e.kind !== 'highlight'))
     })
   }
-  const runnable = items.filter((item): item is Exclude<Item, 'separator'> => item !== 'separator')
-
-  useEffect(() => {
-    menu.current?.focus()
-  }, [])
-
-  const pick = (item: Exclude<Item, 'separator'> | undefined): void => {
-    if (!item) return
-    onClose()
-    item.run()
-  }
-
-  const width = 240
-  const height = items.length * 32 + 8
-  return (
-    <div
-      className="picker-layer"
-      onMouseDown={onClose}
-      onContextMenu={(event) => {
-        event.preventDefault()
-        onClose()
-      }}
-    >
-      <div
-        ref={menu}
-        className="context-menu"
-        role="menu"
-        tabIndex={-1}
-        aria-label="Transcript line"
-        style={{
-          top: Math.max(8, Math.min(request.y, window.innerHeight - height - 8)),
-          left: Math.max(8, Math.min(request.x, window.innerWidth - width - 8))
-        }}
-        onMouseDown={(event) => event.stopPropagation()}
-        onKeyDown={(event) => {
-          if (event.key === 'Escape') {
-            event.preventDefault()
-            onClose()
-          } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-            event.preventDefault()
-            const step = event.key === 'ArrowDown' ? 1 : runnable.length - 1
-            setActive((value) => (value + step) % runnable.length)
-          } else if (event.key === 'Enter') {
-            event.preventDefault()
-            pick(runnable[active])
-          }
-        }}
-      >
-        {items.map((item, index) =>
-          item === 'separator' ? (
-            <hr key={`sep-${String(index)}`} />
-          ) : (
-            <button
-              key={index}
-              type="button"
-              role="menuitem"
-              className={runnable.indexOf(item) === active ? 'active' : undefined}
-              onMouseEnter={() => setActive(runnable.indexOf(item))}
-              onClick={() => pick(item)}
-            >
-              {item.label}
-            </button>
-          )
-        )}
-      </div>
-    </div>
-  )
+  if (items.at(-1) === 'separator') items.pop()
+  return <ContextMenu x={request.x} y={request.y} label="Transcript line" items={items} onClose={onClose} />
 }
 
 /** Rewriting a whole line in place; stored as a correction over the words that changed. */

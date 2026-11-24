@@ -14,12 +14,15 @@ import { copyFile, mkdir, readdir, readFile, utimes, writeFile } from 'node:fs/p
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import { attachEditMenu } from './editMenu'
 import { migrateLegacyPages, moveNotes, notesDir, resolveInNotes, startWatchingNotes } from './pages'
 import {
   applySessionUpdate,
   closeSessionFor,
   createSession as createPage,
   deleteSession as deletePage,
+  emptySessionTrash,
+  restoreSession,
   flushAllSessions,
   getSessionPage as getPage,
   listSessions as listPages,
@@ -170,6 +173,7 @@ function createWindow(): void {
   })
   setMainWindow(mainWindow)
   watchMainWindow(mainWindow)
+  attachEditMenu(mainWindow)
 
   // Closing the window hides it; Lyra keeps running in the tray for the global hotkey.
   mainWindow.on('close', (event) => {
@@ -234,7 +238,7 @@ function registerIpc(): void {
   ipcMain.handle('settings:update', (_event, patch: Partial<Settings>) => updateSettings(patch))
   ipcMain.handle('settings:pickFolder', async (event) => {
     const options: Electron.OpenDialogOptions = {
-      title: 'Choose notes folder',
+      title: 'Choose sessions folder',
       defaultPath: notesDir(),
       properties: ['openDirectory', 'createDirectory']
     }
@@ -255,7 +259,14 @@ function registerIpc(): void {
   ipcMain.handle('pages:save', (_event, page: Pick<Page, 'id' | 'title' | 'body'>) =>
     savePage(page)
   )
-  ipcMain.handle('pages:delete', (_event, id: string) => deletePage(id))
+  ipcMain.handle('pages:delete', (_event, id: unknown) => {
+    if (typeof id !== 'string') throw new Error('Invalid page id')
+    return deletePage(id)
+  })
+  ipcMain.handle('pages:restore', (_event, id: unknown) => {
+    if (typeof id !== 'string') throw new Error('Invalid page id')
+    return restoreSession(id)
+  })
   ipcMain.handle('pages:reveal', (_event, id: unknown) => {
     shell.showItemInFolder(resolveInNotes(id))
   })
@@ -494,7 +505,7 @@ async function captureScreenshot(win: BrowserWindow): Promise<void> {
         await settle()
         await save(reviewDir, `settings-${theme}.png`)
         // The tabs after General, in nav order.
-        for (const [index, tab] of ['recording', 'meetings', 'people'].entries()) {
+        for (const [index, tab] of ['sessions', 'people'].entries()) {
           await click(`.settings-nav button:nth-of-type(${String(index + 2)})`)
           await settle()
           await save(reviewDir, `settings-${tab}-${theme}.png`)
@@ -532,12 +543,40 @@ async function captureScreenshot(win: BrowserWindow): Promise<void> {
       await click('.picker.sources .select')
       await settle()
       await save(reviewDir, 'select-light.png')
-      // Deleting shows the Undo toast; the page comes back on reload since the file stays.
+      // A session's right-click menu, and a tooltip.
+      for (const theme of ['light', 'dark'] as const) {
+        nativeTheme.themeSource = theme
+        await reload()
+        await win.webContents.executeJavaScript(`(() => {
+          const row = document.querySelector('.page-row')
+          const box = row?.getBoundingClientRect()
+          row?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: (box?.left ?? 0) + 60, clientY: (box?.top ?? 0) + 20 }))
+        })()`)
+        await settle()
+        await save(reviewDir, `menu-${theme}.png`)
+        win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
+        await settle()
+        const point: unknown = await win.webContents.executeJavaScript(`(() => {
+          const box = document.querySelector('.sidebar-footer .ghost-btn')?.getBoundingClientRect()
+          return box ? [Math.round(box.left + box.width / 2), Math.round(box.top + box.height / 2)] : [0, 0]
+        })()`)
+        const [x = 0, y = 0] = Array.isArray(point) ? point.map(Number) : []
+        win.webContents.sendInputEvent({ type: 'mouseMove', x, y })
+        await new Promise((resolve) => setTimeout(resolve, 900))
+        await save(reviewDir, `tooltip-${theme}.png`)
+      }
+      // Deleting asks first, then shows the Undo toast; Ctrl+Z brings the session back.
       nativeTheme.themeSource = 'light'
       await reload()
       await click('.page-row:last-child .page-delete')
       await settle()
+      await save(reviewDir, 'confirm-delete-light.png')
+      await click('.confirm .btn.primary')
+      await settle()
       await save(reviewDir, 'undo-delete-light.png')
+      await pressShortcut('z')
+      await settle()
+      await save(reviewDir, 'undid-delete-light.png')
     }
     app.exit(0)
   } catch (error) {
@@ -1003,6 +1042,14 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         if (!badUpdate) fail('updateSession accepted a non-binary update')
         window.api.closeSession(session.id)
         await window.api.deletePage(session.id)
+        if ((await window.api.listPages()).some((page) => page.id === session.id)) fail('deleted session still listed')
+        await window.api.restorePage(session.id)
+        if (!(await window.api.listPages()).some((page) => page.id === session.id)) fail('restorePage did not bring the session back')
+        const restoredTwice = await window.api.restorePage(session.id).then(() => true, () => false)
+        if (restoredTwice) fail('restorePage restored a session that was not deleted')
+        await window.api.deletePage(session.id)
+        const missingPerson = await window.api.restorePerson('no-such-person').then(() => true, () => false)
+        if (missingPerson) fail('restorePerson accepted an unknown id')
 
         const meetingPage = await window.api.createPage()
         await window.api.startRecording(meetingPage.id, false)
@@ -1103,6 +1150,8 @@ void app.whenReady().then(() => {
     })
   }
   void migrateLegacyPages().finally(() => {
+    // Sessions deleted before a crash were never emptied into the system trash.
+    void emptySessionTrash()
     startWatchingNotes()
     startAudioRetention()
     createWindow()
@@ -1121,10 +1170,12 @@ app.on('before-quit', (event) => {
   // Write pending exports and compact session logs before the process goes away.
   if (flushed) return
   event.preventDefault()
-  void flushAllSessions().finally(() => {
-    flushed = true
-    app.quit()
-  })
+  void flushAllSessions()
+    .then(() => emptySessionTrash())
+    .finally(() => {
+      flushed = true
+      app.quit()
+    })
 })
 
 app.on('will-quit', () => {

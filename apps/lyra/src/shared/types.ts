@@ -147,6 +147,9 @@ export type UpdateStatus =
   | { state: 'error'; message: string }
 
 /** A Yjs update to an open session, made outside this window. */
+/** Who a speaker turned out to be (`resolveSpeaker`). */
+export type SpeakerIdentity = { name: string; personId: string | null }
+
 export type SessionUpdate = { id: string; update: Uint8Array }
 
 export type VoicePagesApi = {
@@ -157,7 +160,10 @@ export type VoicePagesApi = {
   /** `startedAt` (ISO) names the file after a session's start time; defaults to now. */
   createPage: (options?: { startedAt?: string }) => Promise<Page>
   savePage: (page: Pick<Page, 'id' | 'title' | 'body'>) => Promise<Page>
+  /** Deletes a session. It can be restored until Lyra quits, then goes to the system trash. */
   deletePage: (id: string) => Promise<void>
+  /** Undoes `deletePage`. */
+  restorePage: (id: string) => Promise<void>
   /** Shows a session's text file in the system file manager. */
   revealPage: (id: string) => Promise<void>
   /** Fires when the list of pages, or a page's title or preview, may have changed. */
@@ -221,14 +227,22 @@ export type VoicePagesApi = {
   /** Saves a voiceprint from ~20 s of 16 kHz mono speech. */
   enrollPerson: (name: string, pcm: Float32Array, self: boolean) => Promise<Person>
   renamePerson: (id: string, name: string) => Promise<void>
-  setSelfPerson: (id: string) => Promise<void>
+  /** Marks who "me" is; null marks nobody. */
+  setSelfPerson: (id: string | null) => Promise<void>
   deletePerson: (id: string) => Promise<void>
+  /** Undoes `deletePerson` (voiceprint included) until Lyra quits. */
+  restorePerson: (id: string) => Promise<void>
   /** Speakers of a processed meeting note, or null if it isn't one. */
   /**
-   * Names a session's speaker as a saved person, or under a new name. Teaches the voiceprint
+   * Works out who a session's speaker is: a saved person, or a new name. Teaches the voiceprint
    * from that speaker's audio (always for a saved person; for a new name when `remember`).
+   * The window applies the returned name to its document, so naming can be undone there.
    */
-  assignSpeaker: (pageId: string, speakerId: string, assignment: SpeakerAssignment) => Promise<void>
+  resolveSpeaker: (
+    pageId: string,
+    speakerId: string,
+    assignment: SpeakerAssignment
+  ) => Promise<SpeakerIdentity>
   onMeetingStatus: (callback: (status: MeetingStatus) => void) => () => void
   /** (Re)writes the notes section at the top of a meeting note with the chosen engine. */
   generateNotes: (pageId: string) => Promise<void>

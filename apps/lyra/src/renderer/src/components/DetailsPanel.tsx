@@ -6,6 +6,7 @@ import { speakerTone } from '../lib/speakerTone'
 import { CopyIcon, FolderIcon, PeopleIcon } from './Icons'
 import { ScrollArea } from './Controls'
 import { TagRow } from './TagRow'
+import { tip } from './Tooltip'
 
 type Props = {
   page: OpenPage
@@ -75,7 +76,7 @@ export function DetailsPanel({
           ))}
           <div>
             <dt>File</dt>
-            <dd className="details-file" title={page.id}>
+            <dd className="details-file" {...tip(page.id)}>
               {page.id}
             </dd>
           </div>
@@ -194,7 +195,7 @@ export function DetailsPanel({
               }}
             >
               <PeopleIcon />
-              {page.summary.trim() ? 'Rewrite meeting notes' : 'Write meeting notes'}
+              {page.summary.trim() ? 'Rewrite summary' : 'Write summary'}
             </button>
           ) : null}
         </div>
