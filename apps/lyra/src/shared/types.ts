@@ -223,6 +223,11 @@ export type VoicePagesApi = {
     speakerId: string,
     assignment: SpeakerAssignment
   ) => Promise<SpeakerIdentity>
+  /**
+   * After lines `moved` left speaker `from`, the ids of `from`'s other lines that sound like the
+   * moved ones (empty without kept audio). Moves nothing; the window offers to.
+   */
+  similarLines: (pageId: string, moved: readonly string[], from: string) => Promise<string[]>
   onMeetingStatus: (callback: (status: MeetingStatus) => void) => () => void
   /** (Re)writes the notes section at the top of a meeting note with the chosen engine. */
   generateNotes: (pageId: string) => Promise<void>

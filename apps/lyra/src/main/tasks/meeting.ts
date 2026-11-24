@@ -12,7 +12,9 @@ import {
 } from '../sessionStore'
 import { overrideSettings } from '../settings'
 import { assignSpeaker, processMeeting } from '../meeting/pipeline'
-import { listPeople } from '../voices'
+import { addPerson, listPeople } from '../voices'
+import { embedVoice, ensureSpeakerModels } from '../meeting/speakers'
+import { readWav } from '../meeting/wav'
 import type { Services } from '../services'
 import { replayRecording } from '../meeting/replay'
 import { relabeled } from '../meeting/relabel'
@@ -30,6 +32,10 @@ export async function runMeetingFixture(task: MeetingTask, services: Services): 
   const wavPath = task.mic
   try {
     const page = await createPage()
+    if (task.enroll) {
+      const models = await ensureSpeakerModels()
+      await addPerson('Enrolled', await embedVoice(await readWav(task.enroll), models), true)
+    }
     // Optional second track, to exercise the mic-vs-system "Me" labeling.
     const systemFixture = task.system
     const started = Date.now()
@@ -82,7 +88,7 @@ export async function runMeetingFixture(task: MeetingTask, services: Services): 
     await flushAllSessions()
     const renamed = await readFile(join(notesDir(), page.id), 'utf8')
     const people = await listPeople()
-    if (!renamed.includes('] Fixture Person: ') || people.length !== 1) {
+    if (!renamed.includes('] Fixture Person: ') || people.length !== (task.enroll ? 2 : 1)) {
       throw new Error('naming did not update the export or save the voice')
     }
     process.stdout.write('meeting-fixture: relabel ok\n')

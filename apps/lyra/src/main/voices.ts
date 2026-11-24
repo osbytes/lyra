@@ -177,10 +177,14 @@ export type VoiceMatch = { person: Person; score: number }
  */
 export async function scoreVoices(embedding: readonly number[]): Promise<VoiceMatch[]> {
   return (await load())
-    .map((person) => {
-      const samples = person.embeddings.map((sample) => cosine(embedding, sample))
-      const score = Math.max(cosine(embedding, mean(person.embeddings)), ...samples)
-      return { person: toPerson(person), score }
+    .flatMap((person) => {
+      // Samples from an older speaker model have another length and can't be compared; the
+      // person is recognized again once they're named in a session (which adds a sample).
+      const usable = person.embeddings.filter((sample) => sample.length === embedding.length)
+      if (usable.length === 0) return []
+      const samples = usable.map((sample) => cosine(embedding, sample))
+      const score = Math.max(cosine(embedding, mean(usable)), ...samples)
+      return [{ person: toPerson(person), score }]
     })
     .sort((a, b) => b.score - a.score)
 }

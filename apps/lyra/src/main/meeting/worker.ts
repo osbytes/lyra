@@ -16,11 +16,34 @@ import type {
   WorkerRequest,
   WorkerResponse
 } from './protocol'
+import {
+  clusterLongWindows,
+  foldShortSpeakers,
+  labelTimeline,
+  speechWindows,
+  unit,
+  type Span
+} from './clustering'
 import { energy, mixTracks, readWav, SAMPLE_RATE } from './wav'
 
 /** Audio per speaker used for their voiceprint: enough to be stable, cheap to compute. */
 const EMBEDDING_SECONDS = 30
 const THREADS = 2
+/** Window length for clustering: long enough for a steady voiceprint, short enough for quick turns. */
+const WINDOW_SECONDS = 3
+/** Windows shorter than this don't shape the clusters; they take the nearest speaker after. */
+const MIN_WINDOW_SECONDS = 1
+/**
+ * A "speaker" with fewer seconds of windows than this is folded into the closest one: a few
+ * windows of their own are usually one person's cough, laugh or a stretch of crosstalk. Windows
+ * half-overlap, so this counts about twice their speech. 15 s in a session of minutes (the eval
+ * sweep's best), scaled down for short recordings so a second voice in a one-minute note counts.
+ */
+function minSpeakerSeconds(windowSeconds: number): number {
+  return Math.min(15, Math.max(5, windowSeconds * 0.08))
+}
+/** Lets the segmentation step cut at every change of voice; our clustering decides who is who. */
+const SEGMENTATION_THRESHOLD = 0.5
 
 let extractor: { model: string; instance: SpeakerEmbeddingExtractor } | null = null
 
@@ -44,7 +67,7 @@ function embed(models: SpeakerModels, samples: Float32Array): number[] {
 function clusterEmbeddings(
   models: SpeakerModels,
   audio: Float32Array,
-  segments: SpeakerDiarizationSegment[]
+  segments: readonly SpeakerDiarizationSegment[]
 ): ClusterEmbedding[] {
   const speakers = [...new Set(segments.map((segment) => segment.speaker))]
   return speakers.map((speaker) => {
@@ -77,14 +100,35 @@ async function diarize(request: DiarizeRequest): Promise<DiarizeResult> {
   const system = request.systemPath ? await readWav(request.systemPath) : null
   const audio = mixTracks(mic, system)
 
+  // sherpa-onnx finds the speech and where voices change; its own clustering of short pieces
+  // can't tell people at one desk mic apart, so its labels are dropped and ours are used.
   const diarizer = new OfflineSpeakerDiarization({
     segmentation: { pyannote: { model: request.models.segmentation }, numThreads: THREADS },
     embedding: { model: request.models.embedding, numThreads: THREADS },
-    clustering: { numClusters: -1, threshold: request.threshold },
+    clustering: { numClusters: -1, threshold: SEGMENTATION_THRESHOLD },
     minDurationOn: 0.3,
     minDurationOff: 0.5
   })
-  const raw = diarizer.process(audio)
+  const pieces: Span[] = diarizer
+    .process(audio)
+    .map(({ start, end }) => ({ start, end }))
+    .sort((a, b) => a.start - b.start)
+  const windows = speechWindows(pieces, WINDOW_SECONDS)
+  const prints = windows.map(({ start, end }) =>
+    unit(
+      embed(
+        request.models,
+        audio.subarray(Math.floor(start * SAMPLE_RATE), Math.ceil(end * SAMPLE_RATE))
+      )
+    )
+  )
+  const labels = foldShortSpeakers(
+    clusterLongWindows(windows, prints, request.threshold, MIN_WINDOW_SECONDS),
+    windows,
+    prints,
+    minSpeakerSeconds(windows.reduce((sum, w) => sum + w.end - w.start, 0))
+  )
+  const raw: SpeakerDiarizationSegment[] = labelTimeline(windows, labels)
 
   const segments: DiarizedSegment[] = raw.map((segment) => {
     const start = Math.floor(segment.start * SAMPLE_RATE)

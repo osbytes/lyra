@@ -4,9 +4,13 @@
 // segmentation and embedding models and durations, tiny speakers folded into the closest.
 //
 //   LYRA_MODELS_DIR=<dir> node scripts/eval/sweep-diarization.cjs [--thresholds 0.4,0.5,0.6] [--scenarios a,b]
-//     [--merge 0.7]   then merge speakers whose voiceprints (30 s of each) are at least this alike
+//     [--merge 0.7]   then merge speakers whose voiceprints (30 s of each) are at least this alike.
+//                     Tried and rejected: two real people in a room scored 0.95, above a call's
+//                     split remote voice (0.93), so any bar that fixes over-splitting merges people.
+//     [--embedding file.onnx]   another speaker-embedding model in the models folder
+//     [--dataset sessions]      the real-voice sessions (sessions.cjs) instead of the TTS calls
 //
-// Run `pnpm eval:calls` once first: it generates the scenarios into eval-data/calls/.
+// Run `pnpm eval:calls` / `pnpm eval:sessions` once first: they generate the audio into eval-data/.
 const { existsSync, readFileSync } = require('node:fs')
 const { join } = require('node:path')
 const sherpa = require('sherpa-onnx-node')
@@ -105,15 +109,20 @@ function main() {
   const dataDir = process.env.LYRA_EVAL_DATA ?? join(root, 'eval-data')
   const thresholds = arg('thresholds', '0.3,0.4,0.5,0.6,0.7').split(',').map(Number)
   const merge = arg('merge', null)
-  const extractor = new sherpa.SpeakerEmbeddingExtractor({ model: join(models, 'wespeaker-en-voxceleb-resnet34-LM.onnx'), numThreads: 2 })
-  const all = require('./calls.cjs').SCENARIOS
-  const names = arg('scenarios', Object.keys(all).join(',')).split(',')
+  const embedding = join(models, arg('embedding', 'wespeaker-en-voxceleb-resnet34-LM.onnx'))
+  const extractor = new sherpa.SpeakerEmbeddingExtractor({ model: embedding, numThreads: 2 })
+  const dataset = arg('dataset', 'calls')
+  const sessions = require('./sessions.cjs')
+  const names =
+    dataset === 'sessions'
+      ? sessions.sessionIds(arg('scenarios', sessions.DEFAULT_SESSIONS.join(',')).split(','), Number(arg('seeds', '1')))
+      : arg('scenarios', Object.keys(require('./calls.cjs').SCENARIOS).join(',')).split(',')
   const totals = new Map(thresholds.map((t) => [t, { error: 0, time: 0, right: 0 }]))
   process.stdout.write(`${'scenario'.padEnd(22)}${thresholds.map((t) => `   t=${t.toFixed(2)}     `).join('')}\n`)
   for (const name of names) {
-    const dir = join(dataDir, 'calls', name)
+    const dir = dataset === 'sessions' ? sessions.sessionDir(dataDir, name) : join(dataDir, dataset, name)
     if (!existsSync(join(dir, 'reference.json'))) {
-      process.stdout.write(`${name}: not generated; run pnpm eval:calls --scenarios ${name}\n`)
+      process.stdout.write(`${name}: not generated; run pnpm eval:${dataset} --${dataset === 'calls' ? 'scenarios' : 'sessions'} ${name}\n`)
       continue
     }
     const reference = JSON.parse(readFileSync(join(dir, 'reference.json'), 'utf8'))
@@ -124,7 +133,7 @@ function main() {
     for (const threshold of thresholds) {
       const diarizer = new sherpa.OfflineSpeakerDiarization({
         segmentation: { pyannote: { model: join(models, 'pyannote-segmentation-3.0.onnx') }, numThreads: 2 },
-        embedding: { model: join(models, 'wespeaker-en-voxceleb-resnet34-LM.onnx'), numThreads: 2 },
+        embedding: { model: embedding, numThreads: 2 },
         clustering: { numClusters: -1, threshold },
         minDurationOn: 0.3,
         minDurationOff: 0.5

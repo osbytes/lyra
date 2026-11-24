@@ -17,10 +17,10 @@ import {
 } from '../../shared/sessionDoc'
 import { log } from '../log'
 import { changeSession, readManifestOf, sessionRawDir, type LiveTraceEvent } from '../sessionStore'
-import { addSample, cosine, scoreVoices, selfPerson } from '../voices'
+import { cosine, scoreVoices, selfPerson } from '../voices'
 import type { SpeakerModels } from './protocol'
 import { embedVoice, ensureSpeakerModels } from './speakers'
-import { MATCH_THRESHOLD, REINFORCE_THRESHOLD, SELF_MIC_SHARE } from './thresholds'
+import { MATCH_THRESHOLD, SELF_MIC_SHARE } from './thresholds'
 import { energy, mixTracks, SAMPLE_RATE } from './wav'
 
 /**
@@ -41,14 +41,18 @@ const KEEP_SECONDS = 90
  */
 const SHORT_PHRASE_SECONDS = 0.8
 const SAME_TURN_GAP = 2
-/** Cosine similarity needed to join a voice heard earlier in the session. */
-const JOIN_THRESHOLD = 0.5
+/**
+ * Cosine similarity needed to join a voice heard earlier in the session. With TitaNet a 2–3 s
+ * phrase scores 0.56–0.59 or more against its speaker's running voiceprint nine times in ten, and
+ * another person's phrase under 0.44 nine times in ten (real-voice sessions, sessions.cjs).
+ */
+const JOIN_THRESHOLD = 0.45
 /**
  * Two voices whose running voiceprints grow this alike are one person: a short clip scored
- * under JOIN_THRESHOLD and started a phantom speaker. Two people settle around 0.5–0.6 with this
- * model; one person split in two lands around 0.75.
+ * under JOIN_THRESHOLD and started a phantom speaker. Two people's voiceprints stay under 0.35
+ * with TitaNet; one person split in two lands well above this.
  */
-const SAME_VOICE_THRESHOLD = 0.68
+const SAME_VOICE_THRESHOLD = 0.6
 /** A voice with less speech than this by the end of a take folds into the closest one. */
 const MIN_SPEAKER_SECONDS = 2
 /** Lines shorter than this give too little audio for a meaningful line confidence. */
@@ -575,13 +579,6 @@ export class LiveSession {
         renumberSpeakers(doc, ORIGIN_TRANSCRIBER)
       }, ORIGIN_TRANSCRIBER)
     })
-    // Confident matches teach the voiceprint, so it keeps up with mics and rooms.
-    for (const [id, speaker] of renames) {
-      const cluster = this.clusters.find((entry) => entry.id === id)
-      if (cluster && speaker.personId && (speaker.confidence ?? 0) >= REINFORCE_THRESHOLD) {
-        await addSample(speaker.personId, cluster.centroid)
-      }
-    }
     if (into.size) log('live', 'folded brief voices', Object.fromEntries(into))
   }
 }

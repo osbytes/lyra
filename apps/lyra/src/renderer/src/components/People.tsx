@@ -132,7 +132,7 @@ function Enroll({ micDeviceId, onDone }: EnrollProps) {
           <p className="settings-notice">
             {phase === 'recording'
               ? `Recording… ${Math.ceil(Math.max(0, ENROLL_SECONDS - elapsed))} s left`
-              : 'Saving voice (the first time downloads a ~32 MB model)…'}
+              : 'Saving voice (the first time downloads a ~46 MB model)…'}
           </p>
         </>
       )}

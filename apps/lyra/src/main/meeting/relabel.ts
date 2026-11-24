@@ -18,22 +18,23 @@ import { deleteSessionAudio, recordingPageId, trackPath } from '../recorder'
 import { editSession, readSession, sessionRawDir, updateManifest, type RawPass } from '../sessionStore'
 import { getSettings } from '../settings'
 import { notifyLabeled } from './events'
-import { mergeTinySpeakers, nameSpeakers, nextPassId } from './pipeline'
+import { mergeSamePerson, mergeTinySpeakers, nameSpeakers, nextPassId } from './pipeline'
 import type { DiarizedSegment } from './protocol'
 import { diarize, ensureSpeakerModels } from './speakers'
+import { DIARIZE_THRESHOLD } from './thresholds'
 
 /**
  * Speaker labels settled once a recording stops. Live identification (`live.ts`) has to decide
  * who said each phrase from a second or two of audio, against voiceprints that are still forming,
  * and in a long session those voiceprints drift together until everyone is one speaker. With the
- * whole recording in hand, offline diarization (pyannote segmentation + clustering over every
- * stretch at once) separates them far better. Each live word then goes to the speaker diarized
- * at its time, as WhisperX does: the text the user watched appear stays word for word, only who
- * said it and where lines break change. Lines the user edited keep their text.
+ * whole recording in hand, offline diarization (pyannote segmentation, then TitaNet voiceprints of
+ * 3 s windows clustered over every stretch at once; `clustering.ts`) separates them far better,
+ * and a saved voice that matches two speakers strongly merges them (`mergeSamePerson`). Each live
+ * word then goes to the speaker diarized at its time, as WhisperX does: the text the user watched
+ * appear stays word for word, only who said it and where lines break change. Lines the user
+ * edited keep their text.
  */
 
-/** Must match the offline pipeline's clustering threshold (`pipeline.ts`). */
-const CLUSTER_THRESHOLD = 0.5
 /** A word with no diarized speech under it takes the nearest speaker within this many seconds. */
 const NEAREST_SECONDS = 1
 /** Same as live lines: one line per turn, up to MAX_LINE_SECONDS. */
@@ -196,7 +197,9 @@ async function relabel(pageId: string): Promise<void> {
 
   const models = await ensureSpeakerModels()
   broadcast({ pageId, state: 'diarizing', progress: 0 })
-  const result = mergeTinySpeakers(await diarize({ micPath, systemPath, models, threshold: CLUSTER_THRESHOLD }))
+  const result = await mergeSamePerson(
+    mergeTinySpeakers(await diarize({ micPath, systemPath, models, threshold: DIARIZE_THRESHOLD }))
+  )
   const speakers = assignWords(words, result.segments)
   const lines = buildLines(words, speakers)
   const voices = new Set(speakers)
