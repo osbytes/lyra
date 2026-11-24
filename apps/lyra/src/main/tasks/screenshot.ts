@@ -83,7 +83,7 @@ async function seedScreenshotPages(withMeeting: boolean): Promise<void> {
 
 /**
  * Review shots of the locked transcript: the selection toolbar, a correction, a removal and a
- * highlight, the right-click menu, the Raw view, and Ctrl+Z taking the edits back one by one.
+ * highlight, the right-click menu, and Ctrl+Z taking the edits back one by one.
  */
 async function reviewTranscriptEditing(
   win: BrowserWindow,
@@ -151,10 +151,6 @@ async function reviewTranscriptEditing(
   await settle()
   await save(dir, `transcript-menu-${theme}.png`)
   await run(`document.querySelector('.picker-layer')?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`)
-  await run(`document.querySelector('.transcript-mode button:last-child').click()`)
-  await settle()
-  await save(dir, `transcript-raw-${theme}.png`)
-  await run(`document.querySelector('.transcript-mode button:first-child').click()`)
   await settle()
   const steps = [String(await lineText('s0')), String(await lineText('s1'))]
   for (let i = 0; i < 3; i++) {
@@ -259,6 +255,17 @@ export async function captureScreenshot(win: BrowserWindow, reviewDir: string | 
         await win.webContents.executeJavaScript(`document.querySelector('.transcript')?.scrollIntoView()`)
         await settle()
         await save(reviewDir, `meeting-${theme}.png`)
+        // The transcript bar's layouts: collapsed to the bar, then the transcript alone.
+        const pane = async (label: string): Promise<void> => {
+          await click(`.transcript-bar-tools button[aria-label="${label}"]`)
+          await settle()
+        }
+        await pane('Collapse transcript')
+        await save(reviewDir, `transcript-collapsed-${theme}.png`)
+        await pane('Show transcript')
+        await pane('Expand transcript')
+        await save(reviewDir, `transcript-expanded-${theme}.png`)
+        await pane('Show notes')
         await reviewTranscriptEditing(win, theme, reviewDir, save, settle)
         await click('.speaker-chip.likely')
         await settle()
@@ -313,6 +320,18 @@ export async function captureScreenshot(win: BrowserWindow, reviewDir: string | 
       await pressShortcut('z')
       await settle()
       await save(reviewDir, 'undid-delete-light.png')
+      // A title too long for the band wraps beside the toolbar instead of running under it.
+      await win.webContents.executeJavaScript(`(() => {
+        const field = document.querySelector('.title-input')
+        if (!field) return
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(
+          field,
+          'Quarterly planning with design, research and support: roadmap, hiring and launch dates'
+        )
+        field.dispatchEvent(new Event('input', { bubbles: true }))
+      })()`)
+      await settle()
+      await save(reviewDir, 'title-wrap-light.png')
     }
     app.exit(0)
   } catch (error) {

@@ -679,7 +679,8 @@ async function writeExport(entry: Entry): Promise<void> {
     // The words people said, not the export's transcript heading.
     preview: previewOf(
       snapshot.notes.trim() ||
-        snapshot.summary.trim() ||
+        // The summary's own "Summary" heading isn't something anyone said.
+        snapshot.summary.trim().replace(/^Summary\s*\n/, '') ||
         snapshot.transcript.map((line) => line.text).join(' ')
     ),
     tags: snapshot.tags,

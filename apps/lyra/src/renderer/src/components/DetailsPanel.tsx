@@ -64,9 +64,13 @@ export function DetailsPanel({
   if (words) facts.push(['Reading time', `${String(readingMinutes(words))} min`])
 
   return (
-    <ScrollArea as="aside" className="details" aria-label="Details">
+    <aside className="details" aria-label="Details">
+      {/* In the window's top band, level with the brand and the page's toolbar. */}
+      <header className="details-header drag">
+        <h2>Details</h2>
+      </header>
+      <ScrollArea className="details-body">
       <section className="details-section">
-        <h2 className="section-label">Details</h2>
         <dl className="details-facts">
           {facts.map(([label, value]) => (
             <div key={label}>
@@ -200,6 +204,7 @@ export function DetailsPanel({
           ) : null}
         </div>
       </section>
-    </ScrollArea>
+      </ScrollArea>
+    </aside>
   )
 }

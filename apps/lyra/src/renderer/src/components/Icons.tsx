@@ -104,6 +104,12 @@ export const ChevronDownIcon = () => (
   </Icon>
 )
 
+export const ChevronUpIcon = () => (
+  <Icon width="14" height="14">
+    <path d="m6 15 6-6 6 6" />
+  </Icon>
+)
+
 export const SpeakerIcon = () => (
   <Icon width="15" height="15">
     <path d="M4 9v6h4l5 4V5L8 9z" />

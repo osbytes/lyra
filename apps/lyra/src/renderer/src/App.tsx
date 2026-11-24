@@ -3,13 +3,15 @@ import type { PageSummary, UpdateStatus, WhisperStatus } from '../../shared/type
 import type { TranscriptSegment } from '../../shared/sessionDoc'
 import { DetailsPanel } from './components/DetailsPanel'
 import { DictationDock } from './components/DictationDock'
-import { Editor } from './components/Editor'
+import { Summary } from './components/Summary'
 import { NotesEditor, type NotesHandle } from './components/NotesEditor'
 import { TagRow } from './components/TagRow'
 import { ScrollArea } from './components/Controls'
 import { Transcript } from './components/Transcript'
 import {
   CheckIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
   CopyIcon,
   FolderIcon,
   GearIcon,
@@ -50,6 +52,18 @@ const TOAST_MS = 6000
 
 /** Smallest share of the column either pane can be dragged down to. */
 const MIN_PANE = 0.15
+/** The notes pane's share of the column when the split is reset. */
+const DEFAULT_SPLIT = 0.45
+
+/**
+ * How the session column shares its height: both panes, the notes alone (the transcript
+ * collapsed to its bar), or the transcript alone (its bar at the top).
+ */
+type PaneMode = 'split' | 'notes' | 'transcript'
+
+/** The transcript bar's up/down buttons step through the modes in screen order. */
+const PANE_UP: Record<PaneMode, PaneMode | null> = { notes: 'split', split: 'transcript', transcript: null }
+const PANE_DOWN: Record<PaneMode, PaneMode | null> = { transcript: 'split', split: 'notes', notes: null }
 
 /**
  * The title, meeting notes and the transcript: where undo/redo means "undo my edit to this
@@ -63,6 +77,10 @@ function isPageField(target: EventTarget | null): boolean {
     !!target.closest('.transcript') &&
     !(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)
   )
+}
+
+function isInButton(target: EventTarget): boolean {
+  return target instanceof Element && target.closest('button') !== null
 }
 
 /** A field with its own text history (search, rename, settings): undo stays native there. */
@@ -144,13 +162,13 @@ export default function App(): React.JSX.Element {
   const closeFind = useCallback(() => setFind(null), [])
   const settingsRef = useRef(settings)
   settingsRef.current = settings
-  const titleInput = useRef<HTMLInputElement>(null)
   /** The transcript pane, which follows new words while recording. */
   const scroller = useRef<HTMLElement>(null)
   const notes = useRef<NotesHandle>(null)
   const column = useRef<HTMLDivElement>(null)
   /** The notes pane's share of the column, above the transcript. */
-  const [split, setSplit] = useState(0.45)
+  const [split, setSplit] = useState(DEFAULT_SPLIT)
+  const [paneMode, setPaneMode] = useState<PaneMode>('split')
 
   useEffect(() => {
     const stopStatus = window.api.onStatus(setStatus)
@@ -185,6 +203,8 @@ export default function App(): React.JSX.Element {
   /** A new session, named for this moment, recording straight away. */
   const startSession = useCallback(async () => {
     await stop()
+    // A new recording shows its transcript arriving, whatever the last session's layout was.
+    setPaneMode('split')
     const page = await create({ startedAt: new Date().toISOString() })
     await record(page.id)
   }, [stop, create, record])
@@ -425,14 +445,22 @@ export default function App(): React.JSX.Element {
     notes.current?.append(quoteOf(text, who, line.start))
   }
 
-  /** Dragging the divider between the notes and the transcript. */
+  const resetSplit = (): void => {
+    setPaneMode('split')
+    setSplit(DEFAULT_SPLIT)
+  }
+
+  /** Dragging the transcript's bar, which is the divider between the notes and the transcript. */
   const resize = (event: React.PointerEvent<HTMLDivElement>): void => {
+    if (event.button !== 0 || isInButton(event.target)) return
     const box = column.current?.getBoundingClientRect()
     if (!box) return
     const handle = event.currentTarget
     handle.setPointerCapture(event.pointerId)
+    // A drag from a collapsed or expanded layout opens the split where the pointer is.
     const move = (next: PointerEvent): void => {
       const share = (next.clientY - box.top) / box.height
+      setPaneMode('split')
       setSplit(Math.min(1 - MIN_PANE, Math.max(MIN_PANE, share)))
     }
     const up = (): void => {
@@ -461,10 +489,28 @@ export default function App(): React.JSX.Element {
         onTagFilter={setTagFilter}
       />
 
-      <main className={panel ? 'workspace with-panel' : 'workspace'}>
+      <main className={current && panel ? 'workspace with-panel' : 'workspace'}>
+        {/* The panel runs the full height beside this column, so its header shares the top band. */}
+        <div className="workspace-main">
         <header className="topbar drag">
           {current ? (
             <>
+              {/* In the band beside the actions; a long title wraps onto more lines. */}
+              <textarea
+                className="title-input no-drag"
+                rows={1}
+                value={current.title}
+                onChange={(event) => edit({ title: event.target.value.replace(/\s*\n\s*/g, ' ') })}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter') return
+                  event.preventDefault()
+                  notes.current?.focus()
+                }}
+                placeholder="Untitled"
+                aria-label="Session title"
+                spellCheck={false}
+              />
+              <div className="topbar-actions">
               <span className={`save-state${saveState === 'saving' ? ' is-saving' : ''}`}>
                 {saveState === 'saving' ? 'Saving…' : 'Saved'}
               </span>
@@ -488,6 +534,7 @@ export default function App(): React.JSX.Element {
               >
                 <PanelIcon />
               </button>
+              </div>
             </>
           ) : null}
         </header>
@@ -499,22 +546,23 @@ export default function App(): React.JSX.Element {
         ) : null}
 
         {current ? (
-          <div className="workspace-body">
-          <div className="workspace-column">
+          <div
+            className={
+              hasTranscript && paneMode === 'notes' ? 'workspace-column transcript-collapsed' : 'workspace-column'
+            }
+          >
             <div className="panes" ref={column}>
             <ScrollArea
-              className={hasTranscript ? 'scroller notes-pane' : 'scroller notes-pane is-alone'}
-              style={hasTranscript ? { flexBasis: `${String(split * 100)}%` } : undefined}
+              className={
+                !hasTranscript || paneMode === 'notes'
+                  ? 'scroller notes-pane is-alone'
+                  : paneMode === 'transcript'
+                    ? 'scroller notes-pane is-collapsed'
+                    : 'scroller notes-pane'
+              }
+              style={hasTranscript && paneMode === 'split' ? { flexBasis: `${String(split * 100)}%` } : undefined}
             >
               <article className="page">
-                <input
-                  ref={titleInput}
-                  className="title-input"
-                  value={current.title}
-                  onChange={(event) => edit({ title: event.target.value })}
-                  placeholder="Untitled"
-                  aria-label="Session title"
-                />
                 {panel ? null : (
                   <>
                     <p className="page-stats">
@@ -528,16 +576,7 @@ export default function App(): React.JSX.Element {
                   </>
                 )}
                 {current.summary.trim() ? (
-                  <section className="summary" aria-label="Generated summary">
-                    <h2 className="section-label">Generated summary</h2>
-                    <Editor
-                      value={current.summary}
-                      ghost=""
-                      listening={false}
-                      label="Generated summary"
-                      onChange={editSummary}
-                    />
-                  </section>
+                  <Summary key={`summary-${current.id}`} value={current.summary} onChange={editSummary} />
                 ) : null}
                 <NotesEditor
                   key={current.id}
@@ -555,24 +594,67 @@ export default function App(): React.JSX.Element {
             {hasTranscript ? (
               <>
                 <div
-                  className="pane-divider"
-                  role="separator"
-                  aria-orientation="horizontal"
-                  aria-label="Resize notes and transcript"
-                  aria-valuenow={Math.round(split * 100)}
-                  aria-valuemin={Math.round(MIN_PANE * 100)}
-                  aria-valuemax={Math.round((1 - MIN_PANE) * 100)}
-                  tabIndex={0}
+                  className="transcript-bar"
                   onPointerDown={resize}
-                  onDoubleClick={() => setSplit(0.45)}
-                  onKeyDown={(event) => {
-                    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
-                    event.preventDefault()
-                    const step = event.key === 'ArrowUp' ? -0.05 : 0.05
-                    setSplit((value) => Math.min(1 - MIN_PANE, Math.max(MIN_PANE, value + step)))
+                  onDoubleClick={(event) => {
+                    if (!isInButton(event.target)) resetSplit()
                   }}
-                />
-                <ScrollArea className="scroller transcript-pane" ref={scroller}>
+                >
+                  <div
+                    className="transcript-grip"
+                    role="separator"
+                    aria-orientation="horizontal"
+                    aria-label="Resize notes and transcript"
+                    aria-valuenow={Math.round((paneMode === 'split' ? split : paneMode === 'notes' ? 1 : 0) * 100)}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    tabIndex={0}
+                    {...tip('Drag to resize · double-click to reset')}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+                      event.preventDefault()
+                      const step = event.key === 'ArrowUp' ? -0.05 : 0.05
+                      setPaneMode('split')
+                      setSplit((value) => Math.min(1 - MIN_PANE, Math.max(MIN_PANE, value + step)))
+                    }}
+                  />
+                  <h2 className="transcript-bar-title">Transcript</h2>
+                  {recordingHere ? (
+                    <span className="transcript-live">Live</span>
+                  ) : (
+                    <span className="transcript-bar-count">
+                      {current.transcript.length} {current.transcript.length === 1 ? 'line' : 'lines'}
+                    </span>
+                  )}
+                  <span className="transcript-bar-tools">
+                    {PANE_UP[paneMode] ? (
+                      <button
+                        type="button"
+                        className="icon-btn"
+                        aria-label={paneMode === 'notes' ? 'Show transcript' : 'Expand transcript'}
+                        {...tip(paneMode === 'notes' ? 'Show transcript' : 'Expand transcript')}
+                        onClick={() => setPaneMode((mode) => PANE_UP[mode] ?? mode)}
+                      >
+                        <ChevronUpIcon />
+                      </button>
+                    ) : null}
+                    {PANE_DOWN[paneMode] ? (
+                      <button
+                        type="button"
+                        className="icon-btn"
+                        aria-label={paneMode === 'transcript' ? 'Show notes' : 'Collapse transcript'}
+                        {...tip(paneMode === 'transcript' ? 'Show notes' : 'Collapse transcript')}
+                        onClick={() => setPaneMode((mode) => PANE_DOWN[mode] ?? mode)}
+                      >
+                        <ChevronDownIcon />
+                      </button>
+                    ) : null}
+                  </span>
+                </div>
+                <ScrollArea
+                  className={paneMode === 'notes' ? 'scroller transcript-pane is-collapsed' : 'scroller transcript-pane'}
+                  ref={scroller}
+                >
                   <div className="page transcript-page">
                     <Transcript
                       pageId={current.id}
@@ -630,22 +712,6 @@ export default function App(): React.JSX.Element {
               {toastElement}
             </DictationDock>
           </div>
-          {panel ? (
-            <DetailsPanel
-              page={current}
-              summary={summary}
-              words={words}
-              knownTags={knownTags}
-              notesEngine={settings?.notesEngine ?? 'off'}
-              onAddTag={tag}
-              onRemoveTag={untag}
-              onSpeaker={(speaker, target) => {
-                setPickerRequest({ speaker, anchor: target.getBoundingClientRect() })
-              }}
-              onCopy={copy}
-            />
-          ) : null}
-          </div>
         ) : (
           <div className="empty">
             <div className="empty-inner">
@@ -672,6 +738,22 @@ export default function App(): React.JSX.Element {
             {toastElement ? <div className="dock-area">{toastElement}</div> : null}
           </div>
         )}
+        </div>
+        {current && panel ? (
+          <DetailsPanel
+            page={current}
+            summary={summary}
+            words={words}
+            knownTags={knownTags}
+            notesEngine={settings?.notesEngine ?? 'off'}
+            onAddTag={tag}
+            onRemoveTag={untag}
+            onSpeaker={(speaker, target) => {
+              setPickerRequest({ speaker, anchor: target.getBoundingClientRect() })
+            }}
+            onCopy={copy}
+          />
+        ) : null}
       </main>
 
       {showSearch ? (

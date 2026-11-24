@@ -697,10 +697,8 @@ export function Transcript({
   )
   const pending = present.filter((speaker) => stateOf(speaker) !== 'sure')
   const unsure = transcript.filter((line) => tier(line.confidence) === 1)
-  const editedLines = transcript.filter((line) => line.edits.length > 0).length
 
   const linesRef = useRef<HTMLDivElement>(null)
-  const [raw, setRaw] = useState(false)
   const [selection, setSelection] = useState<LineSelection | null>(null)
   const [menu, setMenu] = useState<MenuRequest | null>(null)
   const [correcting, setCorrecting] = useState<LineSelection | null>(null)
@@ -710,16 +708,12 @@ export function Transcript({
 
   // The toolbar follows the selection inside the transcript's lines.
   useEffect(() => {
-    if (raw) {
-      setSelection(null)
-      return
-    }
     const onChange = (): void => {
       setSelection(readSelection(linesRef.current, transcriptRef.current))
     }
     document.addEventListener('selectionchange', onChange)
     return () => document.removeEventListener('selectionchange', onChange)
-  }, [raw])
+  }, [])
 
   /** After an edit: drop the selection and keep focus here, so Ctrl+Z undoes it. */
   const settle = useCallback(() => {
@@ -795,25 +789,10 @@ export function Transcript({
   const splitSpeaker = split ? byId.get(split.speaker) : undefined
 
   return (
-    <section className={raw ? 'transcript is-raw' : 'transcript'} aria-label="Transcript">
-      <div className="transcript-head">
-        <h2 className="section-label">Transcript</h2>
-        <span className="transcript-hint">
-          {raw
-            ? 'Exactly what was heard. Your edits are kept; switch back to see them.'
-            : 'Select words or right-click a line to correct, remove or highlight.'}
-        </span>
-        <div className="segmented transcript-mode" role="radiogroup" aria-label="Show">
-          <button type="button" role="radio" aria-checked={!raw} onClick={() => setRaw(false)}>
-            Edited{editedLines ? ` · ${String(editedLines)}` : ''}
-          </button>
-          <button type="button" role="radio" aria-checked={raw} onClick={() => setRaw(true)}>
-            Raw
-          </button>
-        </div>
-      </div>
+    <section className="transcript" aria-label="Transcript">
       <div className={showSpeakersBar ? 'speakers-bar' : 'speakers-bar status-only'}>
-        <span className="speakers-label">{labeled ? 'Speakers' : 'Live'}</span>
+        {/* The avatar chips say what they are; only the unlabeled live state needs a word. */}
+        {labeled ? null : <span className="speakers-label">Live</span>}
         {present.map((speaker) => (
           <button
             key={speaker.id}
@@ -966,7 +945,7 @@ export function Transcript({
                 </span>
               </div>
               <div className="line-body">
-                {rewriting === line.id && !raw ? (
+                {rewriting === line.id ? (
                   <LineRewrite
                     line={line}
                     onSave={(text) => onEditLine(line.id, text)}
@@ -978,7 +957,6 @@ export function Transcript({
                 ) : (
                   <LineText
                     line={line}
-                    raw={raw}
                     label={`Line at ${clock(line.start)}, ${speaker?.name ?? 'speaker'}`}
                   />
                 )}
@@ -1005,7 +983,6 @@ export function Transcript({
         <LineMenu
           line={menuLine}
           request={menu}
-          raw={raw}
           actions={actions}
           onCorrect={(span, rect) => setCorrecting({ line: menuLine.id, span, rect })}
           onClose={() => setMenu(null)}

@@ -25,19 +25,8 @@ import { tip } from './Tooltip'
 // --- Drawing a line -------------------------------------------------------------------------
 
 /** One line's words: raw text, removed words struck through, corrections marked. */
-export function LineText({
-  line,
-  raw,
-  label
-}: {
-  line: TranscriptSegment
-  /** Show only what was heard, ignoring the overlay. */
-  raw: boolean
-  label: string
-}) {
-  const pieces = raw
-    ? [{ kind: 'raw' as const, start: 0, end: line.original.length, text: line.original, highlight: false }]
-    : overlayPieces(line.original, line.edits)
+export function LineText({ line, label }: { line: TranscriptSegment; label: string }) {
+  const pieces = overlayPieces(line.original, line.edits)
   return (
     <p className="line-text" data-line={line.id} aria-label={label}>
       {pieces.map((piece) => {
@@ -266,21 +255,19 @@ export type MenuRequest = {
 export function LineMenu({
   line,
   request,
-  raw,
   actions,
   onCorrect,
   onClose
 }: {
   line: TranscriptSegment
   request: MenuRequest
-  raw: boolean
   actions: Actions
   onCorrect: (span: Span, rect: DOMRect) => void
   onClose: () => void
 }) {
   const { span, edit } = request
   const items: MenuItem[] = []
-  if (!raw && edit) {
+  if (edit) {
     const heard = line.original.slice(edit.start, edit.end)
     items.push({
       label: heard ? <>Restore “{short(heard)}”</> : 'Remove added words',
@@ -291,7 +278,7 @@ export function LineMenu({
         )
     })
   }
-  if (span && !raw) {
+  if (span) {
     const text = visibleText(line.original, line.edits, expandToEdits(line.edits, span))
     const lit = isHighlighted(line.edits, span)
     items.push(
@@ -305,27 +292,24 @@ export function LineMenu({
       items.push({ label: 'Restore what was heard', run: () => actions.setEdits(line.id, restoreRange(line.edits, span)) })
     }
     items.push('separator')
-  } else if (span) {
-    const text = line.original.slice(span.start, span.end)
-    items.push({ label: 'Copy selection', run: () => actions.copy(text) }, 'separator')
   }
-  if (!raw) items.push({ label: 'Edit line…', run: () => actions.rewrite(line.id) })
+  items.push({ label: 'Edit line…', run: () => actions.rewrite(line.id) })
   const { speaker } = actions
   if (speaker && line.cluster) {
     items.push({ label: 'Who said this…', run: () => speaker(line, new DOMRect(request.x, request.y)) })
   }
   items.push(
     { label: 'Listen from here', run: () => actions.listen(line) },
-    { label: 'Add line to notes', run: () => actions.quote(line, raw ? line.original : line.text) },
-    { label: 'Copy line', run: () => actions.copy(raw ? line.original : line.text) }
+    { label: 'Add line to notes', run: () => actions.quote(line, line.text) },
+    { label: 'Copy line', run: () => actions.copy(line.text) }
   )
-  if (!raw && line.edited) {
+  if (line.edited) {
     items.push({
       label: 'Restore original line',
       run: () => actions.setEdits(line.id, line.edits.filter((e) => e.kind === 'highlight'))
     })
   }
-  if (!raw && line.edits.some((e) => e.kind === 'highlight')) {
+  if (line.edits.some((e) => e.kind === 'highlight')) {
     items.push({
       label: 'Clear highlights',
       run: () => actions.setEdits(line.id, line.edits.filter((e) => e.kind !== 'highlight'))
