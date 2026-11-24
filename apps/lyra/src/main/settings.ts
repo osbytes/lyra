@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { mkdir, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { parseSettings, type Settings } from '../shared/settings'
+import { PANEL_WIDTHS, parseSettings, type Settings } from '../shared/settings'
 import { config } from './config'
 import { log } from './log'
 
@@ -25,7 +25,10 @@ export function defaultSettings(): Settings {
     meetingNoticeSeen: false,
     // Off until asked for: it downloads a model and works the CPU while it indexes.
     semanticSearch: false,
-    detailsPanel: false
+    detailsPanel: false,
+    sidebar: true,
+    sidebarWidth: PANEL_WIDTHS.sidebar.initial,
+    detailsWidth: PANEL_WIDTHS.details.initial
   }
 }
 

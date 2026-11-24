@@ -150,8 +150,11 @@ async function reviewTranscriptEditing(
   win.webContents.sendInputEvent({ type: 'mouseUp', x: box[0], y: box[1], button: 'right', clickCount: 1 })
   await settle()
   await save(dir, `transcript-menu-${theme}.png`)
-  await run(`document.querySelector('.picker-layer')?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`)
-  await settle()
+  for (let open = 0; open < 3 && (await run(`!!document.querySelector('.picker-layer, .menu-layer')`)); open++) {
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: 600, y: 20, button: 'left', clickCount: 1 })
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: 600, y: 20, button: 'left', clickCount: 1 })
+    await settle()
+  }
   const steps = [String(await lineText('s0')), String(await lineText('s1'))]
   for (let i = 0; i < 3; i++) {
     await undoKey()
@@ -159,6 +162,82 @@ async function reviewTranscriptEditing(
     steps.push(`${String(await lineText('s0'))} / ${String(await lineText('s1'))}`)
   }
   process.stdout.write(`transcript undo (${theme}):\n  ${steps.join('\n  ')}\n`)
+}
+
+/**
+ * Review shots of dragging the layout's edges with the details panel open: both side panels
+ * widened to their maximum, then each dragged past its breakpoint to close, and the transcript
+ * bar dragged to the top to close the notes. Puts the layout back afterwards.
+ */
+async function reviewPanelResizing(
+  win: BrowserWindow,
+  theme: 'light' | 'dark',
+  dir: string,
+  save: (dir: string, name: string) => Promise<void>,
+  settle: () => Promise<void>
+): Promise<void> {
+  const run = (script: string): Promise<unknown> => win.webContents.executeJavaScript(script)
+  const center = async (selector: string): Promise<[number, number]> => {
+    const point = await run(
+      `(() => { const r = document.querySelector(${JSON.stringify(selector)})?.getBoundingClientRect(); return r ? [Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2)] : null })()`
+    )
+    if (!Array.isArray(point) || typeof point[0] !== 'number' || typeof point[1] !== 'number') {
+      throw new Error(`nothing to drag at ${selector}`)
+    }
+    return [point[0], point[1]]
+  }
+  const drag = async (selector: string, to: (from: [number, number]) => [number, number]): Promise<void> => {
+    const from = await center(selector)
+    const [x, y] = to(from)
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: from[0], y: from[1], button: 'left', clickCount: 1 })
+    for (let step = 1; step <= 8; step++) {
+      const at = (a: number, b: number): number => Math.round(a + ((b - a) * step) / 8)
+      win.webContents.sendInputEvent({
+        type: 'mouseMove',
+        x: at(from[0], x),
+        y: at(from[1], y),
+        button: 'left',
+        modifiers: ['leftbuttondown']
+      })
+      await new Promise((resolve) => setTimeout(resolve, 16))
+    }
+    win.webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 })
+    await settle()
+  }
+  const layout = (): Promise<unknown> =>
+    run(`JSON.stringify({
+      sidebar: document.querySelector('.sidebar')?.getBoundingClientRect().width ?? 0,
+      details: document.querySelector('.details')?.getBoundingClientRect().width ?? 0,
+      notes: !!document.querySelector('.notes-pane:not(.is-collapsed)')
+    })`)
+  const steps: string[] = []
+  // The speaker picker and context menu from the shots before are still open over the page.
+  for (let open = 0; open < 3 && (await run(`!!document.querySelector('.picker-layer, .menu-layer')`)); open++) {
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: 600, y: 20, button: 'left', clickCount: 1 })
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: 600, y: 20, button: 'left', clickCount: 1 })
+    await settle()
+  }
+
+  await drag('.panel-resizer.is-left', ([x, y]) => [x + 600, y])
+  await drag('.panel-resizer.is-right', ([x, y]) => [x - 600, y])
+  steps.push(`widened: ${String(await layout())}`)
+  await save(dir, `resize-wide-${theme}.png`)
+  await drag('.panel-resizer.is-left', ([, y]) => [40, y])
+  await drag('.panel-resizer.is-right', ([x, y]) => [x + 400, y])
+  steps.push(`closed: ${String(await layout())}`)
+  await drag('.transcript-bar', ([x]) => [x, 60])
+  steps.push(`bar at top: ${String(await layout())}`)
+  await save(dir, `resize-closed-${theme}.png`)
+  // The closed sidebar's edge waits at the window's edge; dragging it out opens it again.
+  await drag('.panel-resizer.is-left', ([x, y]) => [x + 200, y])
+  steps.push(`sidebar dragged open: ${String(await layout())}`)
+  process.stdout.write(`panel resizing (${theme}):\n  ${steps.join('\n  ')}\n`)
+
+  await run(
+    `window.api.updateSettings({ sidebar: true, sidebarWidth: 256, detailsPanel: true, detailsWidth: 288 })`
+  )
+  await run(`document.querySelector('.transcript-bar-tools button[aria-label="Show notes"]')?.click()`)
+  await settle()
 }
 
 export async function captureScreenshot(win: BrowserWindow, reviewDir: string | null): Promise<void> {
@@ -274,6 +353,7 @@ export async function captureScreenshot(win: BrowserWindow, reviewDir: string | 
         await pressShortcut('.')
         await settle()
         await save(reviewDir, `panel-${theme}.png`)
+        await reviewPanelResizing(win, theme, reviewDir, save, settle)
         await pressShortcut('.')
         await settle()
       }

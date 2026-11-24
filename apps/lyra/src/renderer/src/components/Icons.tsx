@@ -124,6 +124,13 @@ export const PanelIcon = () => (
   </Icon>
 )
 
+export const SidebarIcon = () => (
+  <Icon>
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="M9 4v16" />
+  </Icon>
+)
+
 export const TagIcon = () => (
   <Icon width="14" height="14">
     <path d="M3 12V4h8l10 10-8 8z" />
