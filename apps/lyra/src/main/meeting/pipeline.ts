@@ -48,7 +48,7 @@ import {
 import { transcribePcm } from '../whisper'
 import type { DiarizeResult, DiarizedSegment, SpeakerModels } from './protocol'
 import { notifyLabeled } from './events'
-import { sessionVoiceprints } from './live'
+import { sessionVoiceprints } from './voiceprints'
 import { diarize, embedVoice, ensureSpeakerModels } from './speakers'
 import {
   DIARIZE_THRESHOLD,
@@ -76,7 +76,7 @@ const MIN_LINE_SECONDS = 1.5
 const MAX_LISTEN_SECONDS = 30
 const ORIGIN_PIPELINE = 'pipeline'
 /** Recorded in raw passes; matches the model `whisper.ts` downloads. */
-const WHISPER_MODEL = 'whisper ggml-base.en'
+const WHISPER_MODEL = 'whisper ggml-large-v3-turbo-q5_0'
 
 type Turn = { start: number; end: number; speaker: number }
 type NamedSpeaker = {
@@ -615,7 +615,7 @@ export async function similarLines(pageId: string, moved: readonly string[], fro
 }
 
 /**
- * Speakers are identified live while recording (`live.ts`). `processMeeting` labels a whole
+ * Speakers are settled after each recording (`relabel.ts`). `processMeeting` labels a whole
  * recording at once with offline diarization, for the meeting smoke test and eval.
  */
 export function registerMeetingPipeline(): void {

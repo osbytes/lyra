@@ -1,4 +1,4 @@
-/** Voice-matching thresholds shared by live speaker identification and the offline pipeline. */
+/** Voice-matching thresholds shared by relabeling after a recording and the offline pipeline. */
 
 /** A speaker whose audio is mostly on the mic track is the person at this computer. */
 export const SELF_MIC_SHARE = 0.67

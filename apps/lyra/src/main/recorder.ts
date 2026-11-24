@@ -3,33 +3,28 @@ import { createWriteStream, existsSync, type WriteStream } from 'node:fs'
 import { mkdir, open, readFile, stat, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { finished } from 'node:stream/promises'
-import type { AudioTrack, MeetingRecording, TranscriptWord } from '../shared/types'
+import type { AudioTrack, MeetingRecording, TranscriptProgress } from '../shared/types'
 import { getSettings } from './settings'
 import { log } from './log'
 import { notifyLabeled } from './meeting/events'
-import { LiveSession, type LiveResult } from './meeting/live'
 import { resolveInNotes } from './pages'
-import {
-  sessionAudioDir,
-  sessionRawDir,
-  updateManifest,
-  type LiveTraceEvent,
-  type RawPass,
-  type TrackInfo
-} from './sessionStore'
+import { sessionAudioDir, sessionRawDir, updateManifest, type RawPass, type TrackInfo } from './sessionStore'
+import { TakeWriter } from './takeWriter'
+import { ChunkedTranscriber, type TranscribedChunk } from './transcriber'
+import { MODEL_LABEL, transcribePcm } from './whisper'
 
 /**
  * Records every session's audio as it is captured: one 16 kHz mono 16-bit WAV per track
  * (mic, system) in `.sessions/<id>/audio/`. Recording again in the same session appends to the
  * same files, so a session has one timeline; tracks are padded with silence to stay aligned.
- * Words the live transcriber commits are kept on that timeline in `raw/live.json`.
+ * The audio is transcribed as it arrives, a chunk at a time (`transcriber.ts`), and the words are
+ * kept on that timeline in `raw/live.json`.
  */
 
 const SAMPLE_RATE = 16000
 const BYTES_PER_SECOND = SAMPLE_RATE * 2
 const HEADER_BYTES = 44
 const TRACKS: readonly AudioTrack[] = ['mic', 'system']
-const LIVE_MODEL = 'whisper base (streaming)'
 
 type TrackFile = { path: string; stream: WriteStream; bytes: number }
 type LiveSegment = RawPass['segments'][number]
@@ -39,13 +34,17 @@ type Recording = {
   offset: number
   tracks: Map<AudioTrack, TrackFile>
   live: LiveSegment[]
-  /** Places the live words: notes for one voice, speaker-labeled lines once there are two. */
-  session: LiveSession
+  transcriber: ChunkedTranscriber
+  writer: TakeWriter
+  /** Chunks waiting for Whisper, as the window last heard. */
+  queued: number
 }
 
 let active: Recording | null = null
 /** Off in test runs: identifying speakers needs the downloaded models. */
 let identifySpeakers = true
+/** Off in test runs too, which have no Whisper model; the audio is still recorded. */
+let transcribeAudio = true
 const listeners = new Set<(recording: MeetingRecording) => void>()
 
 function wavHeader(dataBytes: number): Buffer {
@@ -113,9 +112,31 @@ async function start(pageId: string, withSystem: boolean): Promise<number> {
   const tracks = new Map<AudioTrack, TrackFile>([['mic', await openTrack(pageId, 'mic', 0)]])
   if (withSystem) tracks.set('system', await openTrack(pageId, 'system', micBytes))
   const offset = micBytes / BYTES_PER_SECOND
-  const session = new LiveSession(pageId, tracks.has('system'), identifySpeakers)
-  await session.begin()
-  active = { pageId, offset, tracks, live: [], session }
+  const writer = new TakeWriter(pageId, tracks.has('system'))
+  const context = await writer.begin()
+  const live: LiveSegment[] = []
+  const recording: Recording = {
+    pageId,
+    offset,
+    tracks,
+    live,
+    writer,
+    queued: 0,
+    transcriber: new ChunkedTranscriber(
+      [...tracks.keys()],
+      micBytes / 2,
+      transcribeAudio ? transcribePcm : () => Promise.resolve([]),
+      (chunk) => {
+        live.push(segmentOf(chunk))
+        writer.write(chunk)
+      },
+      (progress) => {
+        reportProgress(recording, progress)
+      },
+      context
+    )
+  }
+  active = recording
   log('recorder', 'started', { pageId, tracks: [...tracks.keys()], offset: active.offset })
   return active.offset
 }
@@ -128,68 +149,35 @@ function append(track: AudioTrack, payload: unknown): void {
     ? Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength)
     : Buffer.from(payload)
   if (bytes.byteLength % 2 !== 0) return
-  const recording = active
-  if (recording) {
-    const samples = new Int16Array(bytes.byteLength / 2)
-    for (let i = 0; i < samples.length; i++) samples[i] = bytes.readInt16LE(i * 2)
-    recording.session.audio(track, file.bytes / BYTES_PER_SECOND, samples)
-  }
+  active?.transcriber.audio(track, toFloat(bytes))
   file.stream.write(bytes)
   file.bytes += bytes.byteLength
 }
 
-function isWord(value: unknown): value is TranscriptWord {
-  if (!value || typeof value !== 'object') return false
-  const word = value as Record<string, unknown>
-  return typeof word.text === 'string' && typeof word.start === 'number' && typeof word.end === 'number'
+function toFloat(bytes: Buffer): Float32Array {
+  const out = new Float32Array(bytes.byteLength / 2)
+  for (let i = 0; i < out.length; i++) out[i] = bytes.readInt16LE(i * 2) / 32768
+  return out
 }
 
-/** Committed live words, already on the session timeline (the renderer adds the offset). */
-function appendWords(payload: unknown): void {
-  const recording = active
-  if (!recording || !Array.isArray(payload)) return
-  const words = payload.filter(isWord).map((word) => ({
-    text: word.text,
-    start: +word.start.toFixed(3),
-    end: +word.end.toFixed(3)
-  }))
-  const first = words[0]
-  const last = words.at(-1)
-  if (!first || !last) return
-  recording.session.words(words)
-  recording.live.push({
-    id: `live-${String(Math.round(first.start * 1000))}`,
-    start: first.start,
-    end: last.end,
-    // The transcriber hears both tracks mixed when there is a system track (`capture.ts`).
-    track: recording.tracks.has('system') ? 'mix' : 'mic',
+/** A transcribed chunk as kept in `raw/live.json`, labeled with the track it was heard on. */
+function segmentOf(chunk: TranscribedChunk): LiveSegment {
+  return {
+    id: `live-${chunk.track}-${String(Math.round(chunk.start * 1000))}`,
+    start: chunk.words[0]?.start ?? chunk.start,
+    end: chunk.words.at(-1)?.end ?? chunk.end,
+    track: chunk.track,
     cluster: null,
     confidence: null,
-    words
-  })
+    words: chunk.words
+  }
 }
 
-/** A committed phrase of live text and where on the session timeline it was heard. */
-function appendText(text: unknown, start: unknown, end: unknown): void {
-  if (!active || typeof text !== 'string' || typeof start !== 'number' || typeof end !== 'number') return
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return
-  active.session.text(text, start, end)
-}
-
-/** Which voice each live word segment was, from the spans the live session identified. */
-function labelSegments(segments: LiveSegment[], result: LiveResult): LiveSegment[] {
-  return segments.map((segment) => {
-    let best: LiveResult['spans'][number] | undefined
-    let overlap = 0
-    for (const span of result.spans) {
-      const shared = Math.min(span.end, segment.end) - Math.max(span.start, segment.start)
-      if (shared > overlap) {
-        best = span
-        overlap = shared
-      }
-    }
-    return best ? { ...segment, cluster: best.cluster, confidence: best.confidence } : segment
-  })
+function reportProgress(recording: Recording, progress: Omit<TranscriptProgress, 'pageId'>): void {
+  if (progress.queued === recording.queued) return
+  recording.queued = progress.queued
+  const status: TranscriptProgress = { pageId: recording.pageId, ...progress }
+  for (const win of BrowserWindow.getAllWindows()) win.webContents.send('transcriber:progress', status)
 }
 
 async function finalize(file: TrackFile): Promise<void> {
@@ -203,43 +191,27 @@ async function finalize(file: TrackFile): Promise<void> {
   }
 }
 
-/** Merges this take's live words and voiceprints into `raw/live.json`. */
-async function saveLivePass(
-  pageId: string,
-  segments: LiveSegment[],
-  clusters: RawPass['clusters'],
-  trace: LiveTraceEvent[]
-): Promise<boolean> {
-  if (!segments.length && !clusters.length) return false
+/** Merges this take's words into `raw/live.json`. */
+async function saveLivePass(pageId: string, segments: LiveSegment[]): Promise<boolean> {
+  if (!segments.length) return false
   const dir = sessionRawDir(pageId)
   await mkdir(dir, { recursive: true })
   const path = join(dir, 'live.json')
   let previous: LiveSegment[] = []
-  let previousClusters: RawPass['clusters'] = []
-  let previousTrace: LiveTraceEvent[] = []
   try {
     const parsed: unknown = JSON.parse(await readFile(path, 'utf8'))
     const list = (parsed as { segments?: unknown }).segments
     if (Array.isArray(list)) previous = list as LiveSegment[]
-    const known = (parsed as { clusters?: unknown }).clusters
-    if (Array.isArray(known)) previousClusters = known as RawPass['clusters']
-    const traced = (parsed as { trace?: unknown }).trace
-    if (Array.isArray(traced)) previousTrace = traced as LiveTraceEvent[]
   } catch {
     // First take.
   }
   const pass: RawPass = {
     id: 'live',
     kind: 'live',
-    model: LIVE_MODEL,
+    model: MODEL_LABEL,
     createdAt: new Date().toISOString(),
     segments: [...previous, ...segments],
-    // A voice heard again keeps its newest voiceprint.
-    clusters: [
-      ...previousClusters.filter((cluster) => !clusters.some((entry) => entry.id === cluster.id)),
-      ...clusters
-    ],
-    trace: [...previousTrace, ...trace]
+    clusters: []
   }
   await writeFile(path, JSON.stringify(pass), 'utf8')
   return true
@@ -259,13 +231,12 @@ async function stop(): Promise<MeetingRecording | null> {
   if (mic) await finalize(mic)
   if (system) await finalize(system)
   const seconds = (mic?.bytes ?? 0) / BYTES_PER_SECOND
-  const live = await recording.session.end()
-  const hasLive = await saveLivePass(
-    recording.pageId,
-    labelSegments(recording.live, live),
-    live.clusters,
-    live.trace
-  )
+  // The last chunks are still being transcribed; their words belong to this take.
+  await recording.transcriber.finish().catch((error: unknown) => {
+    log('recorder', 'some audio could not be transcribed', { pageId: recording.pageId, error: String(error) })
+  })
+  const conversation = await recording.writer.end()
+  const hasLive = await saveLivePass(recording.pageId, recording.live)
 
   const tracks: TrackInfo[] = [mic, system].flatMap((file, index) =>
     file ? [{ name: TRACKS[index] ?? 'mic', file: `${TRACKS[index] ?? 'mic'}.wav`, sampleRate: SAMPLE_RATE, seconds: file.bytes / BYTES_PER_SECOND }] : []
@@ -278,7 +249,7 @@ async function stop(): Promise<MeetingRecording | null> {
     audio: 'kept',
     passes:
       hasLive && !manifest.passes.some((pass) => pass.id === 'live')
-        ? [...manifest.passes, { id: 'live', kind: 'live', createdAt: endedAt, model: LIVE_MODEL }]
+        ? [...manifest.passes, { id: 'live', kind: 'live', createdAt: endedAt, model: MODEL_LABEL }]
         : manifest.passes
   }))
 
@@ -291,14 +262,14 @@ async function stop(): Promise<MeetingRecording | null> {
   log('recorder', 'stopped', {
     pageId: result.pageId,
     seconds: +seconds.toFixed(1),
-    conversation: live.conversation,
-    voices: live.clusters.length
+    conversation,
+    ...recording.transcriber.stats()
   })
   // With speakers identified, relabeling (`meeting/relabel.ts`, a listener) still needs the
   // audio and announces the labeled session; without, the live words are final.
   if (!identifySpeakers) {
     if (getSettings().audioRetentionDays === 0) await deleteSessionAudio(recording.pageId)
-    if (live.conversation) notifyLabeled(recording.pageId)
+    if (conversation) notifyLabeled(recording.pageId)
   }
   for (const listener of listeners) listener(result)
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send('recorder:finished', result)
@@ -348,17 +319,16 @@ export function onRecordingFinished(listener: (recording: MeetingRecording) => v
 export const recorderFixture = {
   start: (pageId: string, withSystem: boolean): Promise<number> => {
     identifySpeakers = true
+    transcribeAudio = true
     return start(pageId, withSystem)
   },
-  ready: (): Promise<void> => active?.session.whenReady() ?? Promise.resolve(),
   append,
-  appendWords,
-  appendText,
   stop
 }
 
-export function registerRecorderIpc(options: { identifySpeakers: boolean }): void {
+export function registerRecorderIpc(options: { identifySpeakers: boolean; transcribe: boolean }): void {
   identifySpeakers = options.identifySpeakers
+  transcribeAudio = options.transcribe
   ipcMain.handle('recorder:start', (_event, pageId: unknown, withSystem: unknown) => {
     if (typeof pageId !== 'string') throw new Error('Invalid page id')
     return start(pageId, withSystem === true)
@@ -366,12 +336,6 @@ export function registerRecorderIpc(options: { identifySpeakers: boolean }): voi
   ipcMain.on('recorder:append', (_event, track: unknown, payload: unknown) => {
     const name = TRACKS.find((entry) => entry === track)
     if (name) append(name, payload)
-  })
-  ipcMain.on('recorder:words', (_event, words: unknown) => {
-    appendWords(words)
-  })
-  ipcMain.on('recorder:text', (_event, text: unknown, start: unknown, end: unknown) => {
-    appendText(text, start, end)
   })
   ipcMain.handle('recorder:stop', () => stop())
 }

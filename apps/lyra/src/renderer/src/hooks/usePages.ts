@@ -20,7 +20,6 @@ import {
   snapshotOf,
   transcriberCursor,
   liveModeOf,
-  livePlaced,
   type LiveMode,
   upsertSpeaker,
   type SpeakerEntry,
@@ -44,8 +43,6 @@ export type OpenPage = {
   transcriberAt: number | null
   /** Where the recording's words are going: the notes, or the speaker-labeled transcript. */
   liveMode: LiveMode | null
-  /** Phrases main has placed in the current recording (see `livePlaced`). */
-  livePlaced: number
   transcript: TranscriptSegment[]
   speakers: SpeakerEntry[]
 }
@@ -126,7 +123,6 @@ export function usePages() {
           tags: snapshot.tags,
           transcriberAt: transcriberCursor(doc),
           liveMode: liveModeOf(doc),
-          livePlaced: livePlaced(doc),
           transcript: snapshot.transcript,
           speakers: snapshot.speakers
         })

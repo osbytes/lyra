@@ -102,7 +102,7 @@ export async function openMicrophone(deviceId: string | null = null): Promise<Op
 
 /** Streams 16 kHz mono frames from `stream` to `onFrame` until stopped. */
 export type CaptureOptions = {
-  /** System audio (the other side of a call), mixed in for transcription. */
+  /** System audio (the other side of a call), recorded as its own track. */
   system?: MediaStream
   /** Each frame per track, unmixed: for recording a meeting. */
   onTracks?: (mic: Float32Array, system: Float32Array | null) => void

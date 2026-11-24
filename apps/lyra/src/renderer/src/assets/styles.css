@@ -1060,6 +1060,24 @@ code {
   transition: transform 80ms linear;
 }
 
+/* While recording a call: one meter for each side, you on the mic and the computer's audio. */
+.dock-meters {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dock-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-subtle);
+}
+
+.waveform.is-system span {
+  background: var(--accent);
+}
+
 .dock-timer {
   min-width: 36px;
   color: var(--text-muted);
@@ -3363,12 +3381,53 @@ code {
   display: none;
 }
 
-/* The transcript's live row: unconfirmed words and the transcriber's cursor, while a
-   conversation is recorded. Speaker-labeled lines appear above it as phrases are confirmed. */
-.live-line .live-text {
+/* The transcript's last row while recording: where the next lines will land. Three dots breathe
+   while Lyra listens and run in turn while it transcribes; finished lines appear above it. */
+.pending-line .pending-text {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   margin: 0;
   min-height: 1.5em;
-  white-space: pre-wrap;
+  color: var(--text-subtle);
+}
+
+.pending-dots {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.pending-dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--record);
+  opacity: 0.35;
+  animation: pulse 2.4s ease-in-out infinite;
+}
+
+.pending-dots.is-working span {
+  animation: pending-step 1.2s ease-in-out infinite;
+}
+
+.pending-dots.is-working span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.pending-dots.is-working span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes pending-step {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
 }
 
 

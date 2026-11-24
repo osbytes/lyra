@@ -14,8 +14,8 @@ claims about accuracy quote this file, with its date and sample size, or are not
 | `node scripts/eval/voice-scores.cjs` | The sessions' enroll.wav against each speaker | How a saved voice scores against its owner and everyone else | The models |
 | `pnpm replay:session <id>` | A recorded session's kept audio | Who spoke each line; scores with `--reference` | The session's audio still kept |
 
-`--pipeline live` (the default, what the app runs), `stream` (live identification alone, no
-relabel) or `offline` (diarize, then transcribe). Data and results go to `eval-data/`
+`--pipeline live` (the default, what the app runs), `stream` (the lines as they land while
+recording, labeled only by track, no relabel) or `offline` (diarize, then transcribe). Data and results go to `eval-data/`
 (gitignored), or `LYRA_EVAL_DATA`; set `LYRA_MODELS_DIR` to download each model once.
 
 Every run uses the same model files: they are pinned by revision and sha256
