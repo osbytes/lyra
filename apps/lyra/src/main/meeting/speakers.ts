@@ -16,15 +16,23 @@ const SEGMENTATION: ModelFile = {
   bytes: 5_992_913,
   sha256: '220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079'
 }
-// A GitHub release asset: the tag could be re-uploaded, so the hash is what pins it.
+
+/**
+ * NVIDIA NeMo TitaNet-small. It replaced WeSpeaker ResNet34, which scored different people at one
+ * desk mic as alike as one person (0.9 and up), so no threshold could split them. With TitaNet a
+ * saved voice scores 0.73+ against its owner and under 0.35 against anyone else
+ * (scripts/eval/voice-scores.cjs), and it clustered the real-voice sessions best of the models
+ * tried (ResNet34, CAM++, ERes2Net; scripts/eval/cluster-lab.cjs). A GitHub release asset: the
+ * tag could be re-uploaded, so the hash is what pins it.
+ */
 const EMBEDDING: ModelFile = {
-  name: 'wespeaker-en-voxceleb-resnet34-LM.onnx',
-  url: 'https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34_LM.onnx',
-  bytes: 26_530_550,
-  sha256: 'e9848563da86f263117134dfd7ad63c92355b37de492b55e325400c9d9c39012'
+  name: 'nemo_en_titanet_small.onnx',
+  url: 'https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_small.onnx',
+  bytes: 40_257_283,
+  sha256: 'ad4a1802485d8b34c722d2a9d04249662f2ece5d28a7a039063ca22f515a789e'
 }
 
-/** Downloads the segmentation and speaker-embedding models on first use (~32 MB). */
+/** Downloads the segmentation and speaker-embedding models on first use (~46 MB). */
 export async function ensureSpeakerModels(onProgress?: DownloadProgress): Promise<SpeakerModels> {
   // Approximate combined progress across both files (sizes known in advance).
   const total = SEGMENTATION.bytes + EMBEDDING.bytes

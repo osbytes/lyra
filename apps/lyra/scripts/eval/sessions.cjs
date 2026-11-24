@@ -72,7 +72,7 @@ const SEATS = {
  * - `music` / `video`: something playing on the computer at that level, on the system track and
  *   through the speakers (`bleed`). A video is a stranger talking; it isn't in the reference.
  * - `fan`: a fan or laptop's hum and rush at that level in the room.
- * - `moves`: [person, seat] — that person moves to another seat halfway through.
+ * - `moves`: [person, seat]: that person moves to another seat halfway through.
  */
 const SESSIONS = {
   'room-2-desk': { people: ['near', 'mid'], sex: 'same', rt60: 0.4, minutes: 4, talk: [1, 1], backchannels: 2 },

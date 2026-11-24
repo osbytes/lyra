@@ -50,7 +50,15 @@ import type { DiarizeResult, DiarizedSegment, SpeakerModels } from './protocol'
 import { notifyLabeled } from './events'
 import { sessionVoiceprints } from './live'
 import { diarize, embedVoice, ensureSpeakerModels } from './speakers'
-import { MATCH_THRESHOLD, REINFORCE_THRESHOLD, SELF_MIC_SHARE } from './thresholds'
+import {
+  DIARIZE_THRESHOLD,
+  LEARN_MARGIN,
+  LEARN_MIN_SECONDS,
+  MATCH_THRESHOLD,
+  REINFORCE_THRESHOLD,
+  SAME_PERSON_THRESHOLD,
+  SELF_MIC_SHARE
+} from './thresholds'
 import { mixTracks, readWav } from './wav'
 
 /** Merge a speaker's segments separated by less than this into one turn. */
@@ -59,8 +67,6 @@ const MERGE_GAP_SECONDS = 1
 const MAX_TURN_SECONDS = 25
 /** Below this much total speech, a "speaker" is folded into the closest real one. */
 const MIN_SPEAKER_SECONDS = 2
-/** Clustering distance threshold for diarization. */
-const CLUSTER_THRESHOLD = 0.5
 const PROMPT_CHARS = 200
 /** Saved voices kept per speaker, ranked, for the speaker picker. */
 const MAX_MATCHES = 5
@@ -126,6 +132,36 @@ export function mergeTinySpeakers(result: DiarizeResult): DiarizeResult {
   }
 }
 
+/**
+ * Merges speakers that are clearly the same saved person. Clustering sometimes splits one voice
+ * in two (they moved, or spoke up); a saved voice anchors both halves, so they become one
+ * speaker, the one closer to the saved voice. Only for strong matches: a weak one could be
+ * someone who merely sounds similar.
+ */
+export async function mergeSamePerson(result: DiarizeResult): Promise<DiarizeResult> {
+  const best = new Map<string, { speaker: number; score: number }>()
+  const matched: { speaker: number; personId: string; score: number }[] = []
+  for (const cluster of result.clusters) {
+    const top = (await scoreVoices(cluster.embedding))[0]
+    if (!top || top.score < SAME_PERSON_THRESHOLD) continue
+    matched.push({ speaker: cluster.speaker, personId: top.person.id, score: top.score })
+    const current = best.get(top.person.id)
+    if (!current || top.score > current.score) best.set(top.person.id, { speaker: cluster.speaker, score: top.score })
+  }
+  const into = new Map<number, number>()
+  for (const { speaker, personId } of matched) {
+    const keep = best.get(personId)
+    if (keep && keep.speaker !== speaker) into.set(speaker, keep.speaker)
+  }
+  if (into.size === 0) return result
+  log('meeting', 'merged speakers matching one saved voice', Object.fromEntries(into))
+  return {
+    ...result,
+    segments: result.segments.map((s) => ({ ...s, speaker: into.get(s.speaker) ?? s.speaker })),
+    clusters: result.clusters.filter((cluster) => !into.has(cluster.speaker))
+  }
+}
+
 /** Joins each speaker's nearby segments into turns, split so none exceeds MAX_TURN_SECONDS. */
 export function buildTurns(segments: readonly DiarizedSegment[]): Turn[] {
   const turns: Turn[] = []
@@ -179,12 +215,25 @@ export async function nameSpeakers(result: DiarizeResult, hasSystemTrack: boolea
       assigned: assigned.get(speaker)?.person.name ?? null
     })
   }
-  // Confident matches teach the voiceprint, so it keeps up with mics and rooms.
+  // Confident matches teach the voiceprint, so it keeps up with mics and rooms. Only from a
+  // speaker with plenty of speech whom no other speaker here comes close to: a wrong sample
+  // would make the saved voice match the wrong person from then on.
+  const talk = new Map<number, number>()
+  for (const s of result.segments) talk.set(s.speaker, (talk.get(s.speaker) ?? 0) + s.end - s.start)
   for (const { speaker, embedding } of scored) {
     const match = assigned.get(speaker)
-    if (match && match.score >= REINFORCE_THRESHOLD && embedding.length) {
-      await addSample(match.person.id, embedding)
+    if (!match || match.score < REINFORCE_THRESHOLD || !embedding.length) continue
+    const rival = Math.max(
+      -Infinity,
+      ...scored
+        .filter((other) => other.speaker !== speaker)
+        .map((other) => other.scores.find((entry) => entry.person.id === match.person.id)?.score ?? -Infinity)
+    )
+    if ((talk.get(speaker) ?? 0) < LEARN_MIN_SECONDS || match.score - rival < LEARN_MARGIN) {
+      log('meeting', 'voice not learned', { speaker, name: match.person.name, seconds: +(talk.get(speaker) ?? 0).toFixed(1) })
+      continue
     }
+    await addSample(match.person.id, embedding)
   }
 
   const selfName = me?.name ?? 'Me'
@@ -323,7 +372,7 @@ export async function processMeeting(recording: MeetingRecording): Promise<void>
     micPath: recording.micPath,
     systemPath: recording.systemPath,
     models,
-    threshold: CLUSTER_THRESHOLD
+    threshold: DIARIZE_THRESHOLD
   })
   log('meeting', 'diarized', {
     pageId,
@@ -332,7 +381,7 @@ export async function processMeeting(recording: MeetingRecording): Promise<void>
     rtf: +((Date.now() - started) / 1000 / Math.max(1, result.seconds)).toFixed(3)
   })
 
-  const merged = mergeTinySpeakers(result)
+  const merged = await mergeSamePerson(mergeTinySpeakers(result))
   // One voice: a dictation, not a conversation. It stays as notes; no transcript, no notes.
   if (merged.clusters.length < 2 && !(await readSession(pageId)).transcript.length) {
     if (getSettings().audioRetentionDays === 0) await deleteSessionAudio(pageId)
@@ -519,6 +568,52 @@ export async function sessionAudio(pageId: string, start: number, end: number): 
   return out
 }
 
+/** Line audio past this adds little to a voiceprint and slows the comparison down. */
+const MAX_LINE_PRINT_SECONDS = 10
+/**
+ * A line moves with a correction only when it sounds closer to the lines the user moved than to
+ * the lines they left, by this much. Per-line voiceprints are a few seconds each, so noisier than
+ * a speaker's; the margin keeps a line that could go either way where it is.
+ */
+const FOLLOW_MARGIN = 0.1
+
+function centroid(vectors: readonly number[][]): number[] {
+  const first = vectors[0]
+  if (!first) return []
+  return first.map((_, i) => vectors.reduce((sum, vector) => sum + (vector[i] ?? 0), 0) / vectors.length)
+}
+
+/**
+ * After the user moves some of a speaker's lines to another speaker, the rest of that speaker's
+ * lines that sound like the moved ones: one correction ("this line is me") then fixes every line
+ * the clustering got wrong the same way. The renderer offers to move them; nothing moves here.
+ */
+export async function similarLines(pageId: string, moved: readonly string[], from: string): Promise<string[]> {
+  const micPath = trackPath(pageId, 'mic')
+  if (!existsSync(micPath)) return []
+  const systemPath = trackPath(pageId, 'system')
+  const recording = { pageId, micPath, systemPath: existsSync(systemPath) ? systemPath : null, seconds: 0 }
+  const session = await readSession(pageId)
+  const long = (line: { start: number; end: number }): boolean => line.end - line.start >= MIN_LINE_SECONDS
+  const movedLines = session.transcript.filter((line) => moved.includes(line.id) && long(line))
+  const staying = session.transcript.filter((line) => line.cluster === from && !moved.includes(line.id) && long(line))
+  if (movedLines.length === 0 || staying.length < 2) return []
+  const models = await ensureSpeakerModels()
+  const print = async (line: { start: number; end: number }): Promise<number[]> =>
+    embedVoice(await turnAudio(recording, { start: line.start, end: Math.min(line.end, line.start + MAX_LINE_PRINT_SECONDS) }), models)
+  const movedPrint = centroid(await Promise.all(movedLines.map(print)))
+  const prints = await Promise.all(staying.map(print))
+  const out: string[] = []
+  staying.forEach((line, i) => {
+    const own = prints[i] ?? []
+    // The speaker's voice without this line, so a line isn't compared with itself.
+    const rest = centroid(prints.filter((_, k) => k !== i))
+    if (cosine(own, movedPrint) >= cosine(own, rest) + FOLLOW_MARGIN) out.push(line.id)
+  })
+  log('meeting', 'similar lines', { pageId, moved: movedLines.length, checked: staying.length, similar: out.length })
+  return out
+}
+
 /**
  * Speakers are identified live while recording (`live.ts`). `processMeeting` labels a whole
  * recording at once with offline diarization, for the meeting smoke test and eval.
@@ -554,6 +649,18 @@ export function registerMeetingPipeline(): void {
       return resolveSpeaker(pageId, id, parseAssignment(assignment))
     }
   )
+  ipcMain.handle('meeting:similarLines', (_event, pageId: unknown, moved: unknown, from: unknown) => {
+    if (
+      typeof pageId !== 'string' ||
+      typeof from !== 'string' ||
+      !Array.isArray(moved) ||
+      !moved.every((id) => typeof id === 'string')
+    ) {
+      throw new Error('Invalid input')
+    }
+    resolveInNotes(pageId)
+    return similarLines(pageId, moved, from)
+  })
   ipcMain.handle('sessions:audio', (_event, pageId: unknown, start: unknown, end: unknown) => {
     if (typeof pageId !== 'string' || typeof start !== 'number' || typeof end !== 'number') {
       throw new Error('Invalid input')

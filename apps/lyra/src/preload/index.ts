@@ -94,6 +94,7 @@ const api: VoicePagesApi = {
   restorePerson: (id) => ipcRenderer.invoke('people:restore', id),
   resolveSpeaker: (pageId, speakerId, assignment) =>
     ipcRenderer.invoke('meeting:resolveSpeaker', pageId, speakerId, assignment),
+  similarLines: (pageId, moved, from) => ipcRenderer.invoke('meeting:similarLines', pageId, moved, from),
   onMeetingStatus: (callback) => subscribe<MeetingStatus>('meeting:status', callback),
   generateNotes: (pageId) => ipcRenderer.invoke('notes:generate', pageId),
   keySource: (provider) => ipcRenderer.invoke('secrets:keySource', provider),

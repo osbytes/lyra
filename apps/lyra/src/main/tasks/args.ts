@@ -8,7 +8,7 @@ import { ConfigError } from '../config'
  *   lyra smoke                                  UI and IPC smoke test (pnpm smoke:ui)
  *   lyra screenshot [--review <dir>]            README shot; --review captures every state
  *   lyra meeting <mic.wav> [system.wav]         the real speaker pipeline (pnpm smoke:meeting)
- *     [--offline] [--no-relabel] [--output <file.json>] [--notes local|cloud]
+ *     [--offline] [--no-relabel] [--output <file.json>] [--notes local|cloud] [--enroll <owner.wav>]
  *
  * In development the scripts launch `electron . <task>`. Each task runs in a throwaway profile
  * and exits with its result.
@@ -22,7 +22,7 @@ export function isTaskName(value: string): value is z.infer<typeof TaskName> {
 }
 
 /** Options that take a value; every other `--flag` is a switch. */
-const VALUE_FLAGS = new Set(['--review', '--output', '--notes'])
+const VALUE_FLAGS = new Set(['--review', '--output', '--notes', '--enroll'])
 
 const absolutePath = z.string().transform((path) => (isAbsolute(path) ? path : resolve(path)))
 
@@ -45,7 +45,8 @@ const Meeting = z
     '--offline': z.literal(true).optional(),
     '--no-relabel': z.literal(true).optional(),
     '--output': absolutePath.optional(),
-    '--notes': z.enum(['local', 'cloud']).optional()
+    '--notes': z.enum(['local', 'cloud']).optional(),
+    '--enroll': absolutePath.optional()
   })
   .strict()
   .transform((args) => ({
@@ -58,7 +59,9 @@ const Meeting = z
     relabel: !args['--no-relabel'],
     /** Where to write the labeled segments as JSON, for the eval scorers. */
     output: args['--output'] ?? null,
-    notes: args['--notes'] ?? null
+    notes: args['--notes'] ?? null,
+    /** A WAV saved as the laptop owner's voice first, as if they had set it up in People. */
+    enroll: args['--enroll'] ?? null
   }))
 
 export type Task = z.output<typeof Smoke> | z.output<typeof Screenshot> | z.output<typeof Meeting>

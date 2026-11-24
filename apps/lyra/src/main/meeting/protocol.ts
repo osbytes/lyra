@@ -7,7 +7,7 @@ export type DiarizeRequest = {
   micPath: string
   systemPath: string | null
   models: SpeakerModels
-  /** Clustering distance threshold; lower splits speakers more eagerly. */
+  /** Voiceprint similarity under which two windows are different people; higher splits more. */
   threshold: number
 }
 

@@ -224,6 +224,10 @@ function checkConfigParsing(): void {
   if (meeting?.kind !== 'meeting' || meeting.pipeline !== 'offline' || meeting.relabel || meeting.system !== null) {
     fail(`meeting task: ${JSON.stringify(meeting)}`)
   }
+  const enrolled = parseTask(['meeting', '/a/mic.wav', '--enroll', '/a/me.wav'])
+  if (enrolled?.kind !== 'meeting' || enrolled.enroll === null) {
+    fail(`meeting --enroll: ${JSON.stringify(enrolled)}`)
+  }
   refuses(() => parseTask(['meeting']), 'WAV')
   refuses(() => parseTask(['meeting', '/a.wav', '--notes', 'claude']), '--notes')
   refuses(() => parseTask(['smoke', '--bogus']), '--bogus')
@@ -642,6 +646,11 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
         }
         const heard = await window.api.sessionAudio(meetingPage.id, 0.5, 1.0)
         if (!(heard instanceof Int16Array) || heard.length !== 8000) fail('session audio length ' + heard.length)
+        // Too few lines to compare: nothing to suggest, and bad input is refused.
+        const similar = await window.api.similarLines(meetingPage.id, ['nope'], 'c0')
+        if (!Array.isArray(similar) || similar.length !== 0) fail('similarLines on an empty session: ' + JSON.stringify(similar))
+        const badSimilar = await window.api.similarLines(meetingPage.id, 'nope', 'c0').then(() => false, () => true)
+        if (!badSimilar) fail('similarLines accepted a non-array')
         await window.api.deletePage(meetingPage.id)
 
         for (const bad of ['../escape.txt', '..\\\\escape.txt', '.hidden.txt', 'x/y.txt', 'note.exe']) {

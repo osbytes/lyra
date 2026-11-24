@@ -174,6 +174,30 @@ type Option =
   | { kind: 'new'; name: string }
   | { kind: 'keep' }
 
+/**
+ * After one line moves to another speaker, offers to move the old speaker's other lines that
+ * sound like it, so one correction fixes every line the labeling got wrong the same way.
+ */
+function offerSimilarLines(
+  pageId: string,
+  moved: string,
+  from: string,
+  to: string,
+  name: string,
+  onAssign: Props['onAssign']
+): void {
+  window.api
+    .similarLines(pageId, [moved], from)
+    .then((ids) => {
+      if (ids.length === 0) return
+      const count = ids.length === 1 ? '1 more line sounds' : `${String(ids.length)} more lines sound`
+      notify(`${count} like ${name}`, { label: 'Move them', run: () => void onAssign(ids, to) })
+    })
+    .catch((error: unknown) => {
+      log('transcript', 'could not find similar lines', String(error))
+    })
+}
+
 function SpeakerPicker({
   pageId,
   picker,
@@ -248,8 +272,10 @@ function SpeakerPicker({
         const existing = allSpeakers.find((entry) =>
           personId ? entry.personId === personId : entry.name.toLowerCase() === name.toLowerCase()
         )
-        onAssign([line.id], existing ? existing.id : { name, personId, confirmed: true })
+        const created = onAssign([line.id], existing ? existing.id : { name, personId, confirmed: true })
         onClose()
+        const to = existing?.id ?? created
+        if (to) offerSimilarLines(pageId, line.id, speaker.id, to, name, onAssign)
         return
       }
       const who = await window.api.resolveSpeaker(
