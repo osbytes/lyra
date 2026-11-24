@@ -1,5 +1,37 @@
 # lyra
 
+## 0.4.0
+
+### Minor Changes
+
+- [#50](https://github.com/osbytes/lyra/pull/50) [`b570675`](https://github.com/osbytes/lyra/commit/b57067586bafa9d6b5d1b7c78514446df183d05b) Thanks [@dillonstreator](https://github.com/dillonstreator)! - Recordings are now transcribed a stretch at a time with Whisper large-v3-turbo (a one-time ~575 MB download) instead of streaming draft text that rewrites itself. Lines appear finished, a few seconds after each pause, and the transcript shows that Lyra is listening or catching up instead of half-heard words. On a call, your microphone and the computer's audio are transcribed separately, so your lines are labeled as you and the other side as Remote while you record, and the other side playing through your speakers no longer shows up as you. The dock shows a level meter for each, and warns when your microphone isn't picking anything up. Speakers are still settled from the whole recording when you stop.
+
+- [#51](https://github.com/osbytes/lyra/pull/51) [`4dd2530`](https://github.com/osbytes/lyra/commit/4dd2530ccf2dbbd256aed2b230b870e5d5c37a62) Thanks [@adavila0703](https://github.com/adavila0703)! - Search by meaning: turn it on in Settings → Search and searches also find sessions that say the same thing in other words ("vehicle maintenance" finds "new tires and an oil change"). A small model (about 150 MB, downloaded once) runs on this computer, so nothing leaves it.
+
+- [#51](https://github.com/osbytes/lyra/pull/51) [`ca41c05`](https://github.com/osbytes/lyra/commit/ca41c0566144440a5473e2eeaeb7afc1c503bd87) Thanks [@adavila0703](https://github.com/adavila0703)! - Search runs on the local index: it matches word forms ("budgets" finds "budget"), the start of a word as you type, common misspellings and parts of words, and understands filters: `person:ana`, `tag:design`, `after:2026-11-01`, `before:2026-12`.
+
+- [#51](https://github.com/osbytes/lyra/pull/51) [`8483310`](https://github.com/osbytes/lyra/commit/848331019df8a3fe1742fe96e8e84308615765a3) Thanks [@adavila0703](https://github.com/adavila0703)! - Lyra keeps a local search index of your sessions and people (a libSQL database in the app's data folder, never in your notes folder). It's rebuilt from your notes whenever needed and isn't used for search yet; it's the groundwork for searching by speaker, person, tag and meaning.
+
+- [#48](https://github.com/osbytes/lyra/pull/48) [`69c2fec`](https://github.com/osbytes/lyra/commit/69c2fec45cfd1bec87d1403c67942cdc550ffcec) Thanks [@dillonstreator](https://github.com/dillonstreator)! - Lyra tells people apart far more reliably, above all two or more people sharing one laptop mic. It now uses a different voice model (TitaNet, downloaded once, about 40 MB), and after a recording stops it regroups the whole session by voice in a new way. On recordings of real voices in rooms, hybrid meetings and calls, speakers are mixed up about a third as often as before. Saved voices made with the old model can't be compared with the new one, so name yourself once in a session and Lyra recognizes you again from then on.
+  
+  A saved voice now holds a session together: if one person was split into two speakers and both clearly sound like your saved voice, they become one speaker. Lyra also learns a voice on its own only from a speaker who talked for a while and whom nobody else in the session sounds like, so a wrong guess no longer teaches it the wrong voice.
+  
+  When you move a line to another speaker, Lyra offers to move that speaker's other lines that sound the same, so one correction fixes the rest.
+
+- [#45](https://github.com/osbytes/lyra/pull/45) [`b5e9b6a`](https://github.com/osbytes/lyra/commit/b5e9b6ae7b7e1175f016c48ceb0f81395b0a5204) Thanks [@dillonstreator](https://github.com/dillonstreator)! - Cloud summaries work with any provider: Anthropic, OpenAI, Google, or your own OpenAI-compatible server (Ollama, LM Studio, llama.cpp), picked with a model in Settings → Sessions. "With Claude" becomes "Cloud model", and an existing Claude setup and key carry over. Keys can also come from the providers' standard variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, plus `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL`); a key saved in Settings wins. `HF_ENDPOINT` points model downloads at a Hugging Face mirror, alongside `LYRA_NOTES_DIR` and `LYRA_MODELS_DIR`. A malformed value stops Lyra with a message naming the variable. All variables are listed in docs/CONFIG.md.
+
+### Patch Changes
+
+- [#45](https://github.com/osbytes/lyra/pull/45) [`b5e9b6a`](https://github.com/osbytes/lyra/commit/b5e9b6ae7b7e1175f016c48ceb0f81395b0a5204) Thanks [@dillonstreator](https://github.com/dillonstreator)! - The log file (`lyra.log`) is now one JSON object per line and is written without blocking the app. It never contains note text, transcripts or API keys.
+
+- [#45](https://github.com/osbytes/lyra/pull/45) [`b5e9b6a`](https://github.com/osbytes/lyra/commit/b5e9b6ae7b7e1175f016c48ceb0f81395b0a5204) Thanks [@dillonstreator](https://github.com/dillonstreator)! - Model downloads (Whisper, speaker models and the local notes model) are pinned to one upstream revision and checked against a sha256 hash, so a changed or corrupt file is never loaded. A copy downloaded by an earlier version is checked once and kept if it matches.
+
+- [#45](https://github.com/osbytes/lyra/pull/45) [`b5e9b6a`](https://github.com/osbytes/lyra/commit/b5e9b6ae7b7e1175f016c48ceb0f81395b0a5204) Thanks [@dillonstreator](https://github.com/dillonstreator)! - Quitting while a session is recording now finishes the recording first, so its audio stays playable, and Lyra never waits more than 10 seconds on shutdown work before quitting.
+
+- [#55](https://github.com/osbytes/lyra/pull/55) [`9fe7fb4`](https://github.com/osbytes/lyra/commit/9fe7fb4969cf6a8067ed5cee63d686da0c2e8447) Thanks [@dillonstreator](https://github.com/dillonstreator)! - Recording keeps going while you open other sessions: the dock and the sidebar show which session is recording. Copy works again, Ctrl/Cmd+F finds text in the open session, the sidebar search opens the search palette, restarting a recording no longer adds a duplicate or unclickable speaker, and the floating pill matches the dock.
+
+- [#49](https://github.com/osbytes/lyra/pull/49) [`2630e78`](https://github.com/osbytes/lyra/commit/2630e78cd2b78854cfe5db972e919fb600801a56) Thanks [@dillonstreator](https://github.com/dillonstreator)! - The "What to record" popover no longer turns the whole window into a drag handle for the dock: clicking outside it, clicking its button again or pressing Escape closes it.
+
 ## 0.3.1
 
 ### Patch Changes
