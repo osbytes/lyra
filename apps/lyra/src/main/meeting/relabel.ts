@@ -23,6 +23,7 @@ import { notifyLabeled } from './events'
 import { mergeSamePerson, mergeTinySpeakers, nameSpeakers, nextPassId } from './pipeline'
 import type { DiarizedSegment } from './protocol'
 import { diarize, ensureSpeakerModels } from './speakers'
+import { MIC_SIDE } from './clustering'
 import { DIARIZE_THRESHOLD } from './thresholds'
 
 /**
@@ -38,8 +39,6 @@ import { DIARIZE_THRESHOLD } from './thresholds'
 
 /** A word with no diarized speech under it takes the nearest speaker within this many seconds. */
 const NEAREST_SECONDS = 1
-/** A diarized speaker with at least this share of their energy on the mic is at this computer. */
-const MIC_SIDE = 0.5
 /** Same as live lines: one line per turn, up to MAX_LINE_SECONDS. */
 const LINE_JOIN_GAP = 8
 const MAX_LINE_SECONDS = 30
@@ -228,7 +227,15 @@ async function relabel(pageId: string): Promise<void> {
   const models = await ensureSpeakerModels()
   broadcast({ pageId, state: 'diarizing', progress: 0 })
   const result = await mergeSamePerson(
-    mergeTinySpeakers(await diarize({ micPath, systemPath, models, threshold: DIARIZE_THRESHOLD }))
+    mergeTinySpeakers(
+      await diarize({
+        micPath,
+        systemPath,
+        models,
+        threshold: DIARIZE_THRESHOLD,
+        words: words.map(({ start, end }) => ({ start, end }))
+      })
+    )
   )
   const speakers = assignWords(words, result.segments)
   const lines = buildLines(words, speakers)

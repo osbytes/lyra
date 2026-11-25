@@ -159,31 +159,85 @@ export function centroids(labels: readonly number[], vectors: readonly (readonly
   return new Map([...sums].map(([label, sum]) => [label, unit(sum)]))
 }
 
+/** A speaker with at least this share of their energy on the mic track is at this computer. */
+export const MIC_SIDE = 0.5
+
+/** What else is known about the windows besides their voiceprints. */
+export type FoldEvidence = {
+  /** Each window's share of its energy on the mic track, when there was a system track too. */
+  micShares: readonly number[] | null
+  /** When transcribed words were heard, when they're known (relabeling after a recording). */
+  words: readonly Span[] | null
+  /** A short speaker with at least this many words of their own is a person, not a cough… */
+  minWords: number
+  /**
+   * …if their mean voiceprint is under this similarity to every longer speaker's. A short
+   * cluster of someone already there (they spoke up, laughed mid-sentence) still scores above
+   * the clustering bar against them; a different person scores below it.
+   */
+  distinct: number
+}
+
 /**
  * Moves the windows of speakers with under `minSeconds` of speech to the most similar speaker
  * that has enough: a few windows of their own are usually one person's cough, laugh or a
  * stretch of crosstalk, not another person.
+ *
+ * Two kinds of evidence keep a short speaker. The track: someone heard on the mic can't be a
+ * remote voice on the system track or the other way round, so a speaker only folds into one on
+ * the same side, and stays when there is none (the owner who says one sentence on a call).
+ * Words and voice together, for remote voices: a cough or laugh transcribes to nothing, and a
+ * stretch of someone already there still sounds like them, so a short system-track speaker who
+ * said a sentence of their own and sounds like none of the others is someone who spoke briefly
+ * (a second remote person in a short call). Words alone would keep a person's raised voice as
+ * a phantom second speaker.
  */
 export function foldShortSpeakers(
   labels: readonly number[],
   spans: readonly Span[],
   vectors: readonly (readonly number[])[],
-  minSeconds: number
+  minSeconds: number,
+  evidence: FoldEvidence = { micShares: null, words: null, minWords: 0, distinct: 0 }
 ): number[] {
   const talk = new Map<number, number>()
+  const micTalk = new Map<number, number>()
   labels.forEach((label, i) => {
     const span = spans[i]
-    if (span) talk.set(label, (talk.get(label) ?? 0) + span.end - span.start)
+    if (!span) return
+    const seconds = span.end - span.start
+    talk.set(label, (talk.get(label) ?? 0) + seconds)
+    micTalk.set(label, (micTalk.get(label) ?? 0) + seconds * (evidence.micShares?.[i] ?? 0))
   })
-  const kept = [...talk].filter(([, seconds]) => seconds >= minSeconds).map(([label]) => label)
-  if (kept.length === 0) return [...labels]
+  const onMic = (label: number): boolean | null =>
+    evidence.micShares ? (micTalk.get(label) ?? 0) >= MIC_SIDE * (talk.get(label) ?? 0) : null
+  const spoken = ownWords(labels, spans, evidence.words)
+  const long = [...talk].filter(([, seconds]) => seconds >= minSeconds).map(([label]) => label)
+  if (long.length === 0) return [...labels]
   const centres = centroids(labels, vectors)
+  const unlikeEveryone = (label: number): boolean =>
+    long.every((other) => dot(centres.get(label) ?? [], centres.get(other) ?? []) < evidence.distinct)
+  // Only remote voices: each reaches the system track from its own device, so a short cluster
+  // there is rarely one person split in two, while at one desk mic distance and echo split a
+  // voice often (the eval rooms grow phantom speakers if this applies there too).
+  const kept = [...talk.keys()].filter(
+    (label) =>
+      long.includes(label) ||
+      (onMic(label) === false &&
+        evidence.words !== null &&
+        (spoken.get(label) ?? 0) >= evidence.minWords &&
+        unlikeEveryone(label))
+  )
+  // A side with nobody kept keeps its longest speaker; the rest of that side fold into it.
+  for (const [label] of [...talk].sort((a, b) => b[1] - a[1])) {
+    if (!kept.some((other) => onMic(other) === onMic(label))) kept.push(label)
+  }
   return labels.map((label, i) => {
     if (kept.includes(label)) return label
+    const side = kept.filter((other) => onMic(other) === onMic(label))
     const vector = vectors[i] ?? []
-    let best = kept[0] ?? label
+    let best = side[0] ?? label
     let bestScore = -Infinity
-    for (const other of kept) {
+    for (const other of side) {
       const score = dot(vector, centres.get(other) ?? [])
       if (score > bestScore) {
         best = other
@@ -192,6 +246,19 @@ export function foldShortSpeakers(
     }
     return best
   })
+}
+
+/** How many words each label has to itself: words whose middle falls where that label wins. */
+function ownWords(labels: readonly number[], spans: readonly Span[], words: readonly Span[] | null): Map<number, number> {
+  const out = new Map<number, number>()
+  if (!words) return out
+  const timeline = labelTimeline(spans, labels)
+  for (const word of words) {
+    const middle = (word.start + word.end) / 2
+    const segment = timeline.find((entry) => entry.start <= middle && middle < entry.end)
+    if (segment) out.set(segment.speaker, (out.get(segment.speaker) ?? 0) + 1)
+  }
+  return out
 }
 
 /**
