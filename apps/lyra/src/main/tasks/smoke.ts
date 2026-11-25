@@ -61,7 +61,9 @@ import { defaultTitle, partOfDay } from '../sessionTitle'
 import { trackPath } from '../recorder'
 import { sweepAudio } from '../audioRetention'
 import { flushLog, log, logPath } from '../log'
-import { parseConsentStore } from '../micwatch'
+import { parseConsentStore, parseHelperLine } from '../micwatch'
+import { classifyMicUser, meetingFromTitles } from '../meetingApps'
+import { MeetingDetector, type DetectorPolicy } from '../meetingDetector'
 import { ConfigError, parseConfig } from '../config'
 import { parseTask } from './args'
 import { MockLanguageModelV4 } from 'ai/test'
@@ -104,6 +106,9 @@ function checkSettingsSchema(): void {
   }
   if (old.hotkey !== base.hotkey || old.fileFormat !== 'md') throw new Error('settings: a bad field took good ones with it')
   if (parseSettings('not an object', base).notesDir !== base.notesDir) throw new Error('settings: junk input')
+  // Files from before the meeting prompt get its default, and keep their mic prompt choices.
+  const before = parseSettings({ micPrompt: { enabled: true, ignoredApps: ['obs64'] } }, { ...base, meetingPrompt: true })
+  if (!before.meetingPrompt || before.micPrompt.ignoredApps.join() !== 'obs64') throw new Error('settings: meeting prompt default')
 }
 
 /**
@@ -255,6 +260,88 @@ function checkConsentParser(): void {
   if (users.join(',') !== 'MSTeams,Zoom') {
     throw new Error(`consent parser returned ${users.join(',')}`)
   }
+}
+
+/** Meeting prompts: which mic users are meetings, and when the detector asks. */
+async function checkMeetingDetector(): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`meeting detector: ${message}`)
+  }
+  const kinds = ['Zoom', 'MSTeams', '91750D7E.Slack', 'Discord', 'us.zoom.xos', 'chrome', 'com.apple.Safari', 'obs64', '']
+    .map((name) => {
+      const found = classifyMicUser(name)
+      return found.kind === 'meeting' ? found.meeting.id : found.kind
+    })
+    .join(',')
+  if (kinds !== 'zoom,teams,slack,discord,zoom,browser,browser,other,other') fail(`classified ${kinds}`)
+  const titles = [
+    ['Meet - abc-defg-hij - Google Chrome'],
+    ['Zoom Meeting - Personal - Microsoft Edge'],
+    ['Zoom lens review - YouTube - Google Chrome'],
+    ['Inbox (3) - Gmail', 'Meet - xyz - Brave']
+  ]
+    .map((list) => meetingFromTitles(list)?.id ?? 'none')
+    .join(',')
+  if (titles !== 'meet,zoom,none,meet') fail(`titles matched ${titles}`)
+  const mac = [...parseHelperLine('apps:us.zoom.xos,com.apple.Safari')].join(',')
+  const win = [...parseHelperLine('apps:chrome,electron,Zoom', 'Electron')].join(',')
+  if (mac !== 'us.zoom.xos,com.apple.Safari' || win !== 'chrome,Zoom' || parseHelperLine('1').size !== 1 || parseHelperLine('0').size) {
+    fail(`helper lines parsed as ${mac} and ${win}`)
+  }
+
+  let now = 0
+  let tabTitles: string[] = []
+  const detector = new MeetingDetector({
+    now: () => now,
+    titles: () => Promise.resolve(tabTitles),
+    sustainMs: 2000,
+    snoozeMs: 60_000,
+    maxTitleChecks: 2
+  })
+  const policy: DetectorPolicy = { meetings: true, anyApp: false, recording: false, ignored: () => false }
+  const at = async (time: number, users: string[], over: Partial<DetectorPolicy> = {}) => {
+    now = time
+    return (await detector.update(new Set(users), { ...policy, ...over }))?.key ?? null
+  }
+  // Already on the mic when watching starts: skipped until it lets go.
+  if ((await at(0, ['Discord'])) !== null || (await at(5000, ['Discord'])) !== null) fail('asked about a call already running')
+  if ((await at(6000, ['Zoom'])) !== null) fail('asked before the mic was held long enough')
+  if ((await at(7000, ['Zoom', 'obs64'])) !== null) fail('asked after 1 s')
+  if ((await at(8000, ['Zoom', 'obs64'])) !== 'zoom') fail('did not ask about Zoom after 2 s')
+  if ((await at(10_000, ['Zoom'])) !== null) fail('asked twice in one call')
+  detector.snooze('zoom')
+  await at(11_000, [])
+  await at(12_000, ['Zoom'])
+  if ((await at(15_000, ['Zoom'])) !== null) fail('asked during the snooze')
+  await at(80_000, [])
+  await at(81_000, ['Zoom'])
+  if ((await at(84_000, ['Zoom'])) !== 'zoom') fail('did not ask again after the snooze')
+  // A call that ran while Lyra recorded isn't asked about when the recording stops.
+  await at(85_000, [])
+  await at(86_000, ['Zoom'])
+  if ((await at(88_000, ['Zoom'], { recording: true })) !== null) fail('asked while recording')
+  if ((await at(89_000, ['Zoom'])) !== null) fail('asked about a call that was recorded')
+  // Helpers report changes only, so a waiting user gets a timed look.
+  if ((detector.nextCheckAt() ?? 0) !== 0) fail('a settled user wants a recheck')
+  // A browser asks only with a meeting tab in front, and stops looking after a few tries.
+  await at(90_000, ['chrome'])
+  if ((await at(92_000, ['chrome'])) !== null) fail('asked about a browser with no meeting tab')
+  if (detector.nextCheckAt() !== 93_000) fail('no timed look for a browser waiting on its tab')
+  tabTitles = ['Meet - abc-defg-hij - Google Chrome']
+  if ((await at(94_000, ['chrome'])) !== 'meet') fail('did not ask about Meet in a browser')
+  await at(95_000, [])
+  tabTitles = []
+  await at(96_000, ['chrome'])
+  await at(98_000, ['chrome'])
+  await at(100_000, ['chrome'])
+  tabTitles = ['Meet - abc-defg-hij - Google Chrome']
+  if ((await at(102_000, ['chrome'])) !== null) fail('kept reading titles past the limit')
+  // Any-app mode asks about everything; "Don't ask" silences a meeting app by its name.
+  await at(110_000, [])
+  await at(111_000, ['obs64'])
+  if ((await at(113_000, ['obs64'], { anyApp: true })) !== 'obs64') fail('any-app mode did not ask')
+  await at(114_000, ['Zoom'])
+  if ((await at(117_000, ['Zoom'], { ignored: (label) => label === 'Zoom' })) !== null) fail('asked about an ignored app')
 }
 
 /** Session store: concurrent edits merge, the log persists, and the export follows. */
@@ -791,6 +878,7 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
     checkSettingsSchema()
     await checkNotesWriters()
     checkConsentParser()
+    await checkMeetingDetector()
     await checkSessionStore()
     await checkAudioRetention()
     await checkTranscriptModel()

@@ -22,11 +22,22 @@ function useNow(running: boolean): number {
 
 function PromptCard({ prompt }: { prompt: MicPrompt }) {
   const who = prompt.app ? <strong>{prompt.app}</strong> : 'Another app'
+  const meeting = prompt.kind === 'meeting'
   return (
-    <div className="overlay-prompt" role="alertdialog" aria-label="Start a Lyra session?">
-      <p>
-        {who} is using your microphone. Record it in Lyra?
-      </p>
+    <div
+      className="overlay-prompt"
+      role="alertdialog"
+      aria-label={meeting ? 'Record this meeting?' : 'Start a Lyra session?'}
+    >
+      {meeting ? (
+        <p>
+          Looks like a {who} call started. Record it in Lyra, with the call’s audio?
+        </p>
+      ) : (
+        <p>
+          {who} is using your microphone. Record it in Lyra?
+        </p>
+      )}
       <div className="overlay-prompt-actions">
         <button
           type="button"
@@ -35,7 +46,7 @@ function PromptCard({ prompt }: { prompt: MicPrompt }) {
             window.api.answerMicPrompt('start')
           }}
         >
-          Start session
+          {meeting ? 'Record' : 'Start session'}
         </button>
         <button
           type="button"
@@ -44,7 +55,7 @@ function PromptCard({ prompt }: { prompt: MicPrompt }) {
             window.api.answerMicPrompt('dismiss')
           }}
         >
-          Not now
+          {meeting ? 'Dismiss' : 'Not now'}
         </button>
         {prompt.app ? (
           <button

@@ -31,7 +31,10 @@ export const SettingsSchema = z.object({
   /** Electron accelerator for the global start/stop shortcut. */
   hotkey: z.string(),
   launchAtLogin: z.boolean(),
+  /** Any app taking the mic offers a session. `ignoredApps` holds names the user said "Don't ask" for. */
   micPrompt: z.object({ enabled: z.boolean(), ignoredApps: z.array(z.string()) }),
+  /** A meeting (Zoom, Teams, Meet in a browser, …) taking the mic offers to record it. */
+  meetingPrompt: z.boolean(),
   /**
    * Days to keep recorded audio after a session: `null` keeps it forever, `0` deletes it once the
    * transcript is labeled. Transcripts are always kept.

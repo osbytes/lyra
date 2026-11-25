@@ -16,6 +16,8 @@ export function defaultSettings(): Settings {
     hotkey: 'CommandOrControl+Shift+Space',
     launchAtLogin: false,
     micPrompt: { enabled: false, ignoredApps: [] },
+    // On: it only asks, never records, and runs on this computer (see meetingApps.ts).
+    meetingPrompt: true,
     // Long enough to replay or re-transcribe recent sessions, short enough not to pile up.
     audioRetentionDays: 30,
     captureSystemAudio: true,

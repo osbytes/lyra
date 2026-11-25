@@ -201,22 +201,28 @@ export default function App(): React.JSX.Element {
     await flush()
   }, [stopDictation, flush])
 
-  /** Records into a session: the mic, plus the computer's audio when that setting is on. */
+  /**
+   * Records into a session: the mic, plus the computer's audio when that setting is on or the
+   * recording is of a meeting (the other people are only in the computer's audio).
+   */
   const record = useCallback(
-    async (pageId: string) => {
-      await start({ pageId, systemAudio: settingsRef.current?.captureSystemAudio ?? true })
+    async (pageId: string, meeting = false) => {
+      await start({ pageId, systemAudio: meeting || (settingsRef.current?.captureSystemAudio ?? true) })
     },
     [start]
   )
 
   /** A new session, named for this moment, recording straight away. */
-  const startSession = useCallback(async () => {
-    await stop()
-    // A new recording shows its transcript arriving, whatever the last session's layout was.
-    setPaneMode('split')
-    const page = await create({ startedAt: new Date().toISOString() })
-    await record(page.id)
-  }, [stop, create, record])
+  const startSession = useCallback(
+    async (meeting = false) => {
+      await stop()
+      // A new recording shows its transcript arriving, whatever the last session's layout was.
+      setPaneMode('split')
+      const page = await create({ startedAt: new Date().toISOString() })
+      await record(page.id, meeting)
+    },
+    [stop, create, record]
+  )
 
   // Commands from the tray, the global hotkey, and the overlay pill.
   const recordingRef = useRef(recording)
@@ -224,8 +230,19 @@ export default function App(): React.JSX.Element {
   useEffect(
     () =>
       window.api.onSessionCommand((command) => {
-        if (command.type === 'stop' || recordingRef.current) void stop()
-        else void startSession()
+        switch (command.type) {
+          case 'start':
+            // The meeting prompt never stops a recording that started in the meantime.
+            if (!recordingRef.current) void startSession(command.meeting)
+            break
+          case 'stop':
+            void stop()
+            break
+          case 'toggle':
+            if (recordingRef.current) void stop()
+            else void startSession()
+            break
+        }
       }),
     [stop, startSession]
   )

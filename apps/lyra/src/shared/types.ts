@@ -28,10 +28,17 @@ export type SessionState = {
 export type OverlayFrame = { level: number; status: string }
 
 /** Sent from main to the main window's recorder. */
-export type SessionCommand = { type: 'toggle' } | { type: 'stop' }
+export type SessionCommand =
+  | { type: 'toggle' }
+  | { type: 'stop' }
+  /** Start a new session unless one is recording; a meeting always records the computer's audio. */
+  | { type: 'start'; meeting: boolean }
 
-/** "Another app started using the mic" prompt. `app` is '' when the app is unknown (macOS). */
-export type MicPrompt = { app: string }
+/**
+ * The overlay's offer to record. `meeting`: a meeting app or meeting site took the mic, and `app`
+ * is its name ("Zoom"). `mic`: any other app, by its exe or bundle name; '' when unknown (macOS).
+ */
+export type MicPrompt = { kind: 'meeting' | 'mic'; app: string }
 export type PromptAnswer = 'start' | 'dismiss' | 'ignore'
 
 /** One global shortcut starts or stops a session from anywhere. */

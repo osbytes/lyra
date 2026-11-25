@@ -65,7 +65,8 @@ const CHANGE_LABELS: Partial<Record<keyof SettingsValue, string>> = {
   cloudModel: 'Changed the summary model',
   cloudBaseUrl: 'Changed the server address',
   semanticSearch: 'Changed search by meaning',
-  micPrompt: 'Changed the microphone prompt'
+  micPrompt: 'Changed the microphone prompt',
+  meetingPrompt: 'Changed the meeting prompt'
 }
 
 /** `update`, recorded so Ctrl+Z (and Ctrl+Shift+Z) can take the change back. */
@@ -196,7 +197,10 @@ function StartupSection({ settings, update }: SectionProps) {
           </p>
         ) : null}
       </div>
-      <Row label="Open at login" hint="Keeps the shortcut available after a restart.">
+      <Row
+        label="Open at login"
+        hint="Starts in the tray, so the shortcut and meeting prompts work after a restart."
+      >
         <Switch
           label="Open Lyra at login"
           checked={settings.launchAtLogin}
@@ -513,8 +517,18 @@ function PromptsSection({ settings, update }: SectionProps) {
   return (
     <Section title="Prompts">
       <Row
+        label="Offer to record meetings"
+        hint="When a call starts in Zoom, Teams, Slack, Discord, or Google Meet in your browser, offer to record it. Works while Lyra is closed to the tray; it checks on this computer only."
+      >
+        <Switch
+          label="Offer to record meetings"
+          checked={settings.meetingPrompt}
+          onChange={(meetingPrompt) => void update({ meetingPrompt })}
+        />
+      </Row>
+      <Row
         label="Offer a session when the mic turns on"
-        hint="When another app (Zoom, Teams, …) starts using your microphone, ask whether to start a session."
+        hint="When any other app starts using your microphone, ask whether to start a session."
       >
         <Switch
           label="Offer a session when the mic turns on"

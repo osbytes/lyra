@@ -1,81 +1,126 @@
 import { ipcMain } from 'electron'
 import type { PromptAnswer } from '../shared/types'
 import { log } from './log'
+import { DETECTOR_DEFAULTS, MeetingDetector, type PromptTarget } from './meetingDetector'
 import { MicWatcher, type MicUsers } from './micwatch'
 import { hidePrompt, showPrompt } from './overlay'
-import { isRecording, onSessionState, toggleSession } from './session'
+import { isRecording, onSessionState, sendSessionCommand } from './session'
 import { getSettings, onSettingsChanged, updateSettings } from './settings'
+import { windowTitles } from './windowTitles'
 
 const ANSWERS: readonly PromptAnswer[] = ['start', 'dismiss', 'ignore']
 
-/** Apps using the mic at the last poll. */
-let previous: MicUsers = new Set()
-/** Apps we already asked about during their current mic use. */
-const asked = new Set<string>()
-let current: string | null = null
+const detector = new MeetingDetector({
+  ...DETECTOR_DEFAULTS,
+  now: Date.now,
+  titles: windowTitles
+})
 
-function ignored(appName: string): boolean {
-  const name = appName.toLowerCase()
+let latest: MicUsers = new Set()
+let current: PromptTarget | null = null
+let busy = false
+let recheck: ReturnType<typeof setTimeout> | null = null
+
+function ignored(label: string): boolean {
+  const name = label.toLowerCase()
   return getSettings().micPrompt.ignoredApps.some((entry) => entry.toLowerCase() === name)
 }
 
-function onUsers(users: MicUsers): void {
-  // Forget apps that released the mic, so their next use can prompt again.
-  for (const name of asked) if (!users.has(name)) asked.delete(name)
-  if (current !== null && !users.has(current)) {
+function watching(): boolean {
+  const settings = getSettings()
+  return settings.meetingPrompt || settings.micPrompt.enabled
+}
+
+/** The macOS helper only reports changes, so look again once a new mic user has held on. */
+function scheduleRecheck(): void {
+  if (recheck) clearTimeout(recheck)
+  recheck = null
+  const due = detector.nextCheckAt()
+  if (due === null || due <= Date.now()) return
+  recheck = setTimeout(() => {
+    recheck = null
+    void onUsers(latest)
+  }, due - Date.now() + 50)
+}
+
+async function onUsers(users: MicUsers): Promise<void> {
+  latest = users
+  if (current !== null && !users.has(current.user)) {
     hidePrompt()
     current = null
   }
-
-  if (!isRecording()) {
-    for (const name of users) {
-      if (previous.has(name) || asked.has(name) || ignored(name)) continue
-      asked.add(name)
-      current = name
-      log('micprompt', 'asking', { app: name || 'unknown' })
-      showPrompt({ app: name })
-      break
+  // A title read can outlast a poll; the next poll carries the newer state.
+  if (busy) return
+  busy = true
+  try {
+    const settings = getSettings()
+    const target = await detector.update(users, {
+      meetings: settings.meetingPrompt,
+      anyApp: settings.micPrompt.enabled,
+      recording: isRecording(),
+      ignored
+    })
+    // Settings or recording may have changed while titles were read.
+    if (target && watching() && !isRecording()) {
+      current = target
+      // App ids only: never window titles.
+      log('micprompt', 'asking', { kind: target.kind, app: target.key || 'unknown' })
+      showPrompt({ kind: target.kind, app: target.label })
     }
+  } finally {
+    busy = false
   }
-  previous = users
+  scheduleRecheck()
 }
 
-const watcher = new MicWatcher(onUsers)
+const watcher = new MicWatcher((users) => void onUsers(users))
 
 function sync(enabled: boolean): void {
   if (enabled) {
-    previous = new Set()
-    asked.clear()
+    detector.reset()
     watcher.start()
   } else {
     watcher.stop()
+    if (recheck) clearTimeout(recheck)
+    recheck = null
     hidePrompt()
     current = null
   }
 }
 
 function answer(value: PromptAnswer): void {
-  const name = current
+  const target = current
   current = null
   hidePrompt()
-  if (value === 'start') {
-    toggleSession()
-  } else if (value === 'ignore' && name) {
-    const ignoredApps = [...getSettings().micPrompt.ignoredApps, name]
-    void updateSettings({ micPrompt: { ...getSettings().micPrompt, ignoredApps } })
+  switch (value) {
+    case 'start':
+      // A meeting has other people in it, so it always records the computer's audio too.
+      sendSessionCommand({ type: 'start', meeting: target?.kind === 'meeting' })
+      break
+    case 'dismiss':
+      if (target) detector.snooze(target.key)
+      break
+    case 'ignore':
+      if (target?.label) {
+        const ignoredApps = [...getSettings().micPrompt.ignoredApps, target.label]
+        void updateSettings({ micPrompt: { ...getSettings().micPrompt, ignoredApps } })
+      }
+      break
   }
-  log('micprompt', 'answered', { answer: value, app: name ?? 'unknown' })
+  log('micprompt', 'answered', { answer: value, app: target?.key ?? 'unknown' })
 }
 
-/** Offers to start a session when another app starts using the microphone. */
+/** Offers to start a session when a meeting (or, if asked for, any app) starts using the mic. */
 export function registerMicPrompt(): void {
   ipcMain.on('prompt:answer', (_event, value: unknown) => {
     const choice = ANSWERS.find((entry) => entry === value)
     if (choice) answer(choice)
   })
-  sync(getSettings().micPrompt.enabled)
+  sync(watching())
   onSettingsChanged((next, prev) => {
-    if (next.micPrompt.enabled !== prev.micPrompt.enabled) sync(next.micPrompt.enabled)
+    const was = prev.meetingPrompt || prev.micPrompt.enabled
+    const now = next.meetingPrompt || next.micPrompt.enabled
+    if (was !== now) sync(now)
   })
   // Our own recording is not a reason to ask.
   onSessionState((state) => {

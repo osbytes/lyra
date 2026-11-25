@@ -95,9 +95,18 @@ if (startup.error) {
   })
 }
 
+/** Passed by the login item so Lyra starts in the tray instead of opening its window. */
+const HIDDEN_ARG = '--hidden'
+
 function applyLoginItem(openAtLogin: boolean): void {
   if (isTestRun || !app.isPackaged) return
-  app.setLoginItemSettings({ openAtLogin })
+  app.setLoginItemSettings({ openAtLogin, args: [HIDDEN_ARG] })
+}
+
+/** Opened by the OS at login: stay in the tray (watching for meetings) until the user opens Lyra. */
+function startedAtLogin(): boolean {
+  if (process.argv.includes(HIDDEN_ARG)) return true
+  return process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin
 }
 
 function appIcon(): Electron.NativeImage {
@@ -171,7 +180,7 @@ function createWindow(): void {
 
   // Tasks run headless (the smoke test, evals and replays stay off screen and out of the way);
   // only screenshots need the window drawn.
-  if (!task || task.kind === 'screenshot') {
+  if ((!task && !startedAtLogin()) || task?.kind === 'screenshot') {
     mainWindow.on('ready-to-show', () => {
       mainWindow.show()
     })
