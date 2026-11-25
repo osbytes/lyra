@@ -23,7 +23,7 @@ import { useMeetingStatus } from '../hooks/useMeetingStatus'
 import { rovingIndex } from '../lib/focus'
 import { clockLabel as clock } from '../lib/format'
 import { log } from '../lib/log'
-import { statusLabel, unusedSpeakerName } from '../lib/status'
+import { statusBusy, statusLabel, unusedSpeakerName } from '../lib/status'
 import { notify } from '../lib/toast'
 import { useContextMenu } from './ContextMenu'
 import { speakerTone } from '../lib/speakerTone'
@@ -1048,8 +1048,18 @@ export function Transcript({
           <span className="meeting-status-live" aria-live="polite">
             {status && status.state !== 'done' ? (
               <span
-                className={status.state === 'error' ? 'meeting-status is-error' : 'meeting-status'}
+                className={
+                  status.state === 'error'
+                    ? 'meeting-status is-error'
+                    : statusBusy(status)
+                      ? 'meeting-status is-busy'
+                      : 'meeting-status'
+                }
+                {...(status.task === 'speakers' && statusBusy(status)
+                  ? tip('Speaker names and line breaks may still change until this finishes')
+                  : {})}
               >
+                {statusBusy(status) ? <span className="meeting-status-spinner" aria-hidden="true" /> : null}
                 {statusLabel(status)}
               </span>
             ) : null}

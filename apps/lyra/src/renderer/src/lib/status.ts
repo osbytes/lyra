@@ -7,7 +7,7 @@ export function statusLabel(status: MeetingStatus): string {
     case 'downloading':
       return `Downloading ${status.message ?? 'speaker models'}… ${pct}`
     case 'diarizing':
-      return 'Finding who spoke when…'
+      return 'Still processing audio: finding who spoke when…'
     case 'transcribing':
       return `Transcribing each speaker… ${pct}`
     case 'summarizing':
@@ -17,6 +17,11 @@ export function statusLabel(status: MeetingStatus): string {
     case 'done':
       return status.task === 'notes' ? 'Summary written' : 'Speakers labeled'
   }
+}
+
+/** Whether the session is still being worked on (not finished and not failed). */
+export function statusBusy(status: MeetingStatus): boolean {
+  return status.state !== 'done' && status.state !== 'error'
 }
 
 /** Whether a summary is being written for the session right now. */

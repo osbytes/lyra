@@ -3,6 +3,7 @@ import type { MeetingStatus } from '../../../shared/types'
 import {
   behindLabel,
   phaseAnnouncement,
+  statusBusy,
   statusLabel,
   unusedSpeakerName,
   writingNotes
@@ -32,6 +33,20 @@ describe('statusLabel', () => {
   it('says what finished', () => {
     expect(statusLabel(status({ task: 'notes', state: 'done' }))).toBe('Summary written')
     expect(statusLabel(status({ task: 'speakers', state: 'done' }))).toBe('Speakers labeled')
+  })
+
+  it('says audio is still being processed while speakers are found', () => {
+    expect(statusLabel(status({ state: 'diarizing' }))).toBe(
+      'Still processing audio: finding who spoke when…'
+    )
+  })
+
+  it('counts every state but done and error as busy', () => {
+    expect(statusBusy(status({ state: 'diarizing' }))).toBe(true)
+    expect(statusBusy(status({ state: 'downloading' }))).toBe(true)
+    expect(statusBusy(status({ state: 'summarizing', task: 'notes' }))).toBe(true)
+    expect(statusBusy(status({ state: 'done' }))).toBe(false)
+    expect(statusBusy(status({ state: 'error' }))).toBe(false)
   })
 
   it('shows progress while downloading', () => {
