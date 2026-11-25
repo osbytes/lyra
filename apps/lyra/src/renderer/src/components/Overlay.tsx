@@ -106,16 +106,27 @@ export function Overlay() {
 
 /** The floating recording pill shown while Lyra's main window is out of view. */
 function RecordingPill() {
-  const [state, setState] = useState<SessionState | null>(null)
+  // `saved`: a recording just ended and the pill is staying a moment as the way back to Lyra.
+  const [{ state, saved }, setView] = useState<{ state: SessionState | null; saved: boolean }>({
+    state: null,
+    saved: false
+  })
   const [status, setStatus] = useState('')
   const bars = useRef<(HTMLSpanElement | null)[]>([])
   const stopButton = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     // Subscribe first, then fetch, so a change in between isn't lost.
-    const stop = window.api.onSessionState(setState)
+    const stop = window.api.onSessionState((next) => {
+      setView((current) => ({
+        state: next,
+        saved:
+          next.phase === 'idle' &&
+          (current.saved || current.state?.phase === 'listening' || current.state?.phase === 'finishing')
+      }))
+    })
     void window.api.getSessionState().then((initial) => {
-      setState((current) => current ?? initial)
+      setView((current) => (current.state ? current : { state: initial, saved: false }))
     })
     return stop
   }, [])
@@ -145,6 +156,26 @@ function RecordingPill() {
       : state?.phase === 'finishing'
         ? 'Saving…'
         : status || 'Listening'
+
+  if (saved) {
+    return (
+      <div className="overlay-pill">
+        <span className="overlay-grip" aria-hidden="true">
+          <GripIcon />
+        </span>
+        <button
+          type="button"
+          className="overlay-body overlay-saved"
+          onClick={() => {
+            window.api.showMainWindow()
+          }}
+        >
+          <span className="dock-status">Recording saved</span>
+          <span className="overlay-open">Open Lyra</span>
+        </button>
+      </div>
+    )
+  }
 
   // Laid out like the dock in the main window: stop on the left, then status, level and time.
   return (

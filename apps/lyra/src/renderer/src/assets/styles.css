@@ -3043,6 +3043,18 @@ code {
   text-align: right;
 }
 
+/* After a recording ends: no stop button, so the text starts further in. */
+.overlay-saved {
+  padding-left: 12px;
+}
+
+.overlay-open {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .overlay-prompt {
   display: flex;
   flex-direction: column;

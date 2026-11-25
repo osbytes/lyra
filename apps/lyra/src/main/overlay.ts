@@ -22,10 +22,18 @@ const MARGIN = 24
 const PROMPT_TIMEOUT_MS = 20_000
 /** While the pointer rests on the card it stays; this is how often that's checked. */
 const PROMPT_HOVER_CHECK_MS = 1_000
+/**
+ * How long the pill stays after a recording ends, as the way back to Lyra: stopping from the
+ * pill (or the shortcut) leaves the main window wherever it was, hidden or behind other apps.
+ */
+const DONE_LINGER_MS = 8_000
 
 let overlay: BrowserWindow | null = null
 let prompt: MicPrompt | null = null
 let promptTimer: ReturnType<typeof setTimeout> | null = null
+let lastPhase: SessionState['phase'] = 'idle'
+/** Set while the pill is staying on after a recording, offering to open Lyra. */
+let doneTimer: ReturnType<typeof setTimeout> | null = null
 
 /**
  * Where the user last dragged the window: its left edge and bottom edge, so the taller prompt
@@ -149,13 +157,41 @@ function mainWindowInView(): boolean {
   return !!main && main.isVisible() && !main.isMinimized() && main.isFocused()
 }
 
-function update(state: SessionState): void {
-  const active = state.phase !== 'idle'
-  if (!active) {
-    overlay?.webContents.send('session:state', state)
-    if (!prompt) overlay?.hide()
+function clearDone(): void {
+  if (doneTimer) clearTimeout(doneTimer)
+  doneTimer = null
+}
+
+function expireDone(): void {
+  doneTimer = null
+  if (prompt || getSessionState().phase !== 'idle') return
+  if (pointerOnOverlay()) {
+    doneTimer = setTimeout(expireDone, PROMPT_HOVER_CHECK_MS)
     return
   }
+  overlay?.hide()
+}
+
+function update(state: SessionState): void {
+  const active = state.phase !== 'idle'
+  // A recording that got as far as listening has something saved; a cancelled start doesn't.
+  const ended = !active && (lastPhase === 'listening' || lastPhase === 'finishing')
+  lastPhase = state.phase
+  if (!active) {
+    overlay?.webContents.send('session:state', state)
+    if (prompt) return
+    const offer = !!overlay?.isVisible() && !mainWindowInView() && (ended || doneTimer !== null)
+    if (!offer) {
+      clearDone()
+      overlay?.hide()
+    } else if (ended) {
+      clearDone()
+      doneTimer = setTimeout(expireDone, DONE_LINGER_MS)
+      log('overlay', 'staying to offer the way back')
+    }
+    return
+  }
+  clearDone()
   const hadPrompt = prompt !== null
   clearPrompt()
   overlay ??= createOverlay()
@@ -180,6 +216,7 @@ function clearPrompt(): void {
 /** Shows the "mic in use" card; it hides itself after a while unless the pointer is on it. */
 export function showPrompt(next: MicPrompt): void {
   if (getSessionState().phase !== 'idle') return
+  clearDone()
   prompt = next
   const win = (overlay ??= createOverlay())
   const send = (): void => {
