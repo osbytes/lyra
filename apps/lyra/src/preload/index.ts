@@ -52,6 +52,7 @@ const api: VoicePagesApi = {
   pickFolder: () => ipcRenderer.invoke('settings:pickFolder'),
   moveNotes: (fromDir) => ipcRenderer.invoke('notes:move', fromDir),
   revealNotesFolder: () => ipcRenderer.invoke('notes:reveal'),
+  getAppUsage: () => ipcRenderer.invoke('app:usage'),
   onSessionCommand: (callback) => subscribe<SessionCommand>('session:command', callback),
   reportSession: (state) => {
     ipcRenderer.send('session:report', state)

@@ -51,6 +51,7 @@ import { registerUpdater } from './updater'
 import { broadcastStatus, warmUp } from './whisper'
 import { log, logPath } from './log'
 import { searchSessions } from './search'
+import { appUsage, startUsageSampler } from './usage'
 import { closeSearchIndex, startSearchIndex } from './searchIndex/service'
 import type { Task } from './tasks/args'
 import { isTaskLaunch, prepareTaskProfile, runTaskIn, taskFromArgv } from './tasks/run'
@@ -204,6 +205,7 @@ function registerIpc(): void {
   ipcMain.handle('pages:create', (_event, options: unknown) =>
     createPage(options && typeof options === 'object' ? options : {})
   )
+  ipcMain.handle('app:usage', () => appUsage())
   ipcMain.handle('settings:get', () => getSettings())
   ipcMain.handle('settings:update', (_event, patch: Partial<Settings>) => updateSettings(patch))
   ipcMain.handle('settings:pickFolder', async (event) => {
@@ -313,6 +315,7 @@ void app.whenReady().then(() => {
   })
 
   registerIpc()
+  startUsageSampler()
   registerSessionIpc()
   registerRecorderIpc({ identifySpeakers: !isTestRun, transcribe: !isTestRun })
   // Evals pass --no-relabel to score the track-labeled lines on their own.

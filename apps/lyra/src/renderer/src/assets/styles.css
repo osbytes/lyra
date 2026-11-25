@@ -1843,6 +1843,146 @@ code {
   max-width: 60%;
 }
 
+.usage-chart {
+  margin: 0;
+  padding: 16px;
+}
+
+.usage-chart figcaption {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+
+.usage-chart-title {
+  font-weight: 500;
+}
+
+.usage-chart-figures {
+  display: flex;
+  gap: 16px;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-chart-plot {
+  position: relative;
+  height: 96px;
+  border-radius: var(--radius-sm, 4px);
+  outline-offset: 4px;
+  cursor: crosshair;
+}
+
+.usage-chart-plot svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.usage-chart-top {
+  position: absolute;
+  top: 2px;
+  left: 0;
+  color: var(--text-subtle);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.usage-chart-grid {
+  stroke: var(--border);
+  stroke-dasharray: 2 4;
+  vector-effect: non-scaling-stroke;
+}
+
+.usage-chart-axis {
+  stroke: var(--border-strong);
+  vector-effect: non-scaling-stroke;
+}
+
+.usage-chart-area {
+  fill: var(--accent);
+  fill-opacity: 0.12;
+}
+
+.usage-chart-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.usage-chart-crosshair {
+  stroke: var(--text-subtle);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.usage-chart-dot {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border: 2px solid var(--surface);
+  border-radius: 50%;
+  background: var(--accent);
+  transform: translate(-50%, -50%);
+  box-sizing: content-box;
+  pointer-events: none;
+}
+
+.usage-chart-tooltip {
+  position: absolute;
+  top: -6px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  transform: translateX(8px);
+  pointer-events: none;
+}
+
+.usage-chart-tooltip.is-left {
+  transform: translateX(calc(-100% - 8px));
+}
+
+.usage-chart-tooltip small {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.usage-chart-axis-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  color: var(--text-subtle);
+  font-size: 11px;
+}
+
+.settings-usage {
+  display: flex;
+  gap: 16px;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-usage > span {
+  min-width: 64px;
+  text-align: right;
+}
+
 .settings-buttons {
   display: flex;
   flex-shrink: 0;

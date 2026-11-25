@@ -3,7 +3,7 @@ import { PROVIDERS } from '../../../shared/ai'
 import type { HotkeyStatus, Settings } from '../../../shared/types'
 
 /** Settings tabs, so a problem can point at where it's fixed. */
-export type SettingsTab = 'general' | 'sessions' | 'people'
+export type SettingsTab = 'general' | 'sessions' | 'people' | 'performance'
 
 export type SettingsIssue = { tab: SettingsTab; message: string }
 

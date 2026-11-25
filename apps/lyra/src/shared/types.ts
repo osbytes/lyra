@@ -13,6 +13,32 @@ export type { KeySource, ProviderId } from './ai'
 
 export type MoveNotesResult = { moved: number; skipped: number }
 
+/** One group of Lyra's processes: the main process (with Whisper), the windows, each worker. */
+export type ProcessUsage = {
+  kind: 'main' | 'windows' | 'speakers' | 'notes' | 'search' | 'graphics' | 'other'
+  /** Share of the whole computer's CPU since the last reading, 0–100. */
+  cpuPercent: number
+  memoryBytes: number
+}
+
+/** One reading of Lyra's processes (`app.getAppMetrics`). */
+export type UsageSample = {
+  /** Epoch ms. */
+  at: number
+  cpuPercent: number
+  memoryBytes: number
+  processes: ProcessUsage[]
+}
+
+/** How much of the computer Lyra has used lately. */
+export type AppUsage = {
+  intervalMs: number
+  /** The computer's total memory, so the UI can show Lyra's share of it. */
+  totalMemoryBytes: number
+  /** Oldest first; up to 30 minutes. Empty until the first interval has passed. */
+  samples: UsageSample[]
+}
+
 export type SessionPhase = 'idle' | 'starting' | 'listening' | 'finishing'
 
 /** What the main window's recorder is doing; mirrored to the tray and the overlay. */
@@ -180,6 +206,8 @@ export type VoicePagesApi = {
   /** Moves notes from the old folder into the current one. */
   moveNotes: (fromDir: string) => Promise<MoveNotesResult>
   revealNotesFolder: () => Promise<void>
+  /** CPU and memory Lyra's processes used over the last 30 minutes, sampled in main. */
+  getAppUsage: () => Promise<AppUsage>
   /** Main window: commands from the tray, global hotkey, or overlay. */
   onSessionCommand: (callback: (command: SessionCommand) => void) => () => void
   /** Main window: report recorder state changes. */
