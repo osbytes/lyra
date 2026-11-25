@@ -400,7 +400,7 @@ export async function captureScreenshot(win: BrowserWindow, reviewDir: string | 
       await pressShortcut('z')
       await settle()
       await save(reviewDir, 'undid-delete-light.png')
-      // A title too long for the band wraps beside the toolbar instead of running under it.
+      // A title too long for one line wraps within the page's text column.
       await win.webContents.executeJavaScript(`(() => {
         const field = document.querySelector('.title-input')
         if (!field) return

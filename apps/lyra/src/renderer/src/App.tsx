@@ -44,6 +44,7 @@ import {
 } from './lib/history'
 import { notify, onToast, type ToastMessage } from './lib/toast'
 import { tip } from './components/Tooltip'
+import lyraIcon from './assets/lyra-icon.png'
 
 /** The overlay pill doesn't need every audio frame; ~12 updates a second look smooth. */
 const OVERLAY_FRAME_MS = 80
@@ -139,7 +140,6 @@ export default function App(): React.JSX.Element {
     pages,
     current,
     currentRef,
-    saveState,
     edit,
     editSummary,
     editSegment,
@@ -582,27 +582,13 @@ export default function App(): React.JSX.Element {
               <SidebarIcon />
             </button>
           )}
+          <div className="brand">
+            <img src={lyraIcon} alt="" width={24} height={24} />
+            <span>Lyra</span>
+          </div>
           {current ? (
             <>
-              {/* In the band beside the actions; a long title wraps onto more lines. */}
-              <textarea
-                className="title-input no-drag"
-                rows={1}
-                value={current.title}
-                onChange={(event) => edit({ title: event.target.value.replace(/\s*\n\s*/g, ' ') })}
-                onKeyDown={(event) => {
-                  if (event.key !== 'Enter') return
-                  event.preventDefault()
-                  notes.current?.focus()
-                }}
-                placeholder="Untitled"
-                aria-label="Session title"
-                spellCheck={false}
-              />
               <div className="topbar-actions">
-              <span className={`save-state${saveState === 'saving' ? ' is-saving' : ''}`}>
-                {saveState === 'saving' ? 'Saving…' : 'Saved'}
-              </span>
               <button
                 className="btn no-drag"
                 type="button"
@@ -652,6 +638,21 @@ export default function App(): React.JSX.Element {
               style={hasTranscript && paneMode === 'split' ? { flexBasis: `${String(split * 100)}%` } : undefined}
             >
               <article className="page">
+                {/* A textarea so a long title wraps; Enter moves on to the notes instead. */}
+                <textarea
+                  className="title-input"
+                  rows={1}
+                  value={current.title}
+                  onChange={(event) => edit({ title: event.target.value.replace(/\s*\n\s*/g, ' ') })}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter') return
+                    event.preventDefault()
+                    notes.current?.focus()
+                  }}
+                  placeholder="Untitled"
+                  aria-label="Session title"
+                  spellCheck={false}
+                />
                 {panel ? null : (
                   <>
                     <p className="page-stats">
