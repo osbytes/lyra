@@ -1,7 +1,8 @@
 /** `lyra smoke`: main-process checks, then the IPC bridge exercised from the renderer. */
 import { app, clipboard, type BrowserWindow } from 'electron'
 import { existsSync } from 'node:fs'
-import { mkdir, readdir, readFile, utimes, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { notesDir } from '../pages'
 import { ChunkedTranscriber } from '../transcriber'
@@ -55,7 +56,7 @@ import {
   toggleHighlight,
   type TranscriptEdit
 } from '../../shared/transcriptOverlay'
-import { getSettings, overrideSettings } from '../settings'
+import { getSettings, overrideSettings, updateSettings } from '../settings'
 import { assignSpeaker } from '../meeting/pipeline'
 import { defaultTitle, partOfDay } from '../sessionTitle'
 import { trackPath } from '../recorder'
@@ -64,6 +65,8 @@ import { flushLog, log, logPath } from '../log'
 import { parseConsentStore, parseHelperLine } from '../micwatch'
 import { classifyMicUser, meetingFromTitles } from '../meetingApps'
 import { MeetingDetector, type DetectorPolicy } from '../meetingDetector'
+import { exportIgnoredAppsTo, importIgnoredAppsFrom } from '../ignoredAppsFile'
+import { mergeIgnoredApps } from '../../shared/ignoredApps'
 import { ConfigError, parseConfig } from '../config'
 import { parseTask } from './args'
 import { MockLanguageModelV4 } from 'ai/test'
@@ -259,6 +262,39 @@ function checkConsentParser(): void {
   const users = [...parseConsentStore(sample, 'C:\\Apps\\Lyra\\Lyra.exe')].sort()
   if (users.join(',') !== 'MSTeams,Zoom') {
     throw new Error(`consent parser returned ${users.join(',')}`)
+  }
+}
+
+/** The "Don't ask" list: merged without duplicates, and moved through a file without losing any. */
+async function checkIgnoredAppsFile(): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`ignored apps file: ${message}`)
+  }
+  const merged = mergeIgnoredApps(['Zoom'], [' zoom ', 'obs64', '', 'x'.repeat(101), 'obs64', 'Discord'])
+  if (merged.apps.join(',') !== 'Zoom,obs64,Discord' || merged.added !== 2) fail(`merged to ${merged.apps.join(',')}`)
+  const before = getSettings().micPrompt
+  const dir = await mkdtemp(join(tmpdir(), 'lyra-ignored-'))
+  try {
+    await updateSettings({ micPrompt: { ...before, ignoredApps: ['Zoom', 'obs64'] } })
+    const file = join(dir, 'apps.json')
+    if ((await exportIgnoredAppsTo(file)).status !== 'saved') fail('export did not save')
+    await updateSettings({ micPrompt: { ...before, ignoredApps: ['Discord', 'ZOOM'] } })
+    const imported = await importIgnoredAppsFrom(file)
+    const after = getSettings().micPrompt.ignoredApps.join(',')
+    if (imported.status !== 'imported' || imported.added !== 1 || after !== 'Discord,ZOOM,obs64') {
+      fail(`import gave ${JSON.stringify(imported)} and ${after}`)
+    }
+    await writeFile(join(dir, 'plain.json'), '["Element", 3]', 'utf8')
+    if ((await importIgnoredAppsFrom(join(dir, 'plain.json'))).status !== 'invalid') fail('took a list with a number in it')
+    await writeFile(join(dir, 'plain.json'), '["Element"]', 'utf8')
+    if ((await importIgnoredAppsFrom(join(dir, 'plain.json'))).status !== 'imported') fail('refused a plain list')
+    await writeFile(join(dir, 'bad.json'), '{ "settings": true }', 'utf8')
+    if ((await importIgnoredAppsFrom(join(dir, 'bad.json'))).status !== 'invalid') fail('took a file that is not a list')
+    await writeFile(join(dir, 'junk.json'), 'not json', 'utf8')
+    if ((await importIgnoredAppsFrom(join(dir, 'junk.json'))).status !== 'invalid') fail('took a file that is not JSON')
+  } finally {
+    await updateSettings({ micPrompt: before })
+    await rm(dir, { recursive: true, force: true })
   }
 }
 
@@ -899,6 +935,7 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
     await checkNotesWriters()
     checkConsentParser()
     await checkMeetingDetector()
+    await checkIgnoredAppsFile()
     await checkSessionStore()
     await checkAudioRetention()
     await checkTranscriptModel()
@@ -910,6 +947,10 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
     const result: unknown = await win.webContents.executeJavaScript(`
       (async () => {
         const fail = (message) => { throw new Error(message) }
+        // The list's file dialogs can't run headless; the main-side work is checked directly.
+        if (typeof window.api.exportIgnoredApps !== 'function' || typeof window.api.importIgnoredApps !== 'function') {
+          fail('ignored-app import/export missing from the bridge')
+        }
         const list0 = await window.api.listPages()
         const legacy = list0.find((page) => page.id === 'legacy-smoke.md')
         if (!legacy || legacy.title !== 'Legacy page') fail('legacy page was not migrated')

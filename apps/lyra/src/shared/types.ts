@@ -41,6 +41,14 @@ export type SessionCommand =
 export type MicPrompt = { kind: 'meeting' | 'mic'; app: string }
 export type PromptAnswer = 'start' | 'dismiss' | 'ignore'
 
+/** Exporting the "Don't ask" list to a file the user picks. */
+export type ExportIgnoredResult = { status: 'cancelled' } | { status: 'saved'; count: number }
+/** Importing it: names are only ever added, never removed. */
+export type ImportIgnoredResult =
+  | { status: 'cancelled' }
+  | { status: 'imported'; added: number; total: number }
+  | { status: 'invalid'; message: string }
+
 /** One global shortcut starts or stops a session from anywhere. */
 export type HotkeyAction = 'session'
 
@@ -187,6 +195,10 @@ export type VoicePagesApi = {
   /** Moves notes from the old folder into the current one. */
   moveNotes: (fromDir: string) => Promise<MoveNotesResult>
   revealNotesFolder: () => Promise<void>
+  /** Saves the "Don't ask" app list to a file the user picks. */
+  exportIgnoredApps: () => Promise<ExportIgnoredResult>
+  /** Adds the apps in a file the user picks to the "Don't ask" list. */
+  importIgnoredApps: () => Promise<ImportIgnoredResult>
   /** Main window: commands from the tray, global hotkey, or overlay. */
   onSessionCommand: (callback: (command: SessionCommand) => void) => () => void
   /** Main window: report recorder state changes. */

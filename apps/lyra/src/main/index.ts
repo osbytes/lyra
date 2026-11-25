@@ -30,6 +30,7 @@ import {
 } from './sessionStore'
 import { registerHotkeys, unregisterHotkeys } from './hotkey'
 import { registerMicPrompt, stopMicPrompt } from './micprompt'
+import { exportIgnoredApps, importIgnoredApps } from './ignoredAppsFile'
 import { registerOverlay, watchMainWindow } from './overlay'
 import { getMainWindow, registerSessionIpc, setMainWindow, showMainWindow } from './session'
 import { getSettings, onSettingsChanged, updateSettings } from './settings'
@@ -229,6 +230,12 @@ function registerIpc(): void {
       : await dialog.showOpenDialog(options)
     return result.canceled ? null : (result.filePaths[0] ?? null)
   })
+  ipcMain.handle('prompts:exportIgnored', (event) =>
+    exportIgnoredApps(BrowserWindow.fromWebContents(event.sender))
+  )
+  ipcMain.handle('prompts:importIgnored', (event) =>
+    importIgnoredApps(BrowserWindow.fromWebContents(event.sender))
+  )
   ipcMain.handle('notes:move', (_event, fromDir: unknown) => {
     if (typeof fromDir !== 'string') throw new Error('Invalid folder')
     return moveNotes(fromDir)

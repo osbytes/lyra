@@ -1,4 +1,5 @@
 import { ipcMain } from 'electron'
+import { mergeIgnoredApps } from '../shared/ignoredApps'
 import type { PromptAnswer } from '../shared/types'
 import { log } from './log'
 import { DETECTOR_DEFAULTS, MeetingDetector, type PromptTarget } from './meetingDetector'
@@ -106,8 +107,9 @@ function answer(value: PromptAnswer): void {
       break
     case 'ignore':
       if (target?.label) {
-        const ignoredApps = [...getSettings().micPrompt.ignoredApps, target.label]
-        void updateSettings({ micPrompt: { ...getSettings().micPrompt, ignoredApps } })
+        const prompt = getSettings().micPrompt
+        const { apps } = mergeIgnoredApps(prompt.ignoredApps, [target.label])
+        void updateSettings({ micPrompt: { ...prompt, ignoredApps: apps } })
       }
       break
   }

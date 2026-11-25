@@ -319,6 +319,17 @@ export async function captureScreenshot(win: BrowserWindow, reviewDir: string | 
               `[...document.querySelectorAll('button')].find((b) => b.textContent === 'Off')?.click()`
             )
             await settle()
+            // Prompts, with a few apps on the "Don't ask" list.
+            await win.webContents.executeJavaScript(`(async () => {
+              const settings = await window.api.getSettings()
+              await window.api.updateSettings({ micPrompt: { ...settings.micPrompt, ignoredApps: ['Discord', 'obs64', 'Google Meet'] } })
+            })()`)
+            await settle()
+            await win.webContents.executeJavaScript(
+              `document.querySelector('[aria-label="App to never ask about"]')?.scrollIntoView({ block: 'center' })`
+            )
+            await settle()
+            await save(reviewDir, `settings-prompts-${theme}.png`)
           }
         }
       }

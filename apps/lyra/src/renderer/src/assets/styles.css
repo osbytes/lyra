@@ -1944,6 +1944,11 @@ code {
   list-style: none;
 }
 
+.settings-chips.is-block {
+  justify-content: flex-start;
+  padding: 0 16px 12px;
+}
+
 .settings-chips li {
   display: inline-flex;
   align-items: center;

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { PROVIDERS, ProviderId, type KeySource } from '../../../shared/ai'
 import { WHISPER_LANGUAGES } from '../../../shared/languages'
+import { mergeIgnoredApps } from '../../../shared/ignoredApps'
 import type { Settings as SettingsValue } from '../../../shared/types'
 import {
   keyChanged,
@@ -509,8 +510,104 @@ function SearchSection({ settings, update }: SectionProps) {
   )
 }
 
+/** The apps prompts skip: added from a prompt's "Don't ask", by hand, or from a file. */
+function IgnoredApps({ settings, update }: SectionProps) {
+  const { ignoredApps } = settings.micPrompt
+  const [name, setName] = useState('')
+  const [notice, setNotice] = useState<string | null>(null)
+  const setIgnored = (next: string[]): void => {
+    void update({ micPrompt: { ...settings.micPrompt, ignoredApps: next } })
+  }
+  const add = (): void => {
+    const { apps, added } = mergeIgnoredApps(ignoredApps, [name])
+    setNotice(added ? null : `${name.trim()} is already on the list.`)
+    if (added) setIgnored(apps)
+    setName('')
+  }
+  const exportList = async (): Promise<void> => {
+    const result = await window.api.exportIgnoredApps()
+    if (result.status === 'saved') {
+      setNotice(`Exported ${String(result.count)} ${result.count === 1 ? 'app' : 'apps'}.`)
+    }
+  }
+  const importList = async (): Promise<void> => {
+    const result = await window.api.importIgnoredApps()
+    switch (result.status) {
+      case 'cancelled':
+        return
+      case 'invalid':
+        setNotice(result.message)
+        return
+      case 'imported':
+        setNotice(
+          result.added
+            ? `Added ${String(result.added)} ${result.added === 1 ? 'app' : 'apps'}.`
+            : 'Every app in that file was already on the list.'
+        )
+    }
+  }
+  return (
+    <>
+      <Row
+        label="Never ask for"
+        hint="Prompts skip these apps. Use the name a prompt shows, like Zoom, Google Meet or obs64."
+      >
+        <input
+          className="settings-input"
+          value={name}
+          maxLength={100}
+          placeholder="App name"
+          onChange={(event) => {
+            setName(event.target.value)
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && name.trim()) add()
+          }}
+          aria-label="App to never ask about"
+        />
+        <button className="btn" type="button" disabled={!name.trim()} onClick={add}>
+          Add
+        </button>
+      </Row>
+      {ignoredApps.length ? (
+        <ul className="settings-chips is-block">
+          {ignoredApps.map((app) => (
+            <li key={app}>
+              {app}
+              <button
+                type="button"
+                aria-label={`Ask again for ${app}`}
+                {...tip('Ask again')}
+                onClick={() => {
+                  setIgnored(ignoredApps.filter((entry) => entry !== app))
+                }}
+              >
+                <CloseIcon />
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <Row label="Share the list" hint="Save it to a file, or add the apps from one.">
+        <button className="btn" type="button" onClick={() => void importList()}>
+          Import…
+        </button>
+        <button
+          className="btn"
+          type="button"
+          disabled={!ignoredApps.length}
+          onClick={() => void exportList()}
+        >
+          Export…
+        </button>
+      </Row>
+      {notice ? <p className="settings-notice">{notice}</p> : null}
+    </>
+  )
+}
+
 function PromptsSection({ settings, update }: SectionProps) {
-  const { enabled, ignoredApps } = settings.micPrompt
+  const { enabled } = settings.micPrompt
   const setPrompt = (patch: Partial<SettingsValue['micPrompt']>): void => {
     void update({ micPrompt: { ...settings.micPrompt, ...patch } })
   }
@@ -538,27 +635,7 @@ function PromptsSection({ settings, update }: SectionProps) {
           }}
         />
       </Row>
-      {ignoredApps.length ? (
-        <Row label="Never ask for" hint="Apps you chose “Don’t ask” for.">
-          <ul className="settings-chips">
-            {ignoredApps.map((name) => (
-              <li key={name}>
-                {name}
-                <button
-                  type="button"
-                  aria-label={`Ask again for ${name}`}
-                  {...tip('Ask again')}
-                  onClick={() => {
-                    setPrompt({ ignoredApps: ignoredApps.filter((entry) => entry !== name) })
-                  }}
-                >
-                  <CloseIcon />
-                </button>
-              </li>
-            ))}
-          </ul>
-        </Row>
-      ) : null}
+      <IgnoredApps settings={settings} update={update} />
     </Section>
   )
 }
