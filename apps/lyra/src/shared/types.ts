@@ -13,6 +13,32 @@ export type { KeySource, ProviderId } from './ai'
 
 export type MoveNotesResult = { moved: number; skipped: number }
 
+/** One group of Lyra's processes: the main process (with Whisper), the windows, each worker. */
+export type ProcessUsage = {
+  kind: 'main' | 'windows' | 'speakers' | 'notes' | 'search' | 'graphics' | 'other'
+  /** Share of the whole computer's CPU since the last reading, 0–100. */
+  cpuPercent: number
+  memoryBytes: number
+}
+
+/** One reading of Lyra's processes (`app.getAppMetrics`). */
+export type UsageSample = {
+  /** Epoch ms. */
+  at: number
+  cpuPercent: number
+  memoryBytes: number
+  processes: ProcessUsage[]
+}
+
+/** How much of the computer Lyra has used lately. */
+export type AppUsage = {
+  intervalMs: number
+  /** The computer's total memory, so the UI can show Lyra's share of it. */
+  totalMemoryBytes: number
+  /** Oldest first; up to 30 minutes. Empty until the first interval has passed. */
+  samples: UsageSample[]
+}
+
 export type SessionPhase = 'idle' | 'starting' | 'listening' | 'finishing'
 
 /** What the main window's recorder is doing; mirrored to the tray and the overlay. */
@@ -260,6 +286,8 @@ export type VoicePagesApi = {
   moveNotes: () => Promise<MoveNotesResult>
   /** Main window only. Opens the notes folder in the file manager. */
   revealNotesFolder: () => Promise<void>
+  /** CPU and memory Lyra's processes used over the last 30 minutes, sampled in main. */
+  getAppUsage: () => Promise<AppUsage>
   /** Main window only. Saves the "Don't ask" app list to a file the user picks. */
   exportIgnoredApps: () => Promise<ExportIgnoredResult>
   /** Main window only. Adds the apps in a file the user picks to the "Don't ask" list. */

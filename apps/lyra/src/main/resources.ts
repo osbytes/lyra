@@ -1,4 +1,5 @@
 import { app, powerMonitor } from 'electron'
+import { metricsReader } from './appMetrics'
 import { statfs } from 'node:fs/promises'
 import { cpus, freemem, loadavg, totalmem } from 'node:os'
 import { log } from './log'
@@ -19,6 +20,7 @@ const IDLE_MS = 10 * 60_000
 let recording = false
 let lastAt = 0
 let lastPressure = ''
+const readMetrics = metricsReader()
 
 function thermalState(): string | null {
   // macOS only; elsewhere Electron reports 'unknown'.
@@ -51,7 +53,7 @@ async function sample(why: string): Promise<void> {
   }
   log('resources', why, {
     // CPU is since the previous sample: Electron measures between calls.
-    processes: summarizeProcesses(app.getAppMetrics()),
+    processes: summarizeProcesses(readMetrics()),
     ...machine,
     onBattery: powerMonitor.isOnBatteryPower()
   })
@@ -76,7 +78,7 @@ function sampleQuietly(why: string): void {
 /** Starts the periodic samples; call once the app is ready. */
 export function startResourceLog(): void {
   // The first call only starts Electron's CPU measurement; its numbers cover nothing yet.
-  app.getAppMetrics()
+  readMetrics()
   onSessionState((state) => {
     const now = state.phase !== 'idle'
     if (now === recording) return

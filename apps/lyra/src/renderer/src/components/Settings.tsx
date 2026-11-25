@@ -4,7 +4,8 @@ import { formatBytes } from '../../../shared/bytes'
 import { WHISPER_LANGUAGES } from '../../../shared/languages'
 import { mergeIgnoredApps } from '../../../shared/ignoredApps'
 import { isStricterRetention } from '../../../shared/retention'
-import type { NotesTestResult, Settings as SettingsValue } from '../../../shared/types'
+import type { NotesTestResult, ProcessUsage, Settings as SettingsValue } from '../../../shared/types'
+import { useAppUsage } from '../hooks/useAppUsage'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { usePermissions } from '../hooks/usePermissions'
 import {
@@ -22,13 +23,14 @@ import { AboutSettings, InfoIcon } from './About'
 import { ConfirmDialog } from './ConfirmDialog'
 import { ScrollArea, Segmented, Select, Switch } from './Controls'
 import { HotkeyInput } from './HotkeyInput'
-import { CloseIcon, FolderIcon, GearIcon, PeopleIcon, RecordIcon } from './Icons'
+import { CloseIcon, FolderIcon, GaugeIcon, GearIcon, PeopleIcon, RecordIcon } from './Icons'
 import { LocalServerSettings, TestResult } from './LocalServer'
 import { MicrophoneSelect } from './MicrophoneSelect'
 import { PeopleSettings } from './People'
 import { PermissionRow } from './Permissions'
 import { CommitInput, Row, Section, type SectionProps, type Update } from './SettingsParts'
 import { tip } from './Tooltip'
+import { UsageChart } from './UsageChart'
 import { VocabularyEditor } from './Vocabulary'
 
 type Props = {
@@ -772,10 +774,105 @@ function PromptsSection({ settings, update }: SectionProps) {
   )
 }
 
+const PROCESS_LABELS: Record<ProcessUsage['kind'], { label: string; hint: string }> = {
+  main: { label: 'Lyra', hint: 'Files, recording and Whisper transcription.' },
+  windows: { label: 'Windows', hint: 'The main window and the recording overlay.' },
+  speakers: { label: 'Speaker detection', hint: 'Tells voices apart in sessions.' },
+  notes: { label: 'Local summaries', hint: 'The on-device model that writes session notes.' },
+  search: { label: 'Search index', hint: 'Keeps search up to date as sessions change.' },
+  graphics: { label: 'Graphics', hint: 'Drawing the interface.' },
+  other: { label: 'Other', hint: 'Chromium’s network, audio and other helper processes.' }
+}
+
+function formatCpu(percent: number): string {
+  return `${percent < 10 ? percent.toFixed(1) : String(Math.round(percent))}%`
+}
+
+type Figures = Pick<ProcessUsage, 'cpuPercent' | 'memoryBytes'>
+
+function UsageFigures({ cpuPercent, memoryBytes }: Figures) {
+  return (
+    <span className="settings-usage">
+      <span>{formatCpu(cpuPercent)} CPU</span>
+      <span>{formatBytes(memoryBytes)}</span>
+    </span>
+  )
+}
+
+function PerformanceSection() {
+  const usage = useAppUsage()
+  const latest = usage?.samples.at(-1)
+  if (!usage || !latest) {
+    return (
+      <Section title="Resource use">
+        <p className="settings-notice">Measuring…</p>
+      </Section>
+    )
+  }
+  const memoryShare = (latest.memoryBytes / usage.totalMemoryBytes) * 100
+  // Each process's busiest moment in the window, so a spike that has passed still shows its owner.
+  const peakCpu = (kind: ProcessUsage['kind']): number =>
+    Math.max(
+      0,
+      ...usage.samples.map(
+        (sample) => sample.processes.find((entry) => entry.kind === kind)?.cpuPercent ?? 0
+      )
+    )
+  return (
+    <>
+      <Section title="Last 30 minutes">
+        <UsageChart
+          title="CPU"
+          samples={usage.samples}
+          intervalMs={usage.intervalMs}
+          value={(sample) => sample.cpuPercent}
+          format={formatCpu}
+          floor={5}
+        />
+        <UsageChart
+          title="Memory"
+          samples={usage.samples}
+          intervalMs={usage.intervalMs}
+          value={(sample) => sample.memoryBytes}
+          format={formatBytes}
+          floor={1024 ** 3}
+          unit={1024 ** 3}
+        />
+        <p className="settings-notice">
+          Now: {formatCpu(latest.cpuPercent)} of this computer’s CPU and{' '}
+          {formatBytes(latest.memoryBytes)} ({memoryShare.toFixed(1)}% of{' '}
+          {formatBytes(usage.totalMemoryBytes)}) memory. Measured every{' '}
+          {String(usage.intervalMs / 1000)} seconds since Lyra started.
+        </p>
+      </Section>
+      <Section title="By process">
+        {latest.processes.map((entry) => {
+          const peak = peakCpu(entry.kind)
+          const { label, hint } = PROCESS_LABELS[entry.kind]
+          return (
+            <Row
+              key={entry.kind}
+              label={label}
+              hint={peak >= 1 ? `${hint} Peak ${formatCpu(peak)} CPU.` : hint}
+            >
+              <UsageFigures cpuPercent={entry.cpuPercent} memoryBytes={entry.memoryBytes} />
+            </Row>
+          )
+        })}
+        <p className="settings-notice">
+          CPU is a share of the whole computer. Speaker detection and local summaries only run
+          while they have work, so they come and go.
+        </p>
+      </Section>
+    </>
+  )
+}
+
 const TABS: readonly { id: SettingsTab; label: string; icon: ReactNode }[] = [
   { id: 'general', label: 'General', icon: <GearIcon /> },
   { id: 'sessions', label: 'Sessions', icon: <RecordIcon /> },
   { id: 'people', label: 'People', icon: <PeopleIcon /> },
+  { id: 'performance', label: 'Performance', icon: <GaugeIcon /> },
   { id: 'about', label: 'About', icon: <InfoIcon /> }
 ]
 
@@ -876,6 +973,7 @@ export function SettingsDialog({ settings, update: rawUpdate, issues, onClose }:
                 <PeopleSettings micDeviceId={settings.micDeviceId} />
               </Section>
             ) : null}
+            {tab === 'performance' ? <PerformanceSection /> : null}
             {tab === 'about' ? <AboutSettings /> : null}
           </ScrollArea>
         </div>

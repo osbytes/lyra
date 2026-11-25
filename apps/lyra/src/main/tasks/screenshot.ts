@@ -304,9 +304,20 @@ export async function captureScreenshot(win: BrowserWindow, reviewDir: string | 
         await settle()
         await save(reviewDir, `settings-${theme}.png`)
         // The tabs after General, in nav order.
-        for (const [index, tab] of ['sessions', 'people'].entries()) {
+        for (const [index, tab] of ['sessions', 'people', 'performance', 'about'].entries()) {
           await click(`.settings-nav button:nth-of-type(${String(index + 2)})`)
           await settle()
+          if (tab === 'performance') {
+            // The graphs appear once the first 5-second sample is in; then show the hover readout.
+            await win.webContents.executeJavaScript(`new Promise((resolve) => {
+              const poll = () => document.querySelector('.usage-chart-plot') ? resolve() : setTimeout(poll, 250)
+              poll()
+            })`)
+            await win.webContents.executeJavaScript(
+              `document.querySelector('.usage-chart-plot')?.focus()`
+            )
+            await settle()
+          }
           await save(reviewDir, `settings-${tab}-${theme}.png`)
           if (tab === 'sessions') {
             // Cloud summaries: provider, model and key rows (no key in a throwaway profile).
