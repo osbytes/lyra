@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { cx } from '@/lib/cx'
-import { MicIcon, PersonIcon, SpeakerIcon } from './SiteIcons'
+import { MicIcon, SpeakerIcon } from './SiteIcons'
 import styles from './heroGraph.module.css'
 
 // Everything is laid out in a 560×600 box: the DOM layer places voices and cards in percentages
@@ -14,36 +14,35 @@ const CARD_W = 220
 
 type Voice = 'you' | 'dana' | 'sam' | 'call'
 
-// Colors are the site's own tokens (globals.css), so the graph follows light and dark like the
-// rest of the page. The speakers use the app's speaker colors.
-type Token = '--accent' | '--accent-ink' | '--spk-2' | '--spk-3' | '--muted' | '--faint'
-
-const VOICES: readonly { id: Voice; name: string; y: number; color: Token; icon: ReactNode }[] = [
-  { id: 'you', name: 'You', y: 96, color: '--accent', icon: <MicIcon /> },
-  { id: 'dana', name: 'Dana', y: 222, color: '--spk-2', icon: <PersonIcon /> },
-  { id: 'sam', name: 'Sam', y: 348, color: '--spk-3', icon: <PersonIcon /> },
-  { id: 'call', name: 'Call audio', y: 474, color: '--muted', icon: <SpeakerIcon /> }
+// The graph is drawn with the app's own stylesheet (scoped under `.lyra-ui`): its surfaces, its
+// accent, and the speaker avatars' tones, so it matches the app and follows light and dark.
+const VOICES: readonly { id: Voice; name: string; y: number; tone: string | null; mark: ReactNode }[] = [
+  { id: 'you', name: 'You', y: 96, tone: null, mark: <MicIcon /> },
+  { id: 'dana', name: 'Dana', y: 222, tone: '0', mark: 'D' },
+  { id: 'sam', name: 'Sam', y: 348, tone: '1', mark: 'S' },
+  { id: 'call', name: 'Call audio', y: 474, tone: '2', mark: <SpeakerIcon /> }
 ]
 
-/** What Lyra itself adds (summaries, tags, files) rather than a voice. */
-const PAGE_COLOR: Token = '--accent-ink'
+/** Resolved colors for the canvas, which can't read CSS variables itself. */
+type Palette = { accent: string; faint: string; voices: Record<Voice, string> }
 
-const colorOf = (voice: Voice | null): Token => VOICES.find((v) => v.id === voice)?.color ?? PAGE_COLOR
+/** A word's color: its speaker's tone, or the accent for what Lyra itself adds. */
+type Ink = Voice | 'page'
 
-type Palette = Record<Token, string>
+const inkOf = (c: Palette, ink: Ink): string => (ink === 'page' ? c.accent : c.voices[ink])
 
-/** The tokens' current values, for the canvas, which can't read CSS variables itself. */
-function readPalette(el: Element): Palette {
-  const css = getComputedStyle(el)
-  // An unset token reads as '', which the canvas would ignore; fall back to a neutral grey.
-  const read = (token: Token): string => css.getPropertyValue(token).trim() || '#8b8b99'
+function readPalette(root: HTMLElement): Palette {
+  const css = getComputedStyle(root)
+  // An unset value reads as '', which the canvas would ignore; fall back to a neutral grey.
+  const accent = css.getPropertyValue('--accent').trim() || '#8b8b99'
+  const tone = (voice: Voice): string => {
+    const avatar = root.querySelector(`[data-voice="${voice}"] .speaker-avatar`)
+    return avatar ? getComputedStyle(avatar).color : accent
+  }
   return {
-    '--accent': read('--accent'),
-    '--accent-ink': read('--accent-ink'),
-    '--spk-2': read('--spk-2'),
-    '--spk-3': read('--spk-3'),
-    '--muted': read('--muted'),
-    '--faint': read('--faint')
+    accent,
+    faint: css.getPropertyValue('--text-subtle').trim() || '#8b8b99',
+    voices: { you: tone('you'), dana: tone('dana'), sam: tone('sam'), call: tone('call') }
   }
 }
 
@@ -95,8 +94,8 @@ const BEAT_MS = 2000
 const TRAVEL_MS = 950
 
 type Point = { x: number; y: number }
-type Flight = { from: Point; via: Point | null; to: Point; color: Token; start: number }
-type Ripple = { at: Point; color: Token; start: number }
+type Flight = { from: Point; via: Point | null; to: Point; ink: Ink; start: number }
+type Ripple = { at: Point; ink: Ink; start: number }
 
 /** Where a beat's word starts and how it travels: a curve from a voice, or down the page. */
 function flightFor(beat: Beat, start: number): Flight {
@@ -105,10 +104,10 @@ function flightFor(beat: Beat, start: number): Flight {
   const voice = VOICES.find((v) => v.id === beat.from)
   if (!voice) {
     const y = Math.max(0, slot.y - 130)
-    return { from: { x: spineX(y), y }, via: null, to, color: PAGE_COLOR, start }
+    return { from: { x: spineX(y), y }, via: null, to, ink: 'page', start }
   }
   const from = { x: NODE_X + 20, y: voice.y }
-  return { from, via: { x: (from.x + to.x) / 2, y: voice.y }, to, color: voice.color, start }
+  return { from, via: { x: (from.x + to.x) / 2, y: voice.y }, to, ink: voice.id, start }
 }
 
 function pointOn(flight: Flight, t: number): Point {
@@ -139,7 +138,7 @@ function draw(ctx: CanvasRenderingContext2D, now: number, flights: Flight[], rip
   for (const d of DUST) {
     const drift = Math.sin(now / 2400 + d.phase)
     ctx.globalAlpha = 0.22 + 0.14 * drift
-    ctx.fillStyle = c['--accent']
+    ctx.fillStyle = c.accent
     ctx.beginPath()
     ctx.arc(d.x + 6 * drift, d.y + 4 * Math.cos(now / 3100 + d.phase), 1.3, 0, Math.PI * 2)
     ctx.fill()
@@ -149,7 +148,7 @@ function draw(ctx: CanvasRenderingContext2D, now: number, flights: Flight[], rip
   ctx.setLineDash([2, 5])
   ctx.lineWidth = 1
   ctx.globalAlpha = 0.45
-  ctx.strokeStyle = c['--faint']
+  ctx.strokeStyle = c.faint
   for (const v of VOICES) {
     ctx.beginPath()
     ctx.moveTo(NODE_X + 22, v.y)
@@ -159,7 +158,7 @@ function draw(ctx: CanvasRenderingContext2D, now: number, flights: Flight[], rip
   ctx.setLineDash([])
 
   ctx.globalAlpha = 0.7
-  ctx.strokeStyle = c['--faint']
+  ctx.strokeStyle = c.faint
   ctx.lineWidth = 1.2
   ctx.beginPath()
   for (let y = 0; y <= H; y += 6) {
@@ -172,14 +171,14 @@ function draw(ctx: CanvasRenderingContext2D, now: number, flights: Flight[], rip
     const x = spineX(slot.y)
     if (slot.side === 'right') {
       ctx.globalAlpha = 0.55
-      ctx.strokeStyle = c['--faint']
+      ctx.strokeStyle = c.faint
       ctx.beginPath()
       ctx.moveTo(x, slot.y)
       ctx.lineTo(cardLeft(slot), slot.y)
       ctx.stroke()
     }
     ctx.globalAlpha = 0.8
-    ctx.fillStyle = c['--faint']
+    ctx.fillStyle = c.faint
     ctx.beginPath()
     ctx.arc(x, slot.y, 2.6, 0, Math.PI * 2)
     ctx.fill()
@@ -188,7 +187,7 @@ function draw(ctx: CanvasRenderingContext2D, now: number, flights: Flight[], rip
   for (const r of ripples) {
     const t = (now - r.start) / 700
     if (t < 0 || t > 1) continue
-    ctx.strokeStyle = c[r.color]
+    ctx.strokeStyle = inkOf(c, r.ink)
     ctx.globalAlpha = 1 - t
     ctx.lineWidth = 1.5
     ctx.beginPath()
@@ -204,8 +203,8 @@ function draw(ctx: CanvasRenderingContext2D, now: number, flights: Flight[], rip
     for (let k = 9; k >= 0; k--) {
       const p = pointOn(f, ease(Math.max(0, t - k * 0.025)))
       ctx.globalAlpha = k === 0 ? 1 : 0.5 * (1 - k / 10)
-      ctx.fillStyle = c[f.color]
-      ctx.shadowColor = c[f.color]
+      ctx.fillStyle = inkOf(c, f.ink)
+      ctx.shadowColor = inkOf(c, f.ink)
       ctx.shadowBlur = k === 0 ? 12 : 0
       ctx.beginPath()
       ctx.arc(p.x, p.y, k === 0 ? 3.4 : 2.2, 0, Math.PI * 2)
@@ -221,22 +220,26 @@ const pct = (value: number, of: number): string => `${String((value / of) * 100)
 /** Inline position plus the `--c` color the stylesheet tints with. */
 type Placed = CSSProperties & { '--c': string }
 
-const place = (x: number, y: number, color: Token): Placed => ({ left: pct(x, W), top: pct(y, H), '--c': `var(${color})` })
+const place = (x: number, y: number, color: string): Placed => ({ left: pct(x, W), top: pct(y, H), '--c': color })
 
 /**
  * The hero's picture: voices on the left flow onto a page and land as transcript lines, speaker
  * labels, action items and a saved file. Decorative; the copy beside it says the same in words.
  */
 export function HeroGraph() {
+  const rootRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  // The speakers' tones as the browser resolved them, for the cards' dots; null until mounted.
+  const [tones, setTones] = useState<Palette['voices'] | null>(null)
   const [cards, setCards] = useState(() => FIRST.map((card) => ({ card, n: 0 })))
   const [speaking, setSpeaking] = useState<Voice | null>(null)
   const [fresh, setFresh] = useState<number | null>(null)
 
   useEffect(() => {
+    const root = rootRef.current
     const canvas = canvasRef.current
     const ctx = canvas?.getContext('2d')
-    if (!canvas || !ctx) return
+    if (!root || !canvas || !ctx) return
     const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     const flights: Flight[] = []
     const ripples: Ripple[] = []
@@ -251,11 +254,13 @@ export function HeroGraph() {
     let frame = 0
     let visible = false
     let beat = 0
-    let palette = readPalette(canvas)
+    let palette = readPalette(root)
+    setTones(palette.voices)
     // The tokens change with the OS theme; read them again and redraw.
     const scheme = window.matchMedia('(prefers-color-scheme: dark)')
     const retheme = (): void => {
-      palette = readPalette(canvas)
+      palette = readPalette(root)
+      setTones(palette.voices)
       draw(ctx, performance.now(), flights, ripples, palette)
     }
     scheme.addEventListener('change', retheme)
@@ -284,7 +289,7 @@ export function HeroGraph() {
       if (flights.length > 4) flights.shift()
       setSpeaking(next.from === 'page' ? null : next.from)
       later(TRAVEL_MS, () => {
-        ripples.push({ at: flight.to, color: flight.color, start: performance.now() })
+        ripples.push({ at: flight.to, ink: flight.ink, start: performance.now() })
         if (ripples.length > 4) ripples.shift()
         setSpeaking(null)
         setCards((all) => all.map((c, i) => (i === next.slot ? { card: next.card, n: c.n + 1 } : c)))
@@ -327,16 +332,21 @@ export function HeroGraph() {
     }
   }, [])
 
+  const toneOf = (voice: Voice | null): string => (voice && tones ? tones[voice] : 'var(--accent)')
+
   return (
-    <div className={styles.graph} aria-hidden="true">
+    <div ref={rootRef} className={cx('lyra-ui', styles.graph)} aria-hidden="true">
       <canvas ref={canvasRef} className={styles.canvas} />
       {VOICES.map((v) => (
         <div
           key={v.id}
+          data-voice={v.id}
           className={cx(styles.voice, speaking === v.id && styles.speaking)}
-          style={place(NODE_X, v.y, v.color)}
+          style={place(NODE_X, v.y, tones?.[v.id] ?? 'var(--accent)')}
         >
-          <span className={styles.dot}>{v.icon}</span>
+          <span className={cx('speaker-avatar', styles.dot)} data-tone={v.tone ?? undefined}>
+            {v.mark}
+          </span>
           <span className={styles.voiceName}>{v.name}</span>
         </div>
       ))}
@@ -347,7 +357,7 @@ export function HeroGraph() {
           <div
             key={`${String(i)}-${String(entry.n)}`}
             className={cx(styles.card, entry.n > 0 && styles.enter, fresh === i && styles.fresh)}
-            style={{ ...place(cardLeft(slot), slot.y, colorOf(entry.card.voice)), width: pct(CARD_W, W) }}
+            style={{ ...place(cardLeft(slot), slot.y, toneOf(entry.card.voice)), width: pct(CARD_W, W) }}
           >
             <span className={styles.kind}>{entry.card.kind}</span>
             <span className={styles.text}>{entry.card.text}</span>

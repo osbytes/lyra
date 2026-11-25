@@ -25,26 +25,22 @@
   transform: translate(-50%, -3.6cqw);
 }
 
-.dot {
-  display: grid;
-  place-items: center;
+/* The app's `.speaker-avatar` (its tones, its initials), drawn larger. */
+.graph .voice .dot {
   width: 7.2cqw;
   height: 7.2cqw;
-  border: 1.5px solid color-mix(in srgb, var(--c) 55%, transparent);
-  border-radius: 50%;
-  background: var(--card);
-  color: var(--c);
+  font-size: 2.8cqw;
   transition:
     box-shadow 0.3s,
     transform 0.3s;
 }
 
-.dot svg {
+.graph .voice .dot svg {
   width: 3.6cqw;
   height: 3.6cqw;
 }
 
-.speaking .dot {
+.graph .speaking .dot {
   transform: scale(1.08);
   box-shadow:
     0 0 0 1.2cqw color-mix(in srgb, var(--c) 16%, transparent),
@@ -52,7 +48,7 @@
 }
 
 .voiceName {
-  color: var(--muted);
+  color: var(--text-muted);
   font: 500 1.9cqw/1 var(--f-mono);
   white-space: nowrap;
 }
@@ -62,11 +58,11 @@
   display: grid;
   gap: 0.8cqw;
   padding: 1.6cqw 2.1cqw;
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: 1.4cqw;
-  background: var(--card);
-  box-shadow: var(--shadow-win);
-  color: var(--ink);
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+  color: var(--text);
   transform: translateY(-50%);
   transition: box-shadow 0.4s;
 }
@@ -75,7 +71,7 @@
   display: flex;
   align-items: center;
   gap: 1cqw;
-  color: var(--muted);
+  color: var(--text-muted);
   font: 500 1.65cqw/1 var(--f-mono);
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -101,7 +97,7 @@
 .fresh {
   box-shadow:
     0 0 0 0.5cqw color-mix(in srgb, var(--c) 35%, transparent),
-    var(--shadow-win);
+    var(--shadow-md);
 }
 
 .enter {
