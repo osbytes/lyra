@@ -35,6 +35,9 @@ export function isTaskLaunch(): boolean {
 /** Points the app at a throwaway profile before anything reads userData or settings. */
 export function prepareTaskProfile(task: Task): void {
   app.setPath('userData', join(tmpdir(), `${TASK_PROFILE_PREFIX}${String(process.pid)}`))
+  // A task opens no window the user should see: keep it out of the Dock too (an eval run starts
+  // dozens of these). The capture eval needs a real, focusable window, so it keeps its icon.
+  if (!(task.kind === 'meeting' && task.capture)) app.dock?.hide()
   // Before anything reads settings or voices: files the smoke checks expect to be kept.
   if (task.kind === 'smoke') seedSmokeProfile(app.getPath('userData'))
   overrideSettings({ notesDir: join(app.getPath('userData'), 'notes') })
