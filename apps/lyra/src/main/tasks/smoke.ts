@@ -1161,17 +1161,20 @@ async function checkSearchIndexRecovery(): Promise<void> {
   await stopSearchIndex()
   const dir = join(app.getPath('userData'), 'index')
   const db = join(dir, 'lyra.db')
-  for (const suffix of ['-wal', '-shm']) await rm(db + suffix, { force: true })
-  // The stopped worker can hold the file a moment after exit (Windows).
-  for (let attempt = 1; ; attempt++) {
-    try {
-      await writeFile(db, Buffer.alloc(8192, 'not a database '))
-      break
-    } catch (error) {
-      if (attempt >= 10) throw error
-      await new Promise((resolve) => setTimeout(resolve, 100 * attempt))
+  // The stopped worker can hold its files a moment after exit (Windows).
+  const patiently = async (step: () => Promise<void>): Promise<void> => {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await step()
+        return
+      } catch (error) {
+        if (attempt >= 15) throw error
+        await new Promise((resolve) => setTimeout(resolve, 100 * attempt))
+      }
     }
   }
+  for (const suffix of ['-wal', '-shm']) await patiently(() => rm(db + suffix, { force: true }))
+  await patiently(() => writeFile(db, Buffer.alloc(8192, 'not a database ')))
   // Any worker a late write started meanwhile had the old file open: the next one opens this.
   await stopSearchIndex()
   const page = await createPage()
