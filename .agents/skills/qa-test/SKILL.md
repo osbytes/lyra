@@ -48,6 +48,9 @@ run from before the change (`eval-data/results/<run>/results.json`):
   changing it) and prints each pipeline's lines by speaker; its `raw/live.json` `trace` shows each
   live decision (scores against every voice, join/new/reuse, merges). Hand-label a few minutes into
   a reference file to score it with `--reference`. Real audio never goes into the repo.
+- `--quick` scores a fixed subset (one of each kind of trouble) in minutes: use it while iterating,
+  then a full run for the before/after tables. Single-session WER moves by several points when
+  chunk boundaries shift, so judge changes by totals, not one session.
 - Read cpWER (words given to the wrong speaker count as errors) and the speakers found/actual
   column first. Real recordings stay out of `eval-data/` commits and out of the repo.
 
