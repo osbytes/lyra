@@ -1,6 +1,5 @@
-import Image from 'next/image'
+import Image, { getImageProps } from 'next/image'
 import type { ReactNode } from 'react'
-import { AppWindow } from '@/components/demo/AppWindow'
 import { FilesBrowser } from '@/components/demo/FilesBrowser'
 import { MeetingCard } from '@/components/demo/MeetingCard'
 import { cx } from '@/lib/cx'
@@ -80,9 +79,6 @@ export function Hero({ release }: { release: Release }) {
                 Source on GitHub
               </a>
             </div>
-            <p className={styles.heroNote}>
-              Press <Keys combo="Mod+Shift+Space" className={styles.keys} /> on this page to start a session.
-            </p>
           </div>
         </div>
         <HeroGraph />
@@ -91,14 +87,26 @@ export function Hero({ release }: { release: Release }) {
   )
 }
 
-export function Demo() {
+const SHOT = { width: 2560, height: 1600, sizes: '(max-width: 1200px) 100vw, 1160px' } as const
+
+/** The app itself, in a meeting: the light or dark capture, following the visitor's theme. */
+export function AppShot() {
+  const alt =
+    'Lyra showing a design review: the sessions list, a generated summary with action items, and a transcript with each line labeled by speaker'
+  const { props: dark } = getImageProps({ ...SHOT, alt, src: '/screenshots/app-meeting-dark.webp' })
+  const {
+    props: { srcSet: light, ...img }
+  } = getImageProps({ ...SHOT, alt, src: '/screenshots/app-meeting-light.webp', loading: 'eager' })
   return (
-    <section className={styles.demo} aria-label="Live demo">
+    <section className={styles.demo} aria-label="Lyra in a meeting">
       <div className={styles.inner}>
-        <AppWindow />
+        <picture className={styles.shot}>
+          <source media="(prefers-color-scheme: dark)" srcSet={dark.srcSet} sizes={SHOT.sizes} />
+          <source media="(prefers-color-scheme: light)" srcSet={light} sizes={SHOT.sizes} />
+          <img {...img} className={styles.shotImg} />
+        </picture>
         <p className={styles.demoCap}>
-          A working demo with a scripted voice. Press the microphone, then keep typing anywhere on the page while Lyra
-          writes at its own cursor.
+          A meeting in Lyra: who said what, a summary with action items, and every line kept as it was heard.
         </p>
       </div>
     </section>

@@ -188,16 +188,6 @@
   gap: 12px;
 }
 
-.heroNote {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin: 20px 0 0;
-  color: var(--muted);
-  font-size: 14px;
-}
-
 /* Demo band, over ruled paper */
 
 .demo {
@@ -216,6 +206,20 @@
 
 .demo .inner {
   position: relative;
+}
+
+.shot {
+  display: block;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--card);
+  box-shadow: var(--shadow-win);
+}
+
+.shotImg {
+  width: 100%;
+  height: auto;
 }
 
 .demoCap {
