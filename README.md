@@ -24,14 +24,14 @@
 - **Plain files**: notes are `.txt` (or `.md`) files in a folder you choose, `~/.lyra` by default, named by when they started
 - **Global shortcut**: Ctrl/Cmd+Shift+Space starts a new note from anywhere, and Lyra keeps running in the tray with a small recording pill
 - **Mic prompts** (optional): when Zoom, Teams, or Discord turns on your mic, Lyra offers to record
-- **Meetings**: Ctrl/Cmd+Shift+M records your mic and the computer's audio, then labels who said what
+- **Meetings**: records your mic and the computer's audio together (switch computer audio on or off in the recording dock), then labels who said what
 - **Voices**: save people's voices so their names show up in transcripts automatically
 - **Meeting notes** (optional): summary, decisions, and action items, written on your computer or, if you opt in, by a cloud model you choose (Anthropic, OpenAI, Google, or your own OpenAI-compatible server)
 - **On-device speech**: transcription with [Whisper](https://github.com/ggml-org/whisper.cpp), speakers with [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx), notes with [llama.cpp](https://github.com/ggml-org/llama.cpp)
 
 ## Quick start
 
-**Requirements:** Node.js 20+, pnpm
+**Requirements:** Node.js 22 (22.18 or later), pnpm
 
 ```bash
 git clone https://github.com/osbytes/lyra.git
@@ -43,7 +43,7 @@ pnpm dev
 Grant microphone access when prompted. Models download on first use:
 
 - **Whisper `large-v3-turbo`** (~575 MB), on the first recording
-- **Speaker models** (~32 MB), on the first meeting
+- **Speaker models** (~46 MB), on the first meeting
 - **Local notes model** (~2 GB), only if you turn on local meeting notes
 
 On macOS, capturing a call's audio needs Screen Recording permission.

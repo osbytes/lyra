@@ -8,6 +8,6 @@
   role or skill listed in `AGENTS.md`, read that file before starting.
 - The TypeScript rules in `.agents/rules/typescript.md` apply to every `.ts`/`.tsx` edit. Read it
   before your first TypeScript change in a session.
-- This repo is developed on Windows and macOS. Source files may use CRLF line endings; preserve
-  whatever the file already uses.
+- This repo is developed on Windows and macOS. Every text file is LF on every OS;
+  `.gitattributes` enforces it, so don't write CRLF even on Windows.
 - Finish every change with the `verify-change` skill.

@@ -8,7 +8,8 @@ description: Verify a Lyra change before calling it done, committing, or opening
 Run these from the repo root and fix every failure before continuing. Don't skip a step silently —
 if one can't run, say which and why.
 
-1. `pnpm check` — typecheck (both tsconfigs) + ESLint. Zero errors, zero warnings.
+1. `pnpm check` — typecheck (both tsconfigs), ESLint, `docs/CONFIG.md` freshness and the unit
+   tests (`pnpm test`). Zero errors, zero warnings. New pure logic has a `*.test.ts` next to it.
 2. `pnpm smoke:ui` — must print `ui-smoke: ok`. Expected "Invalid page id" errors in the log come
    from the path-guard checks and are fine.
 3. `pnpm smoke` — only if `src/main/whisper.ts`, native dependencies, or `electron-builder.yml`
@@ -20,6 +21,7 @@ if one can't run, say which and why.
 6. Read your own diff (`git diff`) with the [reviewer role](../../roles/reviewer.md) checklist:
    - no `any`, `!`, or unexplained `eslint-disable`
    - no unrelated changes or reformatting
-   - line endings preserved (CRLF files stay CRLF)
+   - LF line endings (`.gitattributes` enforces LF everywhere; a diff that rewrites every line
+     of a file is usually a CRLF editor)
 
 Report what you ran and the result. "Done" means every applicable step above passed.

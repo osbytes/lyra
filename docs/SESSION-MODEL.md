@@ -189,7 +189,7 @@ phase 1. `y-protocols`, `y-indexeddb` and the like are not needed because main o
 ## Process ownership
 
 - **Main owns the authoritative `Y.Doc`** per open session (it has the disk). A
-  `SessionStore` in `src/main/sessions.ts` loads `doc.yjs`, applies updates, appends them to
+  `SessionStore` in `src/main/sessionStore.ts` loads `doc.yjs`, applies updates, appends them to
   disk, and compacts on close (`Y.encodeStateAsUpdate` → rewrite the file).
 - **The renderer holds a replica.** It is synced over IPC with
   `Y.encodeStateVector`/`encodeStateAsUpdate` on open, then `session:update` messages each way,
@@ -308,7 +308,7 @@ from the plan above:
   back as markdown, so the export stays plain text. The notes sit above the transcript in their
   own pane.
 
-1. **Session store and Yjs document.** Add `sessions.ts` (manifest, `doc.yjs` log and compaction,
+1. **Session store and Yjs document.** Add `sessionStore.ts` (manifest, `doc.yjs` log and compaction,
    export rendering), migration, and the IPC sync. Plain notes only: `notes`, `title`, `tags`.
    The renderer editor binds `notes` to a `Y.Text` (textarea diffing is enough for now; a rich
    editor binding comes later). Smoke cases go in `runUiSmoke`: create, edit from two origins,

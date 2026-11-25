@@ -2,6 +2,7 @@
 #   powershell -File scripts/make-demo-audio.ps1 [-Out test-audio]
 # Writes lineN.wav (alternating speakers, for diarize-spike --lines) and meeting.wav
 # (16 kHz mono 16-bit, for `pnpm smoke:meeting`). Synthetic speech, safe to share.
+# scripts/make-demo-audio.cjs does the same on Windows and macOS; keep $script in step with its SCRIPT.
 param([string]$Out = 'test-audio')
 
 Add-Type -AssemblyName System.Speech
