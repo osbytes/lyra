@@ -124,3 +124,4 @@ Pick the role that matches the task and follow its file; load a skill when its t
 | [add-setting](.agents/skills/add-setting/SKILL.md) | Adding a user-configurable setting |
 | [qa-test](.agents/skills/qa-test/SKILL.md) | Changes touching audio, Whisper, speakers or meeting notes; any request to QA or test with audio |
 | [verify-change](.agents/skills/verify-change/SKILL.md) | Before declaring any change done or committing |
+| [app-media](.agents/skills/app-media/SKILL.md) | Taking, retaking or editing any screenshot or screen recording of the app or website |
