@@ -1,6 +1,5 @@
 import { useMemo } from 'react'
 import type { PageSummary, UpdateStatus } from '../../../shared/types'
-import lyraIcon from '../assets/lyra-icon.png'
 import { dayGroup, shortcutLabel } from '../lib/format'
 import { useContextMenu } from './ContextMenu'
 import { ScrollArea } from './Controls'
@@ -159,16 +158,10 @@ export function Sidebar({
 
   return (
     <aside className="sidebar">
-      <div className="sidebar-header drag">
-        <div className="brand">
-          <img src={lyraIcon} alt="" width={24} height={24} />
-          <span>Lyra</span>
-        </div>
-      </div>
-
-      <div className="sidebar-tools">
+      {/* The sidebar's share of the window's top band; the brand sits in the workspace's band. */}
+      <div className="sidebar-tools drag">
         <button
-          className="search"
+          className="search no-drag"
           type="button"
           onClick={onSearch}
           aria-label={`Search sessions (${shortcutLabel('K')})`}
@@ -179,7 +172,7 @@ export function Sidebar({
           <kbd className="search-kbd">{shortcutLabel('K')}</kbd>
         </button>
         <button
-          className="new-page-btn"
+          className="new-page-btn no-drag"
           type="button"
           onClick={onCreate}
           {...tip('New session', shortcutLabel('N'))}

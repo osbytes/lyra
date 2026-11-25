@@ -2,6 +2,7 @@
 
 // The app's main window (apps/lyra/src/renderer/src/App.tsx), driven by the demo store and a
 // scripted voice instead of window.api and the microphone.
+import Image from 'next/image'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { linesOf, sessionWords, summaryOf, toMarkdown } from '@/lib/demo/export'
 import { tagCounts } from '@/lib/demo/preview'
@@ -34,7 +35,6 @@ export function AppWindow() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [hint, setHint] = useState(true)
   const [copied, setCopied] = useState<CopyState>('idle')
-  const [saving, setSaving] = useState(false)
   const [playingLine, setPlayingLine] = useState<string | null>(null)
   const [naming, setNaming] = useState<string | null>(null)
   const [onScreen, setOnScreen] = useState(true)
@@ -149,20 +149,6 @@ export function AppWindow() {
     }
   }, [copied])
 
-  // "Saving…" for a moment after each change, like the app's autosave.
-  const lastEdit = useRef(current.editedAt)
-  useEffect(() => {
-    if (lastEdit.current === current.editedAt) return
-    lastEdit.current = current.editedAt
-    setSaving(true)
-    const timer = setTimeout(() => {
-      setSaving(false)
-    }, 400)
-    return () => {
-      clearTimeout(timer)
-    }
-  }, [current.editedAt])
-
   // Deleting can be undone for a few seconds, instead of a confirm dialog.
   useEffect(() => {
     if (!state.trashed) return
@@ -245,9 +231,11 @@ export function AppWindow() {
 
         <div className={panel ? 'workspace with-panel' : 'workspace'}>
           <header className="topbar">
-            <span className={`save-state${saving ? ' is-saving' : ''}`} aria-live="polite">
-              {saving ? 'Saving…' : 'Saved'}
-            </span>
+            <div className="brand">
+              <Image src="/lyra-icon.png" alt="" width={24} height={24} />
+              <span>Lyra</span>
+            </div>
+            <div className="topbar-actions">
             <button className="btn" type="button" onClick={copy} title="Copy as Markdown">
               {copied === 'copied' ? <CheckIcon /> : <CopyIcon />}
               {copied === 'copied' ? 'Copied' : copied === 'failed' ? 'Couldn’t copy' : 'Copy'}
@@ -262,6 +250,7 @@ export function AppWindow() {
             >
               <PanelIcon />
             </button>
+            </div>
           </header>
 
           <div className="workspace-body">

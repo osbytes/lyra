@@ -54,8 +54,8 @@
   /* Room the Windows caption buttons take at the band's right end (Electron's titleBarOverlay). */
   --caption-buttons: 0px;
 
-  /* The page's text column. Bars outside the scrolling page (the title band, the transcript
-     bar) line up with it using --page-left, which allows for the page's scrollbar. */
+  /* The page's text column. Bars outside the scrolling page (the transcript bar) line up with it
+     using --page-left, which allows for the page's scrollbar. */
   --page-width: 712px;
   --page-inset: 48px;
   --scrollbar-size: 10px;
@@ -464,11 +464,11 @@ code {
 }
 
 .sidebar-closed .topbar {
-  padding-left: max(var(--page-left), 56px);
+  padding-left: 56px;
 }
 
 .platform-darwin.sidebar-closed .topbar {
-  padding-left: max(var(--page-left), 124px);
+  padding-left: 124px;
 }
 
 /* Sidebar */
@@ -482,29 +482,13 @@ code {
   background: var(--bg-sidebar);
 }
 
-/*
- * Sidebar grid: hover fills and boxes sit 8px from the edges, and text starts 16px in, so the
- * brand, the search placeholder's icon, the tag chips, group labels and session titles share
- * one left edge.
- */
-.sidebar-header {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  height: var(--band);
-  padding: 0 16px;
-}
-
 /* Windows draws its caption buttons in the band (titleBarOverlay); this is the room they take. */
 .platform-win32 {
   --caption-buttons: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw));
 }
 
-.platform-darwin .sidebar-header {
-  padding-left: 88px;
-}
-
 .brand {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -513,10 +497,22 @@ code {
   letter-spacing: -0.01em;
 }
 
+/*
+ * Sidebar grid: hover fills and boxes sit 8px from the edges, and text starts 16px in, so the
+ * search placeholder's icon, the tag chips, group labels and session titles share one left edge.
+ * The search row is the sidebar's part of the window's top band.
+ */
 .sidebar-tools {
   display: flex;
+  flex: 0 0 auto;
+  align-items: center;
   gap: 8px;
-  padding: 0 8px 12px;
+  height: var(--band);
+  padding: 0 8px;
+}
+
+.platform-darwin .sidebar-tools {
+  padding-left: 80px;
 }
 
 .search {
@@ -803,17 +799,14 @@ code {
   min-height: 0;
 }
 
-/*
- * The session's title and its actions share the band. The title lines up with the page's text
- * column and wraps at its width; the actions stay on the band's first line.
- */
+/* The brand at the left, the session's actions at the right; the title lives on the page. */
 .topbar {
   display: flex;
   flex: 0 0 auto;
-  align-items: flex-start;
+  align-items: center;
   gap: 16px;
-  min-height: var(--band);
-  padding: 0 12px 0 var(--page-left);
+  height: var(--band);
+  padding: 0 12px 0 20px;
 }
 
 .topbar-actions {
@@ -821,33 +814,12 @@ code {
   flex-shrink: 0;
   align-items: center;
   gap: 8px;
-  height: var(--band);
   margin-left: auto;
 }
 
 /* Without the panel, the toolbar ends where the window's caption buttons begin. */
 .workspace:not(.with-panel) .topbar {
   padding-right: calc(12px + var(--caption-buttons));
-}
-
-/* Fixed width so "Saving…" and "Saved" swap without nudging the Copy button. */
-.save-state {
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  min-width: 72px;
-  color: var(--text-subtle);
-  font-size: 13px;
-}
-
-/* Saving is automatic, so the steady state is quiet; only a save in progress gets a dot. */
-.save-state.is-saving::before {
-  content: '';
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--text-subtle);
 }
 
 .progress {
@@ -883,10 +855,9 @@ code {
 }
 
 .title-input {
-  flex: 1 1 auto;
-  min-width: 0;
-  max-width: calc(var(--page-width) - 2 * var(--page-inset));
-  margin: 10px 0 0;
+  /* field-sizing grows the height with the text; the width stays the page's. */
+  width: 100%;
+  margin: 28px 0 8px;
   padding: 0;
   border: 0;
   outline: none;

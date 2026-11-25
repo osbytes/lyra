@@ -28,8 +28,6 @@ import {
 import type { TranscriptEdit } from '../../../shared/transcriptOverlay'
 import { log } from '../lib/log'
 
-export type SaveState = 'saved' | 'saving'
-
 /** What the editor shows of the open session. */
 export type OpenPage = {
   id: string
@@ -76,7 +74,6 @@ type Replica = {
 export function usePages() {
   const [pages, setPages] = useState<PageSummary[]>([])
   const [current, setCurrent] = useState<OpenPage | null>(null)
-  const [saveState, setSaveState] = useState<SaveState>('saved')
   const currentRef = useRef<OpenPage | null>(null)
   const replica = useRef<Replica | null>(null)
   /** Updates main hasn't confirmed yet; `flush` waits for all of them. */
@@ -131,14 +128,12 @@ export function usePages() {
       const onUpdate = (update: Uint8Array, origin: unknown): void => {
         render()
         if (origin === ORIGIN_REMOTE) return
-        setSaveState('saving')
         const sent = window.api.updateSession(id, update).catch((error: unknown) => {
           log('pages', 'could not save change', String(error))
         })
         pending.current.add(sent)
         void sent.finally(() => {
           pending.current.delete(sent)
-          if (!pending.current.size) setSaveState('saved')
         })
       }
       doc.on('update', onUpdate)
@@ -337,7 +332,6 @@ export function usePages() {
     pages,
     current,
     currentRef,
-    saveState,
     edit,
     editSummary,
     editSegment,

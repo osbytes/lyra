@@ -1,7 +1,6 @@
 'use client'
 
 // A port of apps/lyra/src/renderer/src/components/Sidebar.tsx (without the updater button).
-import Image from 'next/image'
 import { useMemo, useState } from 'react'
 import { previewOf } from '@/lib/demo/preview'
 import { byRecent } from '@/lib/demo/reducer'
@@ -56,13 +55,6 @@ export function Sidebar({ tags, onCreate, onOpen, onDelete, onSettings, newSessi
 
   return (
     <aside className="sidebar">
-      <div className="sidebar-header">
-        <div className="brand">
-          <Image src="/lyra-icon.png" alt="" width={24} height={24} />
-          <span>Lyra</span>
-        </div>
-      </div>
-
       <div className="sidebar-tools">
         <label className="search">
           <SearchIcon />
