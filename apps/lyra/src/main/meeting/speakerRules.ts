@@ -1,3 +1,4 @@
+import { cosine } from '../voiceStore'
 import { MIC_SIDE } from './clustering'
 import { guessModel } from './speakerModel'
 
@@ -30,6 +31,15 @@ export function couldBeOnePerson(a: readonly SideSpan[], b: readonly SideSpan[],
   let shared = 0
   for (const x of a) for (const y of b) shared += overlap(x, y)
   return shared < SAME_PERSON_MAX_OVERLAP_SECONDS
+}
+
+/**
+ * Whether two speakers' voiceprints rule out their being one person. An empty voiceprint (too
+ * little speech to take one) rules nothing out.
+ */
+export function differentVoices(a: readonly number[], b: readonly number[], minSimilarity: number): boolean {
+  if (a.length === 0 || b.length === 0 || a.length !== b.length) return false
+  return cosine(a, b) < minSimilarity
 }
 
 /**

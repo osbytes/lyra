@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { SELF_MIC_SHARE } from './thresholds'
 import { SPEAKER_EMBEDDING } from './speakerModel'
-import { couldBeOnePerson, movedLines, ownedVoiceprints, pickSelfSpeaker, pinnedSpeakers } from './speakerRules'
+import { couldBeOnePerson, differentVoices, movedLines, ownedVoiceprints, pickSelfSpeaker, pinnedSpeakers } from './speakerRules'
 
 describe('pickSelfSpeaker', () => {
   it('prefers the mic-side speaker who talked most over the first one heard', () => {
@@ -121,5 +121,20 @@ describe('movedLines with the user mark', () => {
   it('pins a marked line even where diarization agreed with the user', () => {
     const transcript = [{ id: 'pass-1-s0', rawId: 'pass-1-s0', cluster: 'c1', start: 0, end: 4, userCluster: true }]
     expect(movedLines(transcript, new Map([['pass-1-s0', 'c1']]))).toHaveLength(1)
+  })
+})
+
+describe('differentVoices', () => {
+  it('tells two voices apart by the angle between their voiceprints', () => {
+    // cosine([1, 0], [0.6, 0.8]) = 0.6; cosine([1, 0], [0.28, 0.96]) = 0.28
+    expect(differentVoices([1, 0], [0.6, 0.8], 0.35)).toBe(false)
+    expect(differentVoices([1, 0], [0.28, 0.96], 0.35)).toBe(true)
+    expect(differentVoices([1, 0], [0, 1], 0.35)).toBe(true)
+  })
+
+  it('rules nothing out without two comparable voiceprints', () => {
+    expect(differentVoices([], [0, 1], 0.35)).toBe(false)
+    expect(differentVoices([1, 0], [], 0.35)).toBe(false)
+    expect(differentVoices([1, 0], [0, 1, 0], 0.35)).toBe(false)
   })
 })

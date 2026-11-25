@@ -150,6 +150,38 @@ export function addSampleTo(person: StoredPerson, sample: VoiceSample, max = MAX
 }
 
 /** What a voiceprint is being compared with: its model, and the session it came from. */
+/**
+ * `people` without what `sessionId` taught anyone but `keepId` about one voice: the samples taken
+ * from that session (never an enrolled one) that are `vector`'s voice, at `minSimilarity` or
+ * closer. For when a session's speaker is named again as someone else. `emptied` lists the people
+ * left with no samples at all.
+ */
+export function withoutSessionVoice(
+  people: readonly StoredPerson[],
+  sessionId: string,
+  vector: readonly number[],
+  keepId: string | null,
+  minSimilarity: number
+): { people: StoredPerson[]; removed: number; emptied: string[] } {
+  let removed = 0
+  const emptied: string[] = []
+  const next = people.map((person) => {
+    if (person.id === keepId) return person
+    const samples = person.samples.filter(
+      (sample) =>
+        sample.source === 'enrolled' ||
+        sample.sessionId !== sessionId ||
+        sample.vector.length !== vector.length ||
+        cosine(sample.vector, vector) < minSimilarity
+    )
+    if (samples.length === person.samples.length) return person
+    removed += person.samples.length - samples.length
+    if (samples.length === 0) emptied.push(person.id)
+    return { ...person, samples }
+  })
+  return { people: next, removed, emptied }
+}
+
 export type ScoreContext = { model: string; dims: number; sessionId: string | null }
 
 /**

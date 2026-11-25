@@ -5,6 +5,7 @@ import {
   parseVoices,
   personScore,
   serializeVoices,
+  withoutSessionVoice,
   type SampleSource,
   type StoredPerson,
   type VoiceSample
@@ -121,5 +122,46 @@ describe('personScore', () => {
 
   it('scores a matching sample', () => {
     expect(personScore(person([sample('enrolled', null, 5)]), vector(5), context)).toBeCloseTo(1)
+  })
+})
+
+describe('withoutSessionVoice', () => {
+  // Unit vectors on two axes: the same axis is the same voice (cosine 1), the other one isn't (0).
+  const axis = (index: number): number[] => Array.from({ length: DIMS }, (_, i) => (i === index ? 1 : 0))
+  const from = (source: SampleSource, sessionId: string | null, index: number): VoiceSample => ({
+    ...sample(source, sessionId),
+    vector: axis(index)
+  })
+  const named = (id: string, samples: VoiceSample[]): StoredPerson => ({ ...person(samples), id })
+
+  it('takes this session\'s sample of the voice from everyone but the person kept', () => {
+    const people = [
+      named('first', [from('user', 's1', 0)]),
+      named('second', [from('user', 's1', 0), from('user', 's0', 0)]),
+      named('kept', [from('user', 's1', 0)])
+    ]
+    const result = withoutSessionVoice(people, 's1', axis(0), 'kept', 0.75)
+    expect(result.removed).toBe(2)
+    expect(result.emptied).toEqual(['first'])
+    expect(result.people.map((entry) => entry.samples.length)).toEqual([0, 1, 1])
+    // The sample another session gave stays.
+    expect(result.people[1]?.samples[0]?.sessionId).toBe('s0')
+  })
+
+  it('leaves another voice, another session and enrolled samples alone', () => {
+    const people = [
+      named('other-voice', [from('user', 's1', 1)]),
+      named('other-session', [from('auto', 's2', 0)]),
+      named('enrolled', [from('enrolled', 's1', 0)])
+    ]
+    const result = withoutSessionVoice(people, 's1', axis(0), null, 0.75)
+    expect(result).toEqual({ people, removed: 0, emptied: [] })
+  })
+
+  it('takes automatic samples as well as the user\'s', () => {
+    const result = withoutSessionVoice([named('a', [from('auto', 's1', 0), from('user', 's1', 1)])], 's1', axis(0), null, 0.75)
+    expect(result.removed).toBe(1)
+    expect(result.emptied).toEqual([])
+    expect(result.people[0]?.samples.map((entry) => entry.source)).toEqual(['user'])
   })
 })

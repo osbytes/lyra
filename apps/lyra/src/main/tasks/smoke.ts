@@ -92,7 +92,7 @@ import {
   stopSearchIndex,
   useTestEmbedder
 } from '../searchIndex/service'
-import { addPerson, deletePerson, scoreVoices } from '../voices'
+import { addPerson, deletePerson, listPeople, scoreVoices, withdrawVoice } from '../voices'
 
 /** A settings key from a newer Lyra, seeded into the profile; every save must keep it. */
 const FUTURE_SETTING = 'smokeFutureSetting'
@@ -1089,6 +1089,20 @@ async function checkVoices(): Promise<void> {
       (await scoreVoices(vector, sessionId)).some((match) => match.person.id === person.id)
     if (await scored(session)) fail('a session vouched for its own speaker')
     if (!(await scored('voices-other-smoke.txt')) || !(await scored(null))) fail('the sample did not score other sessions')
+    // Naming a session's speaker again takes back what its first name taught: the person made
+    // by that first name goes, and one who knows the voice from another session stays.
+    const renamed = 'voices-renamed-smoke.txt'
+    const first = await addPerson('Smoke First Name', vector, false, { source: 'user', sessionId: renamed })
+    const elsewhere = await addPerson('Smoke Elsewhere', vector, false, { source: 'user', sessionId: 'voices-other-smoke.txt' })
+    try {
+      await withdrawVoice(renamed, vector, null, 0.75)
+      const ids = (await listPeople()).map((entry) => entry.id)
+      if (ids.includes(first.id)) fail('the person a renamed speaker first taught was kept')
+      if (!ids.includes(elsewhere.id) || !ids.includes(person.id)) fail('withdrawing a voice removed people it should not')
+    } finally {
+      await deletePerson(first.id)
+      await deletePerson(elsewhere.id)
+    }
   } finally {
     await deletePerson(person.id)
   }

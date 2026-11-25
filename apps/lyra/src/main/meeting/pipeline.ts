@@ -41,6 +41,7 @@ import {
   restorePerson,
   selfPerson,
   setSelf,
+  withdrawVoice,
   type VoiceMatch
 } from '../voices'
 import { transcribePcm } from '../whisper'
@@ -49,13 +50,14 @@ import { notifyLabeled } from './events'
 import { sessionVoiceprints, type WrittenPass } from './voiceprints'
 import { diarize, embedVoice, ensureSpeakerModels } from './speakers'
 import { SPEAKER_EMBEDDING } from './speakerModel'
-import { couldBeOnePerson, micShareOf, pickSelfSpeaker } from './speakerRules'
+import { couldBeOnePerson, differentVoices, micShareOf, pickSelfSpeaker } from './speakerRules'
 import {
   DIARIZE_THRESHOLD,
   LEARN_MARGIN,
   LEARN_MIN_SECONDS,
   MATCH_THRESHOLD,
   REINFORCE_THRESHOLD,
+  SAME_PERSON_MIN_SIMILARITY,
   SAME_PERSON_THRESHOLD,
   SELF_MIC_SHARE
 } from './thresholds'
@@ -138,6 +140,7 @@ export function mergeTinySpeakers(result: DiarizeResult): DiarizeResult {
  * speaker, the one closer to the saved voice. Only for strong matches: a weak one could be
  * someone who merely sounds similar. Never two speakers who talked over each other at length or
  * sit on opposite sides of a call, which one person can't: those are two people who sound alike.
+ * And never two whose own voiceprints are far apart: then the saved person holds two voices.
  */
 export async function mergeSamePerson(
   result: DiarizeResult,
@@ -154,12 +157,17 @@ export async function mergeSamePerson(
     if (!current || top.score > current.score) best.set(top.person.id, { speaker: cluster.speaker, score: top.score })
   }
   const own = (speaker: number): DiarizedSegment[] => result.segments.filter((s) => s.speaker === speaker)
+  const voice = (speaker: number): readonly number[] =>
+    result.clusters.find((cluster) => cluster.speaker === speaker)?.embedding ?? []
   const into = new Map<number, number>()
   let blocked = 0
   for (const { speaker, personId } of matched) {
     const keep = best.get(personId)
     if (!keep || keep.speaker === speaker) continue
-    if (couldBeOnePerson(own(speaker), own(keep.speaker), hasSystemTrack)) into.set(speaker, keep.speaker)
+    const apart =
+      differentVoices(voice(speaker), voice(keep.speaker), SAME_PERSON_MIN_SIMILARITY) ||
+      !couldBeOnePerson(own(speaker), own(keep.speaker), hasSystemTrack)
+    if (!apart) into.set(speaker, keep.speaker)
     else blocked++
   }
   if (blocked) log('meeting', 'kept apart speakers matching one saved voice', { pageId, blocked })
@@ -527,6 +535,7 @@ export async function resolveSpeaker(
     if (!person) throw new Error('That person no longer exists')
     name = person.name
     personId = person.id
+    if (print) await withdrawVoice(pageId, print.vector, person.id, REINFORCE_THRESHOLD)
     // Teach the voiceprint this sample, so the person is recognized next time.
     if (print) await addSample(person.id, print.vector, origin)
   } else {
@@ -537,6 +546,9 @@ export async function resolveSpeaker(
       (person) => person.name.trim().toLowerCase() === name.toLowerCase()
     )
     personId = known?.id ?? null
+    // Naming this speaker again takes back what the earlier name taught: otherwise the person
+    // it was first given to keeps this voice, and ends up holding two.
+    if (print) await withdrawVoice(pageId, print.vector, personId, REINFORCE_THRESHOLD)
     if (known) {
       name = known.name
       if (print) await addSample(known.id, print.vector, origin)

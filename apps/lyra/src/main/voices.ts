@@ -11,6 +11,7 @@ import {
   personScore,
   serializeVoices,
   toPerson,
+  withoutSessionVoice,
   type SampleSource,
   type StoredPerson,
   type VoiceSample,
@@ -207,6 +208,26 @@ export async function addSample(id: string, embedding: number[], origin: SampleO
     source: origin.source,
     samples: added
   })
+}
+
+/**
+ * Takes back what `sessionId` taught anyone but `keepId` about this voice (the speaker was named
+ * again as someone else). A person this leaves with no voice at all existed only because of the
+ * earlier name, so goes too, unless they're "me".
+ */
+export async function withdrawVoice(
+  sessionId: string,
+  embedding: readonly number[],
+  keepId: string | null,
+  minSimilarity: number
+): Promise<void> {
+  const outcome = await mutate((list) => {
+    const { people: next, removed, emptied } = withoutSessionVoice(list, sessionId, embedding, keepId, minSimilarity)
+    if (removed === 0) return null
+    const gone = new Set(emptied.filter((id) => next.find((person) => person.id === id)?.self !== true))
+    return { people: next.filter((person) => !gone.has(person.id)), result: { removed, people: gone.size } }
+  })
+  if (outcome) log('voices', 'withdrew samples after a speaker was renamed', outcome)
 }
 
 export async function renamePerson(id: string, name: string): Promise<void> {
