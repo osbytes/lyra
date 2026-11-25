@@ -1,8 +1,25 @@
 const { execFileSync } = require('node:child_process')
 const { existsSync, readdirSync } = require('node:fs')
-const { join } = require('node:path')
+const { dirname, join } = require('node:path')
 
-const DIST = join(__dirname, '..', 'node_modules', '@kutalia', 'whisper-node-addon', 'dist')
+// Resolve rather than hardcode: with `node-linker=hoisted` pnpm puts the addon in the repo
+// root's node_modules, not apps/lyra's, and a missed patch fails only at runtime.
+function addonDist() {
+  try {
+    const pkg = require.resolve('@kutalia/whisper-node-addon/package.json', {
+      paths: [join(__dirname, '..')],
+    })
+    return join(dirname(pkg), 'dist')
+  } catch {
+    return null
+  }
+}
+
+const DIST = addonDist()
+if (!DIST) {
+  console.warn('fix-whisper-rpath: @kutalia/whisper-node-addon not found; nothing patched')
+  process.exit(0)
+}
 const CI_RPATH =
   '/Users/runner/work/whisper-node-addon/whisper-node-addon/deps/whisper.cpp/build/Release'
 
