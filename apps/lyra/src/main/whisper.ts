@@ -7,6 +7,7 @@ import type { TranscriptWord, WhisperStatus } from '../shared/types'
 import hallucinationList from './data/hallucinations.json'
 import { log } from './log'
 import { getSettings } from './settings'
+import { ensureSpeechVad } from './speechVad'
 import { ensureModelFile, hasModelFile, modelsDir, type ModelFile } from './models'
 
 /**
@@ -105,6 +106,8 @@ export async function ensureModel(): Promise<void> {
     }
   }
   await ensureModelFile(VAD_MODEL)
+  // Where chunks start and end; recording falls back to the energy detector without it.
+  await ensureSpeechVad()
   modelReady = true
 }
 
@@ -197,6 +200,19 @@ function isHallucination(words: TranscriptWord[], prompt: string): boolean {
   return text.length > 12 && normalize(prompt).includes(text)
 }
 
+/**
+ * whisper.cpp's Silero pass, set rather than left to its defaults. Those pad speech by only 30 ms,
+ * far less than the chunker keeps around it (300 ms pre-roll and tail), so word edges could be
+ * cut. The chunker has already found speech, so this pass only removes what clearly isn't: a
+ * lower bar than the default 0.5, and 200 ms of padding on each side.
+ */
+const VAD_OPTIONS = {
+  vad_threshold: 0.35,
+  vad_min_speech_duration_ms: 150,
+  vad_min_silence_duration_ms: 300,
+  vad_speech_pad_ms: 200
+}
+
 const BASE_OPTIONS = {
   translate: false,
   no_timestamps: false,
@@ -224,6 +240,7 @@ async function runWhisper(pcm: Float32Array, prompt: string): Promise<Transcript
     language: getSettings().transcriptionLanguage,
     vad: true,
     vad_model: join(modelsDir(), VAD_MODEL.name),
+    ...VAD_OPTIONS,
     pcmf32: pcm,
     prompt
   }
