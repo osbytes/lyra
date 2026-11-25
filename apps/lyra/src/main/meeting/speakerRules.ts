@@ -99,7 +99,10 @@ export function ownedVoiceprints(
  * Lines whose speaker the user chose: marked so in the document (`userCluster`), which covers
  * live lines too. Documents from before the mark fall back to comparing with the pass: a line
  * its pass gave one speaker that now shows another was moved. A live line there has no record
- * of the speaker it was heard as, so an unmarked move on one can't be told apart.
+ * of the speaker it was heard as, so an unmarked move on one can't be told apart: the live pass
+ * keeps its chunks with no speaker, under the ids their lines got, and a line that shows the
+ * speaker of its track against that is not a move. Counting it as one pinned every word of a
+ * recording to the track's speaker, whoever diarization heard.
  */
 export function movedLines<T extends CurrentLine & Span & { userCluster?: boolean }>(
   transcript: readonly T[],
@@ -109,7 +112,7 @@ export function movedLines<T extends CurrentLine & Span & { userCluster?: boolea
     const { cluster } = line
     if (cluster === null) return []
     const origin = passClusters.get(line.rawId ?? line.id)
-    const moved = line.userCluster === true || (origin !== undefined && origin !== cluster)
+    const moved = line.userCluster === true || (origin !== undefined && origin !== null && origin !== cluster)
     return moved ? [{ ...line, cluster }] : []
   })
 }

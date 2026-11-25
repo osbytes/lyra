@@ -6,6 +6,8 @@ import { ensureModelFile, type DownloadProgress, type ModelFile } from '../model
 import type {
   DiarizeRequest,
   DiarizeResult,
+  RollRequest,
+  RollResult,
   SpeakerModels,
   WorkerRequest,
   WorkerResponse
@@ -55,7 +57,7 @@ export async function ensureSpeakerModels(onProgress?: DownloadProgress): Promis
 }
 
 type Pending = {
-  resolve: (value: DiarizeResult | number[]) => void
+  resolve: (value: DiarizeResult | RollResult | number[]) => void
   reject: (error: Error) => void
   timer: NodeJS.Timeout
   /** The worker it was sent to: only that worker's exit fails it. */
@@ -93,7 +95,10 @@ function getWorker(): UtilityProcess {
   return child
 }
 
-type Request = Omit<DiarizeRequest, 'id'> | { type: 'embed'; samples: Float32Array; models: SpeakerModels }
+type Request =
+  | Omit<DiarizeRequest, 'id'>
+  | Omit<RollRequest, 'id'>
+  | { type: 'embed'; samples: Float32Array; models: SpeakerModels }
 
 /**
  * How long a request may take before the worker is taken to be hung (a native call that never
@@ -107,7 +112,7 @@ export function requestTimeoutMs(audioSeconds: number): number {
   return TIMEOUT_BASE_MS + Math.max(0, audioSeconds) * TIMEOUT_PER_AUDIO_SECOND_MS
 }
 
-function send(request: Request, timeoutMs: number): Promise<DiarizeResult | number[]> {
+function send(request: Request, timeoutMs: number): Promise<DiarizeResult | RollResult | number[]> {
   const id = nextId++
   return new Promise((resolve, reject) => {
     const child = getWorker()
@@ -136,6 +141,18 @@ export async function diarize(request: Omit<DiarizeRequest, 'type'>): Promise<Di
   const seconds = await audioSeconds([request.micPath, request.systemPath])
   const result = await send({ type: 'diarize', ...request }, requestTimeoutMs(seconds))
   if (Array.isArray(result)) throw new Error('Unexpected worker reply')
+  return result
+}
+
+/**
+ * Diarizes the recording `key` names as far as its files go now (`rollingDiarizer.ts`). The
+ * first round of a take that continues a long session works through all of it, so the allowance
+ * is the same as a whole pass.
+ */
+export async function rollDiarize(request: Omit<RollRequest, 'type'>): Promise<RollResult> {
+  const seconds = await audioSeconds([request.micPath, request.systemPath])
+  const result = await send({ type: 'roll', ...request }, requestTimeoutMs(seconds))
+  if (Array.isArray(result) || !('stats' in result)) throw new Error('Unexpected worker reply')
   return result
 }
 

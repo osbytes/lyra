@@ -17,7 +17,8 @@ export function dataChunkBytes(headerSize: number, available: number): number {
   return headerSize
 }
 
-async function readInfo(path: string): Promise<WavInfo> {
+/** `growing`: the file is being recorded, so its header is behind and the audio runs to its end. */
+async function readInfo(path: string, growing: boolean): Promise<WavInfo> {
   const handle = await open(path, 'r')
   try {
     const header = Buffer.alloc(4096)
@@ -29,7 +30,8 @@ async function readInfo(path: string): Promise<WavInfo> {
       if (id === 'data') {
         const { size: fileSize } = await handle.stat()
         const available = Math.max(0, fileSize - (offset + 8))
-        return { dataOffset: offset + 8, samples: Math.floor(dataChunkBytes(size, available) / BYTES_PER_SAMPLE) }
+        const bytes = growing ? available : dataChunkBytes(size, available)
+        return { dataOffset: offset + 8, samples: Math.floor(bytes / BYTES_PER_SAMPLE) }
       }
       offset += 8 + size + (size % 2)
     }
@@ -39,9 +41,13 @@ async function readInfo(path: string): Promise<WavInfo> {
   }
 }
 
-/** Reads samples [startSec, endSec) as floats in [-1, 1]; the whole file when no range is given. */
-export async function readWav(path: string, startSec = 0, endSec = Infinity): Promise<Float32Array> {
-  const info = await readInfo(path)
+/**
+ * Reads samples [startSec, endSec) as floats in [-1, 1]; the whole file when no range is given.
+ * `growing` reads a recording in progress up to what is on disk now: the recorder brings the
+ * header up to date only every few seconds.
+ */
+export async function readWav(path: string, startSec = 0, endSec = Infinity, growing = false): Promise<Float32Array> {
+  const info = await readInfo(path, growing)
   const first = Math.max(0, Math.min(info.samples, Math.floor(startSec * SAMPLE_RATE)))
   const last = Math.max(first, Math.min(info.samples, Math.ceil(endSec * SAMPLE_RATE)))
   const count = last - first

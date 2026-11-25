@@ -270,6 +270,34 @@ describe('line edits', () => {
 })
 
 describe('replaceTranscript', () => {
+  it('leaves leading lines the pass did not change in place, and rewrites from the first that did', () => {
+    const doc = newDoc()
+    replaceTranscript(
+      doc,
+      [line('a', 'c0', 0, 2, 'hello there'), line('b', null, 2, 4, 'general kenobi'), line('c', null, 4, 5, 'so')],
+      ORIGIN_USER
+    )
+    const before = docTranscript(doc).toArray()
+    // The same first line; the second now has a speaker; the third is as it was, but follows it.
+    replaceTranscript(
+      doc,
+      [line('a', 'c0', 0, 2, 'hello there'), line('b', 'c1', 2, 4, 'general kenobi'), line('c', null, 4, 5, 'so')],
+      ORIGIN_USER
+    )
+    const after = docTranscript(doc).toArray()
+    expect(after[0]).toBe(before[0])
+    expect(after[1]).not.toBe(before[1])
+    expect(snapshotOf(doc).transcript.map((entry) => [entry.id, entry.cluster])).toEqual([
+      ['a', 'c0'],
+      ['b', 'c1'],
+      ['c', null]
+    ])
+    // A pass with fewer lines drops the rest.
+    replaceTranscript(doc, [line('a', 'c0', 0, 2, 'hello there')], ORIGIN_USER)
+    expect(docTranscript(doc).toArray()).toHaveLength(1)
+    expect(docTranscript(doc).get(0)).toBe(before[0])
+  })
+
   it('keeps the user’s edit on the new line over the same audio', () => {
     const doc = newDoc()
     replaceTranscript(

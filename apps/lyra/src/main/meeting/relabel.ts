@@ -1,4 +1,5 @@
 import { BrowserWindow } from 'electron'
+import type * as Y from 'yjs'
 import { z } from 'zod'
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
@@ -30,11 +31,12 @@ import { DIARIZE_THRESHOLD } from './thresholds'
 import { passClusters, type WrittenPass } from './voiceprints'
 
 /**
- * Speaker labels settled once a recording stops. While recording, lines are labeled only by the
- * track they were heard on (`takeWriter.ts`), which can't tell apart two people at one mic or on
- * one call. With the whole recording in hand, offline diarization (pyannote segmentation, then
+ * Speaker labels settled once a recording stops. The track a line was heard on can't tell apart
+ * two people at one mic or on one call, so only the voices say who spoke. With the whole
+ * recording in hand, offline diarization (pyannote segmentation, then
  * TitaNet voiceprints of 3 s windows clustered over every stretch at once; `clustering.ts`)
- * separates them, and a saved voice that matches two speakers strongly merges them
+ * separates them (the same is done every half minute while recording, on what has been heard
+ * so far: `liveLabels.ts`), and a saved voice that matches two speakers strongly merges them
  * (`mergeSamePerson`). Each word then goes to the speaker diarized at its time, as WhisperX does,
  * keeping to speakers heard on its own track: the text stays word for word, only who said it and
  * where lines break change. Lines the user edited keep their text, and words in a line the user
@@ -50,10 +52,10 @@ const ORIGIN_RELABEL = 'relabel'
 const MODEL = 'sherpa-onnx diarization over live words'
 
 /** `pinned`: the speaker the user moved these words to, which outranks the diarized `speaker`. */
-type Line = { speaker: number; pinned: string | null; words: TranscriptWord[] }
+export type Line = { speaker: number; pinned: string | null; words: TranscriptWord[] }
 
 /** A word and the track it was transcribed from, when the recording kept them apart. */
-type HeardWord = TranscriptWord & { track: 'mic' | 'system' | null }
+export type HeardWord = TranscriptWord & { track: 'mic' | 'system' | null }
 
 const overlap = (a: { start: number; end: number }, b: { start: number; end: number }): number =>
   Math.max(0, Math.min(a.end, b.end) - Math.max(a.start, b.start))
@@ -147,7 +149,7 @@ const LivePass = z.object({ segments: z.array(z.unknown()) })
  * Every word transcribed while recording, in time order. Each chunk's words stay in the order
  * Whisper gave them; chunks are ordered by where they start, across both tracks.
  */
-async function liveWords(pageId: string): Promise<HeardWord[]> {
+export async function liveWords(pageId: string): Promise<HeardWord[]> {
   const path = join(sessionRawDir(pageId), 'live.json')
   if (!existsSync(path)) return []
   const pass = LivePass.safeParse(JSON.parse(await readFile(path, 'utf8')))
@@ -171,7 +173,7 @@ async function liveWords(pageId: string): Promise<HeardWord[]> {
  * Which existing speaker each diarized one continues: the pairs that share the most talk, one to
  * one, so a name the user gave while recording stays with the person who mostly had it.
  */
-function matchSpeakers(
+export function matchSpeakers(
   lines: readonly Line[],
   before: readonly { start: number; end: number; cluster: string | null }[]
 ): Map<number, string> {
@@ -197,6 +199,88 @@ function matchSpeakers(
     taken.add(id)
   }
   return out
+}
+
+type NamedVoice = Awaited<ReturnType<typeof nameSpeakers>>['speakers'][number]
+
+/** What `writeLines` put in the session: each diarized speaker's id, its entry, and the lines. */
+export type WrittenLines = {
+  idOf: Map<number, string>
+  fields: Map<string, Omit<SpeakerEntry, 'id'>>
+  segments: NewSegment[]
+}
+
+/**
+ * Writes a pass's speakers and lines into the session, in one transaction: each diarized speaker
+ * carries on the session speaker it `continues` (or gets a new one), lines the user pinned keep
+ * their speaker, and speakers nobody speaks as any more go. A line whose speaker isn't among
+ * `named` (words not yet settled while recording) is written with none.
+ */
+export function writeLines(
+  doc: Y.Doc,
+  pass: {
+    /** The session's speakers before the pass. */
+    known: readonly SpeakerEntry[]
+    named: readonly NamedVoice[]
+    continues: ReadonlyMap<number, string>
+    lines: readonly Line[]
+    lineId: (index: number, line: Line) => string
+    /** Whether the lines are a raw pass of their own (kept in `raw/`), found by the same id. */
+    raw: boolean
+  }
+): WrittenLines {
+  const idOf = new Map<number, string>()
+  const fields = new Map<string, Omit<SpeakerEntry, 'id'>>()
+  let segments: NewSegment[] = []
+  doc.transact(() => {
+    const old = new Map(pass.known.map((speaker) => [speaker.id, speaker]))
+    for (const speaker of pass.named) {
+      const id = pass.continues.get(speaker.cluster) ?? null
+      const kept = id ? old.get(id) : undefined
+      const fresh = id ?? newSpeakerId(doc)
+      idOf.set(speaker.cluster, fresh)
+      // The user's name for a voice outranks Lyra's guess at it. A guess is never confirmed,
+      // however strong the match (it still shows as sure): confirmed speakers are kept as is
+      // by every later pass, so a wrong guess would stick.
+      const entry = kept?.confirmed
+        ? { ...kept, matches: speaker.matches }
+        : {
+            name: speaker.name,
+            personId: speaker.personId,
+            confirmed: false,
+            confidence: speaker.confidence,
+            matches: speaker.matches
+          }
+      fields.set(fresh, entry)
+      // Written now so the next newSpeakerId doesn't hand the id out again.
+      upsertSpeaker(doc, fresh, entry, ORIGIN_RELABEL)
+    }
+    const map = speakersOf(doc)
+    segments = pass.lines.map((line, index) => {
+      // A speaker the user moved words to, unless they've since removed that speaker.
+      const pinned = line.pinned !== null && map?.has(line.pinned) === true ? line.pinned : null
+      const id = pass.lineId(index, line)
+      return {
+        id,
+        rawId: pass.raw ? id : null,
+        start: line.words[0]?.start ?? 0,
+        end: line.words.at(-1)?.end ?? 0,
+        cluster: pinned ?? idOf.get(line.speaker) ?? null,
+        // Still the user's choice, so the pass after this one keeps it too.
+        userCluster: pinned !== null,
+        confidence: null,
+        text: line.words.map((word) => word.text).join('').trim()
+      }
+    })
+    replaceTranscript(doc, segments, ORIGIN_RELABEL)
+    // Voices nobody speaks as any more. Read from the document: a line can keep the speaker the
+    // user chose for the old line under it (`replaceTranscript`), not the one written here.
+    const shown = snapshotOf(doc).transcript.flatMap((line) => line.cluster ?? [])
+    const used = new Set([...fields.keys(), ...shown])
+    for (const id of [...(map?.keys() ?? [])]) if (!used.has(id)) removeSpeaker(doc, id, ORIGIN_RELABEL)
+    renumberSpeakers(doc, ORIGIN_RELABEL)
+  }, ORIGIN_RELABEL)
+  return { idOf, fields, segments }
 }
 
 function broadcast(status: MeetingStatus): void {
@@ -305,71 +389,30 @@ async function relabel(pageId: string): Promise<void> {
     { pageId, hasSystemTrack: systemPath !== null }
   )
   const passId = await nextPassId(pageId)
-  const idOf = new Map<number, string>()
-  const fields = new Map<string, Omit<SpeakerEntry, 'id'>>()
-  let segments: NewSegment[] = []
 
   // One edit, checked inside it: a recording started on this session meanwhile, or its lines
   // changed, makes this pass stale. Checking earlier left a gap (naming the voices takes a while)
   // in which a new take's lines could be replaced and their speaker removed under them.
-  const applied = await editSession(pageId, (doc) => {
-    if (stale(snapshotOf(doc).transcript)) return false
-    doc.transact(() => {
-      const old = new Map(before.speakers.map((speaker) => [speaker.id, speaker]))
-      for (const speaker of named) {
-        const id = continues.get(speaker.cluster) ?? null
-        const kept = id ? old.get(id) : undefined
-        const fresh = id ?? newSpeakerId(doc)
-        idOf.set(speaker.cluster, fresh)
-        // The user's name for a voice outranks Lyra's guess at it. A guess is never confirmed,
-        // however strong the match (it still shows as sure): confirmed speakers are kept as is
-        // by every later pass, so a wrong guess would stick.
-        const entry = kept?.confirmed
-          ? { ...kept, matches: speaker.matches }
-          : {
-              name: speaker.name,
-              personId: speaker.personId,
-              confirmed: false,
-              confidence: speaker.confidence,
-              matches: speaker.matches
-            }
-        fields.set(fresh, entry)
-        // Written now so the next newSpeakerId doesn't hand the id out again.
-        upsertSpeaker(doc, fresh, entry, ORIGIN_RELABEL)
-      }
-      const map = speakersOf(doc)
-      segments = lines.map((line, index) => {
-        // A speaker the user moved words to, unless they've since removed that speaker.
-        const pinned = line.pinned !== null && map?.has(line.pinned) === true ? line.pinned : null
-        return {
-          id: `${passId}-s${String(index)}`,
-          rawId: `${passId}-s${String(index)}`,
-          start: line.words[0]?.start ?? 0,
-          end: line.words.at(-1)?.end ?? 0,
-          cluster: pinned ?? idOf.get(line.speaker) ?? null,
-          // Still the user's choice, so the pass after this one keeps it too.
-          userCluster: pinned !== null,
-          confidence: null,
-          text: line.words.map((word) => word.text).join('').trim()
-        }
-      })
-      replaceTranscript(doc, segments, ORIGIN_RELABEL)
-      // Voices nobody speaks as any more. Read from the document: a line can keep the speaker the
-      // user chose for the old line under it (`replaceTranscript`), not the one written here.
-      const shown = snapshotOf(doc).transcript.flatMap((line) => line.cluster ?? [])
-      const used = new Set([...fields.keys(), ...shown])
-      for (const id of [...(map?.keys() ?? [])]) if (!used.has(id)) removeSpeaker(doc, id, ORIGIN_RELABEL)
-      renumberSpeakers(doc, ORIGIN_RELABEL)
-    }, ORIGIN_RELABEL)
-    return true
-  })
-  if (!applied) {
+  const written = await editSession(pageId, (doc) =>
+    stale(snapshotOf(doc).transcript)
+      ? null
+      : writeLines(doc, {
+          known: before.speakers,
+          named,
+          continues,
+          lines,
+          lineId: (index) => `${passId}-s${String(index)}`,
+          raw: true
+        })
+  )
+  if (!written) {
     log('relabel', 'session changed while diarizing; left as is', { pageId })
     broadcast({ pageId, task: 'speakers', state: 'done', progress: 1 })
     return
   }
   // Only now that the pass is in the session may it teach saved voices.
   await learnSamples(learn)
+  const { idOf, fields, segments } = written
 
   const pass: WrittenPass = {
     id: passId,

@@ -214,6 +214,31 @@ export type DiagnosticsPlace = {
   complete: boolean
 }
 
+/** The computer Lyra runs on: what a slow or failed session is first checked against. */
+export type MachineInfo = {
+  cpu: string
+  cores: number
+  memoryGb: number
+  /** The active graphics adapter, when the system names one. */
+  gpu: string | null
+}
+
+/** CPU (percent of one core) and memory in MB of one kind of Lyra process, as the log has them. */
+export type ProcessLoad = { cpu: number; mb: number }
+
+/** One sample of what Lyra and the machine were using (`resources.ts`). Numbers only. */
+export type ResourceSample = {
+  at: string
+  processes: Record<string, ProcessLoad>
+  freeMb: number
+  totalMb: number
+  load1: number
+  cores: number
+  diskFreeGb: number | null
+  thermal: string | null
+  onBattery: boolean
+}
+
 /** Settings → About. No note content, names, keys, addresses or queries. */
 export type Diagnostics = {
   version: string
@@ -225,6 +250,9 @@ export type Diagnostics = {
   /** `backend` is null until Whisper has run since launch. */
   whisper: { model: string; backend: 'gpu' | 'cpu' | null }
   notesEngine: string
+  machine: MachineInfo
+  /** What Lyra and the machine are using right now; null if it couldn't be measured. */
+  resources: ResourceSample | null
   places: DiagnosticsPlace[]
   /** All of the above as plain text, for "Copy diagnostics". */
   text: string

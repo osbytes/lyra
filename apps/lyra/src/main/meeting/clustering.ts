@@ -201,6 +201,16 @@ export function centroids(labels: readonly number[], vectors: readonly (readonly
   return new Map([...sums].map(([label, sum]) => [label, unit(sum)]))
 }
 
+/**
+ * A "speaker" with fewer seconds of windows than this is folded into the closest one: a few
+ * windows of their own are usually one person's cough, laugh or a stretch of crosstalk. Windows
+ * half-overlap, so this counts about twice their speech. 15 s in a session of minutes (the eval
+ * sweep's best), scaled down for short recordings so a second voice in a one-minute note counts.
+ */
+export function minSpeakerSeconds(windowSeconds: number): number {
+  return Math.min(15, Math.max(5, windowSeconds * 0.08))
+}
+
 /** A speaker with at least this share of their energy on the mic track is at this computer. */
 export const MIC_SIDE = 0.5
 

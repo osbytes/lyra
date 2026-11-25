@@ -164,6 +164,11 @@ export class ChunkedTranscriber {
   }
 
   /** Cuts what's left, waits for every chunk, and hands out the rest. */
+  /** Resolves once every chunk cut so far has been transcribed and handed out. */
+  async settled(): Promise<void> {
+    await this.work.catch(() => undefined)
+  }
+
   async finish(): Promise<void> {
     this.feed(true)
     for (const lane of this.lanes.values()) lane.chunker.flush()

@@ -1,35 +1,22 @@
 import type * as Y from 'yjs'
-import type { AudioTrack, Person } from '../shared/types'
-import {
-  appendLiveSegment,
-  newSpeakerId,
-  ORIGIN_TRANSCRIBER,
-  snapshotOf,
-  startTranscriber,
-  upsertSpeaker,
-  type SpeakerEntry,
-  type TranscriptSegment
-} from '../shared/sessionDoc'
+import type { AudioTrack, TranscriptWord } from '../shared/types'
+import { appendLiveSegment, ORIGIN_TRANSCRIBER, snapshotOf, startTranscriber } from '../shared/sessionDoc'
 import { log } from './log'
 import { changeSession } from './sessionStore'
 import type { TranscribedChunk } from './transcriber'
-import { selfPerson } from './voices'
 
 /**
- * Writes a take's transcribed chunks into its session as transcript lines. On a call (a system
- * track alongside the mic) each line is labeled by the track it was heard on: the mic is the
- * person at this computer, the system track is "Remote". Those labels hold until the recording
- * stops and the speakers are settled from the whole recording (`meeting/relabel.ts`), which also
- * tells apart several people on either side. Without a system track lines have no speaker until
- * then, and one voice reads as plain paragraphs.
+ * Writes a take's transcribed chunks into its session as transcript lines, with no speaker: the
+ * track a line was heard on says where the sound came from, not who made it (two people share a
+ * desk mic, several are on one call), and a name shown on a guess reads as a fact. Speakers are
+ * settled from the voices: every half minute while recording (`meeting/liveLabels.ts`, which
+ * rewrites these lines through `rewrite`) and for good once it stops (`meeting/relabel.ts`).
+ * The two tracks stay on separate lines.
  */
 
-/** One line per turn: the same speaker continuing within this gap, up to MAX_LINE_SECONDS. */
+/** One line per turn: the same track continuing within this gap, up to MAX_LINE_SECONDS. */
 const LINE_JOIN_GAP = 8
 const MAX_LINE_SECONDS = 30
-const REMOTE = 'Remote'
-/** The person at this computer before they've saved their voice (as `meeting/pipeline.ts` names them). */
-const SELF = 'Me'
 /** Text before the recording that Whisper is given as context. */
 const CONTEXT_CHARS = 300
 /**
@@ -46,17 +33,20 @@ function promptFor(title: string, transcript: string): string {
   return `${heading}${tail.slice(start)}`.trim() || STYLE_SEED
 }
 
+/** A word of this take and the track it was heard on. */
+export type TakeWord = TranscriptWord & { track: AudioTrack }
+
 export class TakeWriter {
-  private readonly speakerOf = new Map<AudioTrack, string>()
   private readonly heard = new Set<AudioTrack>()
+  /** Every word written so far, in the order it was written: what the session's lines hold. */
+  private readonly words: TakeWord[] = []
+  /** Words of chunks handed over but not written yet. */
+  private queued: TakeWord[] = []
+  private lastTrack: AudioTrack | null = null
+  private open = true
   private writes: Promise<void> = Promise.resolve()
 
-  constructor(
-    private readonly pageId: string,
-    private readonly hasSystem: boolean,
-    /** Where each track was heard in earlier takes, to find who spoke on it since relabeling. */
-    private readonly earlier: readonly HeardSpan[] = []
-  ) {}
+  constructor(private readonly pageId: string) {}
 
   /** Opens the take in the session and returns the text before it, as Whisper's context. */
   async begin(): Promise<string> {
@@ -69,16 +59,45 @@ export class TakeWriter {
 
   write(chunk: TranscribedChunk): void {
     this.heard.add(chunk.track)
+    const words = chunk.words.map((word) => ({ ...word, track: chunk.track }))
+    this.queued.push(...words)
     this.writes = this.writes
       .then(() => this.append(chunk))
       .catch((error: unknown) => {
         log('transcriber', 'could not write a chunk', { pageId: this.pageId, error: String(error) })
       })
+      .finally(() => {
+        this.queued = this.queued.filter((word) => !words.includes(word))
+      })
+  }
+
+  /**
+   * Runs `change` on the session between two chunks, with the take's words as the session holds
+   * them at that moment: a rewrite of its lines can't lose a chunk written just before it or
+   * double one written just after. Null once the take has ended, when nothing was changed.
+   */
+  rewrite<T>(change: (doc: Y.Doc, words: readonly TakeWord[]) => T): Promise<T | null> {
+    const result = this.writes.then(() =>
+      this.open ? changeSession(this.pageId, (doc) => change(doc, this.words)) : null
+    )
+    this.writes = result.then(
+      () => undefined,
+      (error: unknown) => {
+        log('transcriber', 'could not rewrite the lines', { pageId: this.pageId, error: String(error) })
+      }
+    )
+    return result
+  }
+
+  /** The words transcribed so far, written into the session or about to be. */
+  heardSoFar(): readonly TakeWord[] {
+    return [...this.words, ...this.queued]
   }
 
   /** Waits for every line to be written; true when both sides of a call spoke. */
   async end(): Promise<boolean> {
     await this.writes
+    this.open = false
     return this.heard.size >= 2
   }
 
@@ -87,10 +106,9 @@ export class TakeWriter {
     const first = chunk.words[0]
     const last = chunk.words.at(-1)
     if (!text.trim() || !first || !last) return
-    const me = this.hasSystem && chunk.track === 'mic' ? await selfPerson() : null
+    // A line never runs across tracks: no gap is short enough to join the other one's.
+    const joinGap = chunk.track === this.lastTrack ? LINE_JOIN_GAP : Number.NEGATIVE_INFINITY
     await changeSession(this.pageId, (doc) => {
-      // Resolved in the same edit as the line, so it can't point at a speaker removed meanwhile.
-      const cluster = this.hasSystem ? this.speakerFor(doc, chunk.track, me) : null
       appendLiveSegment(
         doc,
         {
@@ -98,81 +116,15 @@ export class TakeWriter {
           rawId: null,
           start: first.start,
           end: last.end,
-          cluster,
+          cluster: null,
           confidence: null,
           text
         },
-        { joinGap: LINE_JOIN_GAP, maxLine: MAX_LINE_SECONDS },
+        { joinGap, maxLine: MAX_LINE_SECONDS },
         ORIGIN_TRANSCRIBER
       )
     })
+    this.lastTrack = chunk.track
+    for (const word of chunk.words) this.words.push({ ...word, track: chunk.track })
   }
-
-  /**
-   * The speaker a track's lines go to: you on the mic, "Remote" on the system track. After an
-   * earlier take was relabeled those names may be gone, so the speaker who did most of the talking
-   * on this track before carries on instead of a duplicate appearing.
-   */
-  private speakerFor(doc: Y.Doc, track: AudioTrack, me: Person | null): string {
-    const { speakers, transcript } = snapshotOf(doc)
-    const known = this.speakerOf.get(track)
-    if (known && speakers.some((speaker) => speaker.id === known)) return known
-    const existing =
-      mostHeardOn(track, this.earlier, transcript, speakers) ??
-      (track === 'mic'
-        ? speakers.find((speaker) => (me ? speaker.personId === me.id : speaker.name === SELF))?.id
-        : speakers.find((speaker) => speaker.name === REMOTE && speaker.personId === null)?.id)
-    const id = existing ?? newSpeakerId(doc)
-    if (!existing) {
-      upsertSpeaker(
-        doc,
-        id,
-        {
-          name: track === 'mic' ? (me?.name ?? SELF) : REMOTE,
-          personId: me?.id ?? null,
-          confirmed: false,
-          confidence: null,
-          matches: []
-        },
-        ORIGIN_TRANSCRIBER
-      )
-    }
-    this.speakerOf.set(track, id)
-    return id
-  }
-}
-
-/** A stretch of an earlier take heard on one track (from `raw/live.json`). */
-export type HeardSpan = { track: AudioTrack; start: number; end: number }
-
-/**
- * The speaker whose lines share the most time with what was heard on `track` in earlier takes,
- * not counting a speaker who mostly talked on the other track (on a call the far end bleeds into
- * the mic, but less than the person at it).
- */
-function mostHeardOn(
-  track: AudioTrack,
-  earlier: readonly HeardSpan[],
-  lines: readonly TranscriptSegment[],
-  speakers: readonly SpeakerEntry[]
-): string | undefined {
-  const talk = new Map<string, Record<AudioTrack, number>>()
-  for (const line of lines) {
-    if (!line.cluster || !speakers.some((speaker) => speaker.id === line.cluster)) continue
-    const entry = talk.get(line.cluster) ?? { mic: 0, system: 0 }
-    for (const span of earlier) {
-      entry[span.track] += Math.max(0, Math.min(line.end, span.end) - Math.max(line.start, span.start))
-    }
-    talk.set(line.cluster, entry)
-  }
-  const other: AudioTrack = track === 'mic' ? 'system' : 'mic'
-  let best: string | undefined
-  let most = 0
-  for (const [id, entry] of talk) {
-    if (entry[track] > most && entry[track] >= entry[other]) {
-      most = entry[track]
-      best = id
-    }
-  }
-  return best
 }
