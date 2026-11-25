@@ -1,5 +1,41 @@
 # lyra
 
+## 0.5.0
+
+### Minor Changes
+
+- [#63](https://github.com/osbytes/lyra/pull/63) [`d3abddb`](https://github.com/osbytes/lyra/commit/d3abddb118654213c02e836ee15d52afca97c042) Thanks [@dillonstreator](https://github.com/dillonstreator)! - Clearer transcripts in rooms and on calls. Lyra now tells speech from music, fans and typing with a speech-detection model, removes your speakers' sound from the microphone with an echo canceller, and records the microphone without the browser's processing, which cost accuracy. Settings → Recording has a transcription language (your system language by default, or detect automatically), and the filter for phrases Whisper invents in silence now works in every language. A Bluetooth headset in call mode shows a notice, and computer audio reconnects when the output device changes.
+
+- [#66](https://github.com/osbytes/lyra/pull/66) [`3ea3220`](https://github.com/osbytes/lyra/commit/3ea322007e10d774cf8c457a0646fead7572b23d) Thanks [@dillonstreator](https://github.com/dillonstreator)! - Sturdier recordings and sessions. A crash, a failed or interrupted model download, or opening your notes with an older or newer version of Lyra no longer loses a recording or damages a session. Saved voices no longer learn from Lyra's own guesses, so one wrong match can't make the next one more likely, and a speaker you assign by hand stays assigned. Summaries can now come from a server on your own computer (Ollama, LM Studio) as its own choice in Settings, with a test button; a summary you edited is never rewritten without asking. Settings gains an About tab (versions, storage, copyable diagnostics), permission status, a custom vocabulary for names and jargon, and a confirmation before lowering "Keep audio" deletes recordings. The transcript can be used from the keyboard. Intel Macs now get their own download.
+  
+  Things to know when updating: saved voices move to a new file format that older versions of Lyra can't read; a summaries server address that uses plain `http://` to another computer is cleared (use `https://`, or a server on this computer); and the search index is rebuilt once, so meaning-based search takes a little while to catch up.
+
+- [#64](https://github.com/osbytes/lyra/pull/64) [`95ba791`](https://github.com/osbytes/lyra/commit/95ba79128e8b093cbb8912d2aba4073d7a807f1b) Thanks [@dillonstreator](https://github.com/dillonstreator)! - Lyra now offers to record when a call starts: in Zoom, Teams, Slack, Discord or another call app, or in Google Meet and other meeting sites in your browser. A small card asks whether to record, and Record captures the call's audio as well as your mic. It works while Lyra is closed to the tray, and "Open at login" now starts Lyra there. It checks on this computer only. Turn it off in Settings → Prompts, where you can also add apps Lyra shouldn't ask about, and import or export that list.
+  
+  On Windows, "Offer a session when the mic turns on" works again on recent Windows 11 builds, which stopped reporting mic use the way Lyra used to read it.
+
+- [#62](https://github.com/osbytes/lyra/pull/62) [`a55213b`](https://github.com/osbytes/lyra/commit/a55213be602aa6f9adfdcd0fcfb15d663a6fc9f1) Thanks [@adavila0703](https://github.com/adavila0703)! - Settings has a Performance tab: graphs of the CPU and memory Lyra has used over the last 30 minutes, with the peak and when it happened, and a breakdown by process (Lyra and Whisper, windows, speaker detection, local summaries, search index, graphics). Lyra takes a reading every 5 seconds from launch, so the graphs cover time when Settings was closed.
+
+- [#58](https://github.com/osbytes/lyra/pull/58) [`4b5ccd4`](https://github.com/osbytes/lyra/commit/4b5ccd4f2925c73396b8a3334af60fc5a3780f98) Thanks [@dillonstreator](https://github.com/dillonstreator)! - Drag the edges of the sidebar and the details panel to size them, up to a maximum that leaves the page room; Lyra remembers the widths. Drag either one past its narrowest width to close it, or drag the edge back out from the window's side to reopen it. The sidebar also has a button in the top bar and Ctrl/Cmd+\ to show and hide it. The transcript bar snaps the same way: drag it close to the top or bottom to close the notes or the transcript.
+
+- [#56](https://github.com/osbytes/lyra/pull/56) [`4b1c9a8`](https://github.com/osbytes/lyra/commit/4b1c9a8031d56e032e36c6cbe209e6b0e760cf6c) Thanks [@dillonstreator](https://github.com/dillonstreator)! - A cleaner session page. The title sits in the window's top bar beside Copy and wraps when it's long, and on Windows the window buttons share that bar instead of a separate title bar. The transcript's header is now the divider: drag it, or use its buttons to collapse the transcript or give it the whole page. Generated summaries read as a summary with checkable action items, with Edit for the text. The details panel runs the full height of the window, the sidebar scrolls with Settings always visible, and Settings → People has tidier rows. The Edited/Raw switch is gone; restore an edited line from its right-click menu.
+
+- [#70](https://github.com/osbytes/lyra/pull/70) [`91e8fac`](https://github.com/osbytes/lyra/commit/91e8fac17488d40541f4c0896dfa7500fb589fb9) Thanks [@dillonstreator](https://github.com/dillonstreator)! - Speakers are now told apart by their voices while you record, not after. Lines appear without a name and get one within about half a minute, once Lyra has compared the voices, including two people sharing your microphone or several on one call. Lyra no longer labels a line as you just because it came from your microphone.
+
+### Patch Changes
+
+- [#71](https://github.com/osbytes/lyra/pull/71) [`7ee0b0e`](https://github.com/osbytes/lyra/commit/7ee0b0e8ceeb6f2980a43e8a790391daaaf14d62) Thanks [@dillonstreator](https://github.com/dillonstreator)! - Find (Ctrl/Cmd+F) now jumps straight to each match instead of scrolling there slowly, and turning on your system's Reduce motion setting also stops smooth scrolling.
+
+- [#70](https://github.com/osbytes/lyra/pull/70) [`56cbca1`](https://github.com/osbytes/lyra/commit/56cbca125b36011a140b72ddc01cff3f9ac2961f) Thanks [@dillonstreator](https://github.com/dillonstreator)! - Two people at one microphone no longer end up as one speaker. After a recording stopped, Lyra heard both voices and then handed every line back to the first speaker, as if you had assigned them yourself; now each voice keeps its own lines.
+
+- [#65](https://github.com/osbytes/lyra/pull/65) [`4c14ce5`](https://github.com/osbytes/lyra/commit/4c14ce59af96c08c8a48b7212d173ddbdc80235c) Thanks [@dillonstreator](https://github.com/dillonstreator)! - Calls no longer lose people who only speak briefly. If you said a line or two while remote people did most of the talking, or a second remote person said one sentence, Lyra used to fold them into the main speaker once the recording stopped; now each keeps their own label.
+
+- [#70](https://github.com/osbytes/lyra/pull/70) [`5b92ed1`](https://github.com/osbytes/lyra/commit/5b92ed156ff189e2b561d3852b442aab6524aa66) Thanks [@dillonstreator](https://github.com/dillonstreator)! - "Copy diagnostics" in Settings → About now includes this computer (processor, memory, graphics) and what Lyra and the machine are using right now. The log also records which microphone and output are in use when a recording starts and whenever a device is plugged in or out, to help track down a session that came out wrong.
+
+- [#69](https://github.com/osbytes/lyra/pull/69) [`54c041f`](https://github.com/osbytes/lyra/commit/54c041f90de8bcaac35199864bce6de23ca0670d) Thanks [@dillonstreator](https://github.com/dillonstreator)! - The "still processing" status for a session now stays in the transcript's header bar, so it's always in view however far you scroll, and while the transcript is collapsed.
+
+- [#59](https://github.com/osbytes/lyra/pull/59) [`df1870a`](https://github.com/osbytes/lyra/commit/df1870a511b3def09f90dfc4317f2a413537f0b2) Thanks [@dillonstreator](https://github.com/dillonstreator)! - The session title is back at the top of the page, with room to breathe, instead of squeezed into the top bar. The Lyra logo moved to the top bar, and search sits at the top of the sidebar. The "Saved" label is gone: notes still save as you type.
+
 ## 0.4.0
 
 ### Minor Changes
