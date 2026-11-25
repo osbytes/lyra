@@ -12,7 +12,7 @@ const W = 720
 const H = 600
 
 type Point = { x: number; y: number }
-type Input = 'you' | 'meeting' | 'call'
+type Input = 'mic' | 'meeting' | 'system'
 type Engine = 'lyra' | 'whisper' | 'llm'
 type Node = Input | Engine
 
@@ -24,79 +24,93 @@ const STARS: Record<Node, Point> = {
   lyra: { x: 330, y: 340 }, // ζ
   whisper: { x: 376, y: 486 }, // Vega
   llm: { x: 474, y: 414 }, // ε
-  you: { x: 268, y: 90 }, // β
-  call: { x: 104, y: 40 }, // γ
-  meeting: { x: 167, y: 282 } // δ
+  mic: { x: 268, y: 90 }, // β
+  meeting: { x: 104, y: 40 }, // γ
+  system: { x: 167, y: 282 } // δ
 }
 
 const LINES: readonly (readonly [Node, Node])[] = [
   ['lyra', 'whisper'],
   ['lyra', 'llm'],
   ['whisper', 'llm'],
-  ['lyra', 'you'],
-  ['you', 'call'],
-  ['call', 'meeting'],
-  ['meeting', 'lyra']
+  ['lyra', 'mic'],
+  ['mic', 'meeting'],
+  ['meeting', 'system'],
+  ['system', 'lyra']
 ]
 
 // The inputs wear the app's speaker avatars (its tones), drawn over their stars.
 const INPUTS: readonly { id: Input; name: string; tone: string | null; mark: ReactNode }[] = [
-  { id: 'you', name: 'You', tone: null, mark: <MicIcon /> },
+  { id: 'mic', name: 'Mic', tone: null, mark: <MicIcon /> },
   { id: 'meeting', name: 'Meeting', tone: '0', mark: <PeopleIcon /> },
-  { id: 'call', name: 'Call audio', tone: '2', mark: <SpeakerIcon /> }
+  { id: 'system', name: 'System audio', tone: '2', mark: <SpeakerIcon /> }
 ]
 
 type Side = 'right' | 'belowLeft'
 
 const ENGINES: readonly { id: Engine; name: string; note: string; side: Side }[] = [
   { id: 'lyra', name: 'Lyra', note: 'On this computer', side: 'belowLeft' },
-  { id: 'whisper', name: 'Whisper', note: 'Transcription', side: 'right' },
-  { id: 'llm', name: 'Local LLM', note: 'Notes', side: 'right' }
+  { id: 'whisper', name: 'Whisper', note: 'Speakers · Text', side: 'right' },
+  { id: 'llm', name: 'LLM', note: 'Notes', side: 'right' }
 ]
 
-type CardId = 'speakers' | 'saved' | 'transcript' | 'summary' | 'actions'
+type CardId = 'whisper' | 'transcript' | 'summary' | 'actions'
 
-/** Each card hangs beside the star that makes it: left edge (or right, for `toLeft`), middle. */
-const CARDS: Record<CardId, { at: Point; w: number; from: Engine; toLeft?: boolean }> = {
-  speakers: { at: { x: 392, y: 214 }, w: 230, from: 'lyra' },
-  saved: { at: { x: 392, y: 290 }, w: 230, from: 'lyra' },
-  transcript: { at: { x: 344, y: 470 }, w: 230, from: 'whisper', toLeft: true },
-  summary: { at: { x: 500, y: 474 }, w: 212, from: 'llm' },
-  actions: { at: { x: 500, y: 538 }, w: 212, from: 'llm' }
+/**
+ * Each card hangs beside the star that makes it: its left edge (right, for `toLeft`) at `at`,
+ * centred on it, or hanging down from it for `top` cards, which grow as lines arrive.
+ */
+const CARDS: Record<CardId, { at: Point; w: number; from: Engine; toLeft?: boolean; top?: boolean }> = {
+  whisper: { at: { x: 344, y: 470 }, w: 230, from: 'whisper', toLeft: true },
+  transcript: { at: { x: 392, y: 178 }, w: 272, from: 'lyra', top: true },
+  summary: { at: { x: 500, y: 470 }, w: 212, from: 'llm' },
+  actions: { at: { x: 500, y: 512 }, w: 212, from: 'llm', top: true }
 }
 
 const CARD_IDS = Object.keys(CARDS).filter((id): id is CardId => id in CARDS)
 
-/** Where a card's beam lands: the edge facing its star. */
-const anchorOf = (id: CardId): Point => CARDS[id].at
+/** Where a card's beam lands: the edge facing its star, near the top of a growing card. */
+function anchorOf(id: CardId): Point {
+  const { at, top } = CARDS[id]
+  return top ? { x: at.x, y: at.y + 22 } : at
+}
 
-/** Who a card's color comes from: a speaker, Lyra, or the local model. */
-type Ink = Input | 'lyra' | 'llm'
+/** Who a word's color comes from: an input, Lyra, Whisper, or the local model. */
+type Ink = Input | Engine
 
-type Beat = { card: CardId; ink: Ink; kind: string; text: string }
+type Line = { who: string; tone: string; where: string; text: string }
 
-// A meeting as Lyra handles it: lines are transcribed as they're said, Lyra works out who said
-// them, the local model writes the summary and action items, and it all lands in a plain file.
-const SCRIPT: readonly Beat[] = [
-  { card: 'transcript', ink: 'you', kind: 'Transcript · You', text: 'Let’s ship the dock first.' },
-  { card: 'speakers', ink: 'lyra', kind: 'Speakers', text: 'You · Dana · Sam' },
-  { card: 'transcript', ink: 'call', kind: 'Transcript · Alex', text: 'Does the pill need a hotkey?' },
-  { card: 'summary', ink: 'llm', kind: 'Summary', text: 'The dock ships first.' },
-  { card: 'speakers', ink: 'lyra', kind: 'Speakers', text: 'Alex · matched a saved voice' },
-  { card: 'transcript', ink: 'meeting', kind: 'Transcript · Sam', text: 'I’ll check the contrast today.' },
-  { card: 'actions', ink: 'llm', kind: 'Action item', text: 'Sam: check the contrast' },
-  { card: 'saved', ink: 'lyra', kind: 'Saved', text: '~/.lyra/design-review.md' },
-  { card: 'actions', ink: 'llm', kind: 'Action item', text: 'Alex: try a pill hotkey' },
-  { card: 'saved', ink: 'lyra', kind: 'Uploaded', text: 'Nothing. It stays here.' }
+// The example meeting: Dana in the room on the mic, Sam and Alex on the call. Each line is heard on
+// both tracks, Whisper works out who said it and writes it down, and once the meeting ends the
+// local model turns the transcript into a summary and action items.
+const MEETING: readonly Line[] = [
+  { who: 'Dana', tone: '0', where: 'in the room', text: 'Let’s ship the dock first.' },
+  { who: 'Sam', tone: '1', where: 'on the call', text: 'Agreed. I’ll check the contrast today.' },
+  { who: 'Alex', tone: '2', where: 'on the call', text: 'Does the pill need a hotkey?' },
+  { who: 'Dana', tone: '0', where: 'in the room', text: 'Yes. Try one before Friday.' }
 ]
 
-/** How a beat's words travel: in from a voice through Lyra to Whisper, or out from Lyra. */
-function routeOf(beat: Beat): readonly Node[] {
-  if (beat.ink === 'you') return ['you', 'lyra', 'whisper']
-  if (beat.ink === 'meeting') return ['meeting', 'lyra', 'whisper']
-  if (beat.ink === 'call') return ['call', 'you', 'lyra', 'whisper']
-  if (beat.ink === 'llm') return ['lyra', 'llm']
-  return ['lyra']
+const SUMMARY = 'The dock ships first, and the pill gets a hotkey.'
+
+const ACTIONS: readonly string[] = ['Sam: check the dock’s contrast', 'Alex: try a pill hotkey by Friday']
+
+/** What the cards show at a moment in the loop. */
+type View = {
+  /** Whisper's current step, and a key so each new step animates in. */
+  step: { kind: string; text: string; n: number }
+  /** How many meeting lines the transcript card shows. */
+  lines: number
+  summary: 'off' | 'busy' | 'done'
+  /** How many action items are written. */
+  actions: number
+}
+
+/** The finished meeting: what a still or not-yet-playing picture shows. */
+const DONE: View = {
+  step: { kind: 'Transcribed', text: '4 lines · 3 speakers', n: 0 },
+  lines: MEETING.length,
+  summary: 'done',
+  actions: ACTIONS.length
 }
 
 /** Resolved colors for the canvas, which can't read CSS variables itself. */
@@ -114,23 +128,23 @@ function readPalette(root: HTMLElement): Palette {
     lyra: accent,
     whisper: 'rgb(220, 225, 255)',
     llm: css.getPropertyValue('--llm').trim() || accent,
-    you: tone('you'),
+    mic: tone('mic'),
     meeting: tone('meeting'),
-    call: tone('call')
+    system: tone('system')
   }
 }
 
-const BEAT_MS = 2200
 /** Pixels per millisecond a word travels. */
 const SPEED = 0.55
 
-/** A word's trip: its route's stars, then the card it lands on. */
+/** A word's trip: its route's stars, then the card it lands on, if any. */
 type Flight = { points: Point[]; nodes: Node[]; at: number[]; total: number; ink: Ink; start: number; duration: number }
 type Ripple = { at: Point; ink: Ink; start: number; size: number }
 
-function flightFor(beat: Beat, start: number): Flight {
-  const nodes = [...routeOf(beat)]
-  const points = [...nodes.map((n) => STARS[n]), anchorOf(beat.card)]
+function flightFor(route: readonly Node[], ink: Ink, start: number, card?: CardId): Flight {
+  const nodes = [...route]
+  const points = nodes.map((n) => STARS[n])
+  if (card) points.push(anchorOf(card))
   const at = [0]
   for (let i = 1; i < points.length; i++) {
     const a = points[i - 1]
@@ -139,7 +153,7 @@ function flightFor(beat: Beat, start: number): Flight {
     at.push(a && b ? prev + Math.hypot(b.x - a.x, b.y - a.y) : prev)
   }
   const total = at[at.length - 1] ?? 0
-  return { points, nodes, at, total, ink: beat.ink, start, duration: Math.max(650, total / SPEED) }
+  return { points, nodes, at, total, ink, start, duration: Math.max(650, total / SPEED) }
 }
 
 /** The point a distance `d` along a flight's path. */
@@ -274,31 +288,24 @@ type Placed = CSSProperties & { '--c': string }
 
 const place = (x: number, y: number, color: string): Placed => ({ left: pct(x, W), top: pct(y, H), '--c': color })
 
-/** Before anything plays, each card shows its last line in the script, so the loop reads on. */
-function firstCards(): Record<CardId, { beat: Beat; n: number }> {
-  const last = (id: CardId): Beat =>
-    [...SCRIPT].reverse().find((b) => b.card === id) ?? { card: id, ink: 'lyra', kind: '', text: '' }
-  return {
-    speakers: { beat: last('speakers'), n: 0 },
-    saved: { beat: last('saved'), n: 0 },
-    transcript: { beat: last('transcript'), n: 0 },
-    summary: { beat: last('summary'), n: 0 },
-    actions: { beat: last('actions'), n: 0 }
-  }
-}
+/** How long the finished meeting stays up before the next one starts. */
+const HOLD_MS = 5000
+/** How long Whisper spends on each step: telling who spoke, then writing it down. */
+const DIARIZE_MS = 900
+const TRANSCRIBE_MS = 800
 
 /**
- * The hero's picture: the constellation Lyra. What you say, a meeting and a call's audio flow into
- * Lyra in the middle; Whisper behind it writes the transcript, Lyra labels who spoke and saves the
- * file, and the local model writes the summary and action items. Decorative; the copy beside it
- * says the same.
+ * The hero's picture: the constellation Lyra, playing one meeting on a loop. Each line leaves the
+ * meeting on both the mic and the system audio, meets in Lyra, and goes to Whisper, which tells who
+ * spoke and writes it down; the line comes back to Lyra's transcript. When the meeting ends, the
+ * local model writes the summary and action items. Decorative; the copy beside it says the same.
  */
 export function HeroGraph() {
   const rootRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   // The colors as the browser resolved them, for the cards' dots; null until mounted.
   const [palette, setPalette] = useState<Palette | null>(null)
-  const [cards, setCards] = useState(firstCards)
+  const [view, setView] = useState<View>(DONE)
   const [lit, setLit] = useState<Node | null>(null)
   const [fresh, setFresh] = useState<CardId | null>(null)
 
@@ -320,7 +327,7 @@ export function HeroGraph() {
     }
     let frame = 0
     let visible = false
-    let beat = 0
+    let step = 0
     const colors = readPalette(root)
     setPalette(colors)
 
@@ -346,28 +353,92 @@ export function HeroGraph() {
       })
     }
 
-    const play = (): void => {
-      if (!visible || document.hidden) return
-      const next = SCRIPT[beat % SCRIPT.length]
-      beat += 1
-      later(BEAT_MS, play)
-      if (!next) return
-      const flight = flightFor(next, performance.now())
+    /** Sends a word along a route, flaring each star it passes; returns when it arrives. */
+    const send = (route: readonly Node[], ink: Ink, card?: CardId): number => {
+      const flight = flightFor(route, ink, performance.now(), card)
       flights.push(flight)
-      if (flights.length > 4) flights.shift()
-      // Each star the word passes flares as it does.
+      if (flights.length > 6) flights.splice(0, flights.length - 6)
       flight.nodes.forEach((node, i) => {
         const when = flight.duration * easeInverse((flight.at[i] ?? 0) / Math.max(1, flight.total))
-        later(when, () => flare(node, flight.ink))
+        later(when, () => flare(node, ink))
       })
-      later(flight.duration, () => {
-        ripples.push({ at: anchorOf(next.card), ink: flight.ink, start: performance.now(), size: 14 })
-        setCards((all) => ({ ...all, [next.card]: { beat: next, n: all[next.card].n + 1 } }))
-        setFresh(next.card)
-        later(1400, () => {
-          setFresh((current) => (current === next.card ? null : current))
+      if (card) {
+        later(flight.duration, () => {
+          ripples.push({ at: anchorOf(card), ink, start: performance.now(), size: 14 })
+        })
+      }
+      return flight.duration
+    }
+
+    const highlight = (card: CardId): void => {
+      setFresh(card)
+      later(1400, () => {
+        setFresh((current) => (current === card ? null : current))
+      })
+    }
+
+    const showStep = (kind: string, text: string): void => {
+      step += 1
+      const n = step
+      setView((v) => ({ ...v, step: { kind, text, n } }))
+      highlight('whisper')
+    }
+
+    // After the meeting: Lyra hands the transcript to the local model, which writes the summary
+    // and then the action items, one at a time.
+    const writeNotes = (): void => {
+      const toModel = send(['lyra', 'llm'], 'llm')
+      later(toModel, () => {
+        setView((v) => ({ ...v, summary: 'busy' }))
+        highlight('summary')
+        later(1300, () => {
+          setView((v) => ({ ...v, summary: 'done' }))
+          highlight('summary')
+          ACTIONS.forEach((_, i) => {
+            later(i * 1100, () => {
+              const landed = send(['llm'], 'llm', 'actions')
+              later(landed, () => {
+                setView((v) => ({ ...v, actions: i + 1 }))
+                highlight('actions')
+              })
+            })
+          })
+          later(ACTIONS.length * 1100 + HOLD_MS, play)
         })
       })
+    }
+
+    // One line of the meeting: heard on both tracks, into Lyra, to Whisper and back.
+    const hear = (i: number): void => {
+      if (!visible || document.hidden) return
+      const line = MEETING[i]
+      if (!line) {
+        later(900, writeNotes)
+        return
+      }
+      const toWhisper = send(['meeting', 'mic', 'lyra', 'whisper'], 'meeting')
+      send(['meeting', 'system', 'lyra'], 'meeting')
+      later(toWhisper, () => {
+        showStep('Diarizing', `${line.who} · ${line.where}`)
+        later(DIARIZE_MS, () => {
+          showStep('Transcribing', line.text)
+          later(TRANSCRIBE_MS, () => {
+            const back = send(['whisper', 'lyra'], 'whisper', 'transcript')
+            later(back, () => {
+              setView((v) => ({ ...v, lines: i + 1 }))
+              highlight('transcript')
+            })
+            later(back + 500, () => hear(i + 1))
+          })
+        })
+      })
+    }
+
+    const play = (): void => {
+      if (!visible || document.hidden) return
+      setView((v) => ({ ...v, lines: 0, summary: 'off', actions: 0 }))
+      showStep('Listening', 'Mic and system audio')
+      later(700, () => hear(0))
     }
 
     const resize = new ResizeObserver(fit)
@@ -424,20 +495,60 @@ export function HeroGraph() {
           <span className={styles.engineNote}>{engine.note}</span>
         </div>
       ))}
-      {CARD_IDS.map((id) => {
-        const { at, w, toLeft } = CARDS[id]
-        const entry = cards[id]
-        return (
-          <div
-            key={`${id}-${String(entry.n)}`}
-            className={cx(styles.card, toLeft && styles.toLeft, entry.n > 0 && styles.enter, fresh === id && styles.fresh)}
-            style={{ ...place(at.x, at.y, colorOf(entry.beat.ink)), width: pct(w, W) }}
-          >
-            <span className={styles.kind}>{entry.beat.kind}</span>
-            <span className={styles.text}>{entry.beat.text}</span>
-          </div>
-        )
-      })}
+      <Card id="whisper" ink={colorOf('whisper')} fresh={fresh} hidden={false}>
+        <span key={view.step.n} className={cx(styles.step, view.step.n > 0 && styles.enter)}>
+          <span className={styles.kind}>{view.step.kind}</span>
+          <span className={styles.text}>{view.step.text}</span>
+        </span>
+      </Card>
+      <Card id="transcript" ink={colorOf('lyra')} fresh={fresh} hidden={false}>
+        <span className={styles.kind}>Transcript</span>
+        {view.lines === 0 ? <span className={styles.waiting}>Waiting for someone to speak…</span> : null}
+        {MEETING.slice(0, view.lines).map((line, i) => (
+          <span key={i} className={cx(styles.row, styles.enter)}>
+            <span className={styles.who} data-tone={line.tone}>
+              {line.who}
+            </span>
+            <span className={styles.said}>{line.text}</span>
+          </span>
+        ))}
+      </Card>
+      <Card id="summary" ink={colorOf('llm')} fresh={fresh} hidden={view.summary === 'off'}>
+        <span className={styles.kind}>Summary</span>
+        {view.summary === 'busy' ? (
+          <span className={styles.waiting}>Writing from the transcript…</span>
+        ) : (
+          <span className={cx(styles.text, styles.wrap)}>{SUMMARY}</span>
+        )}
+      </Card>
+      <Card id="actions" ink={colorOf('llm')} fresh={fresh} hidden={view.actions === 0}>
+        <span className={styles.kind}>Action items</span>
+        {ACTIONS.slice(0, view.actions).map((action) => (
+          <span key={action} className={cx(styles.row, styles.enter)}>
+            <span className={styles.box} aria-hidden="true" />
+            <span className={styles.said}>{action}</span>
+          </span>
+        ))}
+      </Card>
+    </div>
+  )
+}
+
+/** A card beside its star, tinted by `ink`; it fades out while it has nothing to show. */
+function Card(props: { id: CardId; ink: string; fresh: CardId | null; hidden: boolean; children: ReactNode }) {
+  const { at, w, toLeft, top } = CARDS[props.id]
+  return (
+    <div
+      className={cx(
+        styles.card,
+        toLeft && styles.toLeft,
+        top && styles.top,
+        props.fresh === props.id && styles.fresh,
+        props.hidden && styles.gone
+      )}
+      style={{ ...place(at.x, at.y, props.ink), width: pct(w, W) }}
+    >
+      {props.children}
     </div>
   )
 }
