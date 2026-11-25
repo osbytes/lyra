@@ -6,6 +6,17 @@ const BYTES_PER_SAMPLE = 2
 
 type WavInfo = { dataOffset: number; samples: number }
 
+/**
+ * How many bytes of the data chunk to read. A size of 0, or one past the end of the file, is a
+ * header that was never finalised (the app crashed or lost power mid-recording, or the writer
+ * streams and patches it later): the audio is on disk all the same, so it runs to the end of the
+ * file. Otherwise the header wins, so a chunk that follows the data isn't read as audio.
+ */
+export function dataChunkBytes(headerSize: number, available: number): number {
+  if (headerSize === 0 || headerSize > available) return available
+  return headerSize
+}
+
 async function readInfo(path: string): Promise<WavInfo> {
   const handle = await open(path, 'r')
   try {
@@ -18,7 +29,7 @@ async function readInfo(path: string): Promise<WavInfo> {
       if (id === 'data') {
         const { size: fileSize } = await handle.stat()
         const available = Math.max(0, fileSize - (offset + 8))
-        return { dataOffset: offset + 8, samples: Math.floor(Math.min(size, available) / BYTES_PER_SAMPLE) }
+        return { dataOffset: offset + 8, samples: Math.floor(dataChunkBytes(size, available) / BYTES_PER_SAMPLE) }
       }
       offset += 8 + size + (size % 2)
     }

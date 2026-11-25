@@ -115,12 +115,53 @@ export function averageLinkage(vectors: readonly (readonly number[])[], bar: num
   })
 }
 
+const allFinite = (vector: readonly number[]): boolean => vector.every((value) => Number.isFinite(value))
+
 /**
  * Clusters the windows of at least `minWindow` seconds; shorter ones (the end of a segment, a
  * one-word reply) carry a noisy voiceprint that would start speakers of its own, so they take
  * the nearest cluster afterwards instead.
+ *
+ * A window whose voiceprint isn't finite (NaN from a silent or broken stretch) would poison
+ * every similarity it touches, so it's clustered without and takes the label of the nearest
+ * window in time that has one. With every voiceprint finite this is exactly the plain path.
  */
 export function clusterLongWindows(
+  spans: readonly Span[],
+  vectors: readonly (readonly number[])[],
+  bar: number,
+  minWindow: number
+): number[] {
+  const finite = vectors.map(allFinite)
+  if (finite.every(Boolean)) return clusterFinite(spans, vectors, bar, minWindow)
+  const index = finite.flatMap((ok, i) => (ok ? [i] : []))
+  const labels = clusterFinite(
+    index.map((i) => spans[i] ?? { start: 0, end: 0 }),
+    index.map((i) => vectors[i] ?? []),
+    bar,
+    minWindow
+  )
+  const byWindow = new Map(index.map((i, k) => [i, labels[k] ?? 0]))
+  return vectors.map((_, i) => byWindow.get(i) ?? nearestLabel(i, spans, byWindow))
+}
+
+/** The label of the labeled window whose middle is closest in time to window `i`'s; 0 if none. */
+function nearestLabel(i: number, spans: readonly Span[], labels: ReadonlyMap<number, number>): number {
+  const middle = (span: Span | undefined): number => (span ? (span.start + span.end) / 2 : 0)
+  const at = middle(spans[i])
+  let best = 0
+  let distance = Infinity
+  for (const [k, label] of labels) {
+    const gap = Math.abs(middle(spans[k]) - at)
+    if (gap < distance) {
+      best = label
+      distance = gap
+    }
+  }
+  return best
+}
+
+function clusterFinite(
   spans: readonly Span[],
   vectors: readonly (readonly number[])[],
   bar: number,
@@ -147,11 +188,12 @@ export function clusterLongWindows(
   })
 }
 
-/** The mean direction of each label's vectors. */
+/** The mean direction of each label's vectors; a vector that isn't finite is left out. */
 export function centroids(labels: readonly number[], vectors: readonly (readonly number[])[]): Map<number, number[]> {
   const sums = new Map<number, number[]>()
   labels.forEach((label, i) => {
     const vector = vectors[i] ?? []
+    if (!allFinite(vector)) return
     const sum = sums.get(label) ?? new Array<number>(vector.length).fill(0)
     vector.forEach((value, d) => (sum[d] = (sum[d] ?? 0) + value))
     sums.set(label, sum)

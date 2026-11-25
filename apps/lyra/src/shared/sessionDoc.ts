@@ -508,6 +508,7 @@ export function upsertSpeaker(
     if (!(entry instanceof Y.Map)) {
       entry = new Y.Map<unknown>()
       speakers.set(id, entry)
+      claimSpeakerId(doc, id)
     }
     for (const [key, value] of Object.entries(fields)) {
       entry.set(key, key === 'matches' ? [...(value as SpeakerMatch[])] : value)
@@ -655,23 +656,63 @@ export function restoreMissingSpeakers(doc: Y.Doc, origin: unknown): number {
   return missing.size
 }
 
+/** Removes a speaker, keeping its id from being handed out again. */
+export function removeSpeaker(doc: Y.Doc, id: string, origin: unknown): void {
+  const speakers = speakersOf(doc)
+  if (!speakers?.has(id)) return
+  doc.transact(() => {
+    claimSpeakerId(doc, id)
+    speakers.delete(id)
+  }, origin)
+}
+
 /** Moves every line of speaker `from` to `into`, then removes `from`. */
 export function mergeSpeakers(doc: Y.Doc, from: string, into: string, origin: unknown): void {
   doc.transact(() => {
     for (const entry of docTranscript(doc).toArray()) {
       if (entry.get('cluster') === from) entry.set('cluster', into)
     }
-    speakersOf(doc)?.delete(from)
+    removeSpeaker(doc, from, origin)
   }, origin)
 }
 
-/** A speaker id not used yet in this document. */
+/**
+ * The next free speaker number, kept in `meta` and only ever raised. Voiceprints are looked up
+ * by speaker id across every raw pass, so an id handed out again after its speaker was merged
+ * away would give the new speaker the old one's voice.
+ */
+const SPEAKER_SEQ = 'speakerSeq'
+const SPEAKER_ID = /^c(\d+)$/
+
+function speakerNumber(id: unknown): number | null {
+  if (typeof id !== 'string') return null
+  const match = SPEAKER_ID.exec(id)
+  return match ? Number(match[1]) : null
+}
+
+/** Records that `id` has been used, so `newSpeakerId` never returns it again. */
+function claimSpeakerId(doc: Y.Doc, id: string): void {
+  const n = speakerNumber(id)
+  if (n === null || !Number.isSafeInteger(n)) return
+  const meta = docMeta(doc)
+  if (num(meta.get(SPEAKER_SEQ)) <= n) meta.set(SPEAKER_SEQ, n + 1)
+}
+
+/**
+ * A speaker id never used in this document: past every id the counter has seen, and every id
+ * still in the speakers or the transcript (documents from before the counter).
+ */
 export function newSpeakerId(doc: Y.Doc): string {
-  const taken = new Set<string>()
-  speakersOf(doc)?.forEach((_value, id) => taken.add(id))
-  let n = taken.size
-  while (taken.has(`c${String(n)}`)) n++
-  return `c${String(n)}`
+  let next = num(docMeta(doc).get(SPEAKER_SEQ))
+  const see = (id: unknown): void => {
+    const n = speakerNumber(id)
+    if (n !== null && n >= next) next = n + 1
+  }
+  speakersOf(doc)?.forEach((_value, id) => {
+    see(id)
+  })
+  for (const line of docTranscript(doc).toArray()) see(line.get('cluster'))
+  return `c${String(next)}`
 }
 
 /** Reads a binary update that arrived over IPC or from disk; anything else is rejected. */

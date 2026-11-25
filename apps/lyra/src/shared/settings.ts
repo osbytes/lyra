@@ -12,6 +12,29 @@ const AbsolutePath = z
   .trim()
   .regex(/^(\/|[A-Za-z]:[\\/]|\\\\)/, 'must be an absolute path')
 
+/** Whether `raw` is a URL on this computer: `localhost`, `127.0.0.0/8` or `::1`. */
+export function isLoopbackUrl(raw: string): boolean {
+  let hostname: string
+  try {
+    hostname = new URL(raw).hostname.toLowerCase()
+  } catch {
+    return false
+  }
+  // The URL parser has already normalised `127.1` and `0x7f.0.0.1` to dotted decimal.
+  return hostname === 'localhost' || hostname === '[::1]' || /^127(\.\d{1,3}){3}$/.test(hostname)
+}
+
+/**
+ * An OpenAI-compatible server's address. Transcripts go to it, so plain `http` is only allowed
+ * when it never leaves this computer.
+ */
+const ServerUrl = z
+  .url({ protocol: /^https?$/ })
+  .refine(
+    (url) => url.toLowerCase().startsWith('https:') || isLoopbackUrl(url),
+    'must be https unless the server is on this computer'
+  )
+
 /**
  * How wide the side panels can be dragged, in pixels. Dragging past `closeBelow` closes the
  * panel instead, so the range between it and `min` is where the edge snaps.
@@ -49,7 +72,7 @@ export const SettingsSchema = z.object({
   /** `null` uses the provider's default model, where it has one. */
   cloudModel: ModelId.nullable(),
   /** Address of an OpenAI-compatible server (Ollama, LM Studio, …), e.g. `http://localhost:11434/v1`. */
-  cloudBaseUrl: z.url({ protocol: /^https?$/ }).nullable(),
+  cloudBaseUrl: ServerUrl.nullable(),
   /** Show a session's details (dates, tags, speakers) in a side panel instead of inline. */
   detailsPanel: z.boolean(),
   /** Show the session list on the left. */

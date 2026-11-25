@@ -111,6 +111,7 @@ function RecordingPill() {
   }, [])
 
   const listening = state?.phase === 'listening'
+  const starting = state?.phase === 'starting'
   const now = useNow(listening)
   const elapsed = state?.startedAt ? Math.max(0, now - state.startedAt) : 0
 
@@ -134,8 +135,9 @@ function RecordingPill() {
         onClick={() => {
           window.api.requestStop()
         }}
-        disabled={!listening}
-        aria-label="Stop recording"
+        // A stop while warming up cancels the start (the model may still be downloading).
+        disabled={!listening && !starting}
+        aria-label={starting ? 'Cancel starting the recording' : 'Stop recording'}
       >
         <StopIcon />
       </button>

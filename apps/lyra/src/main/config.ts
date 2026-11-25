@@ -25,7 +25,9 @@ const ConfigSchema = EnvVars.transform((env) => ({
     anthropic: env.ANTHROPIC_BASE_URL ?? null,
     openai: env.OPENAI_BASE_URL ?? null
   },
-  rendererUrl: env.ELECTRON_RENDERER_URL ?? null
+  rendererUrl: env.ELECTRON_RENDERER_URL ?? null,
+  /** Packaged builds run command-line tasks only when this is set. */
+  allowTasks: env.LYRA_ALLOW_TASKS !== undefined
 }))
 
 export type Config = z.output<typeof ConfigSchema>

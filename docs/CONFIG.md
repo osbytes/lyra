@@ -22,6 +22,7 @@ Lyra reads the process environment, not a `.env` file.
 | `OPENAI_API_KEY` | secret | OpenAI API key. Used when no key is saved in Settings; a saved key wins. Having a key never sends anything: summaries use a cloud model only when the user picks one. | the key saved in Settings, if any |
 | `OPENAI_BASE_URL` | url | OpenAI API endpoint, for a proxy or gateway. | `https://api.openai.com/v1` |
 | `GOOGLE_GENERATIVE_AI_API_KEY` | secret | Google Gemini API key. Used when no key is saved in Settings; a saved key wins. Having a key never sends anything: summaries use a cloud model only when the user picks one. | the key saved in Settings, if any |
+| `LYRA_ALLOW_TASKS` | flag | Set to `1` to let a packaged build run the one-off tasks below (smoke test, screenshots, meeting replays). Without it a packaged build that is given a task exits instead, so another program cannot drive Lyra through them. Development builds always allow them. | packaged builds refuse tasks; development builds run them |
 | `ELECTRON_RENDERER_URL` | url | Set by `electron-vite dev` to the dev server. Read only in development builds. | the bundled renderer |
 
 Paths must be absolute. URLs must be `http` or `https`. Secrets are never written to the log;

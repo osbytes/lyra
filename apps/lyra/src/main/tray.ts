@@ -1,7 +1,8 @@
-import { app, Menu, nativeImage, shell, Tray } from 'electron'
+import { app, Menu, nativeImage, Tray } from 'electron'
 import { join } from 'node:path'
 import type { SessionState } from '../shared/types'
-import { notesDir } from './pages'
+import { log } from './log'
+import { revealNotesFolder } from './notesFolder'
 import { getSessionState, onSessionState, sendSessionCommand, showMainWindow, toggleSession } from './session'
 import { getSettings, onSettingsChanged } from './settings'
 
@@ -42,7 +43,9 @@ function buildMenu(state: SessionState): Menu {
     {
       label: 'Open sessions folder',
       click: () => {
-        void shell.openPath(notesDir())
+        revealNotesFolder().catch((error: unknown) => {
+          log('tray', 'could not open the sessions folder', error instanceof Error ? error.message : String(error))
+        })
       }
     },
     { type: 'separator' },

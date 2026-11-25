@@ -4339,3 +4339,35 @@ p.line-text {
   background-color: #f59e0b;
   color: #18181f;
 }
+
+/* A rendering error: the whole window, or just the session's panes (the dock stays usable). */
+.error-boundary {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 100vh;
+  padding: 48px;
+  background: var(--bg);
+  color: var(--text);
+  text-align: center;
+}
+
+.error-boundary.is-pane {
+  min-height: 0;
+  padding: 48px 48px 104px;
+  background: transparent;
+}
+
+.error-boundary h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.error-boundary p {
+  max-width: 400px;
+  margin: 0;
+  color: var(--text-muted);
+}

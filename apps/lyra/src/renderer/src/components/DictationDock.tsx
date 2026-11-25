@@ -347,7 +347,8 @@ function useDockDrag() {
 export function DictationDock(props: Props) {
   const { phase, status, error, notice, subscribeLevel, transcribing, onToggle, elsewhere } = props
   const listening = phase === 'listening'
-  const busy = phase === 'starting' || phase === 'finishing'
+  const starting = phase === 'starting'
+  const busy = starting || phase === 'finishing'
   const elapsed = useElapsed(listening ? props.startedAt : null)
   const button = useRef<HTMLButtonElement>(null)
   const drag = useDockDrag()
@@ -387,24 +388,29 @@ export function DictationDock(props: Props) {
           type="button"
           className="mic-btn"
           onClick={onToggle}
-          disabled={busy}
+          // Warming up can take a while (the model may be downloading), so it can be cancelled.
+          disabled={phase === 'finishing'}
           aria-label={
-            listening
-              ? elsewhere
-                ? `Stop recording “${elsewhere.title}”`
-                : 'Stop recording'
-              : 'Continue recording this session'
+            starting
+              ? 'Cancel starting the recording'
+              : listening
+                ? elsewhere
+                  ? `Stop recording “${elsewhere.title}”`
+                  : 'Stop recording'
+                : 'Continue recording this session'
           }
           {...tip(
-            listening
-              ? elsewhere
-                ? `Stop recording “${elsewhere.title}”`
-                : 'Stop'
-              : 'Continue session · adds to the end',
+            starting
+              ? 'Cancel'
+              : listening
+                ? elsewhere
+                  ? `Stop recording “${elsewhere.title}”`
+                  : 'Stop'
+                : 'Continue session · adds to the end',
             shortcutLabel('D', true)
           )}
         >
-          {listening ? <StopIcon /> : <MicIcon />}
+          {listening || starting ? <StopIcon /> : <MicIcon />}
         </button>
 
         {label ? (

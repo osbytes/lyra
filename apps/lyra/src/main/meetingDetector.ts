@@ -1,5 +1,5 @@
 import { classifyMicUser, meetingFromTitles } from './meetingApps'
-import type { AudioUsers } from './micwatch'
+import type { AudioUsers } from './micHelperLine'
 
 /**
  * What to ask about. `key` names it for "Dismiss"; `label` is shown and is what "Don't ask"

@@ -188,16 +188,25 @@ export type VoicePagesApi = {
   closeSession: (id: string) => void
   onSessionUpdate: (callback: (change: SessionUpdate) => void) => () => void
   getSettings: () => Promise<Settings>
+  /**
+   * Main window only. Applies the fields that pass their checks (a bad value keeps the current
+   * one); an unknown field rejects. `notesDir` is refused: the folder changes with `pickFolder`.
+   */
   updateSettings: (patch: Partial<Settings>) => Promise<Settings>
   onSettingsChanged: (callback: (settings: Settings) => void) => () => void
-  /** Opens a folder picker; resolves to the chosen absolute path or null. */
-  pickFolder: () => Promise<string | null>
-  /** Moves notes from the old folder into the current one. */
-  moveNotes: (fromDir: string) => Promise<MoveNotesResult>
+  /**
+   * Main window only. Opens the native folder picker and switches to the folder the user picks.
+   * Resolves to the new settings (unchanged if they picked the current folder), or null when
+   * they cancel; rejects while recording.
+   */
+  pickFolder: () => Promise<Settings | null>
+  /** Main window only. Moves the notes from the folder used before the last `pickFolder`. */
+  moveNotes: () => Promise<MoveNotesResult>
+  /** Main window only. Opens the notes folder in the file manager. */
   revealNotesFolder: () => Promise<void>
-  /** Saves the "Don't ask" app list to a file the user picks. */
+  /** Main window only. Saves the "Don't ask" app list to a file the user picks. */
   exportIgnoredApps: () => Promise<ExportIgnoredResult>
-  /** Adds the apps in a file the user picks to the "Don't ask" list. */
+  /** Main window only. Adds the apps in a file the user picks to the "Don't ask" list. */
   importIgnoredApps: () => Promise<ImportIgnoredResult>
   /** Main window: commands from the tray, global hotkey, or overlay. */
   onSessionCommand: (callback: (command: SessionCommand) => void) => () => void
@@ -261,9 +270,12 @@ export type VoicePagesApi = {
   onMeetingStatus: (callback: (status: MeetingStatus) => void) => () => void
   /** (Re)writes the notes section at the top of a meeting note with the chosen engine. */
   generateNotes: (pageId: string) => Promise<void>
-  /** Where a provider's API key comes from, or null when there is none. */
+  /** Main window only. Where a provider's API key comes from, or null when there is none. */
   keySource: (provider: ProviderId) => Promise<KeySource | null>
-  /** Stores a provider's key encrypted with the OS keychain; null removes it. */
+  /**
+   * Main window only. Stores a provider's key encrypted with the OS keychain; null removes it.
+   * Rejects where there is no real keychain (Linux without one), naming the variable to use.
+   */
   setKey: (provider: ProviderId, key: string | null) => Promise<void>
   /** Puts plain text on the system clipboard. */
   copyText: (text: string) => void

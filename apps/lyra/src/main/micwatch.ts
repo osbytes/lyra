@@ -1,10 +1,21 @@
 import { app } from 'electron'
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { log } from './log'
+import {
+  bundleIdFromPlist,
+  helperRestartDelay,
+  ownBundleId,
+  parseHelperLine,
+  type AudioUsers,
+  type MicUsers,
+  type OwnName
+} from './micHelperLine'
 import { micSessionsScript } from './micSessionsWin'
+
+export { parseHelperLine, UNKNOWN_APP, type AudioUsers, type MicUsers } from './micHelperLine'
 
 /**
  * Watches for other apps starting to use the microphone.
@@ -18,19 +29,11 @@ import { micSessionsScript } from './micSessionsWin'
  * - Linux: PulseAudio/PipeWire source outputs via `pactl`, best effort.
  */
 
-/** Apps currently using the microphone; `UNKNOWN_APP` when the platform can't say which. */
-export type MicUsers = Set<string>
-export const UNKNOWN_APP = ''
-
-/**
- * Who is on the mic, and who is playing sound right now. `playing` is empty where the platform
- * can't say (the registry fallback, Linux, macOS before 14).
- */
-export type AudioUsers = { mic: MicUsers; playing: Set<string> }
-
 type Listener = (users: AudioUsers) => void
 
 const POLL_MS = 2000
+/** A helper that ran this long before exiting starts a fresh round of restarts. */
+const HELPER_STABLE_MS = 10 * 60_000
 const CONSENT_KEY =
   'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\microphone'
 
@@ -86,52 +89,45 @@ async function pollLinux(): Promise<MicUsers> {
   return users
 }
 
-const APPS_PREFIX = 'apps:'
-
-const PLAYING_PREFIX = ';out:'
-
-/**
- * One line from a helper: `apps:<name>,…;out:<name>,…` (process names on Windows, bundle ids on
- * macOS; the playing part is optional), or `1`/`0` when the macOS helper can't name apps. `own`
- * (Lyra's own process name) is dropped.
- */
-export function parseHelperLine(line: string, own = ''): AudioUsers {
-  const trimmed = line.trim()
-  if (!trimmed.startsWith(APPS_PREFIX)) {
-    return { mic: trimmed === '1' ? new Set([UNKNOWN_APP]) : new Set(), playing: new Set() }
-  }
-  const body = trimmed.slice(APPS_PREFIX.length)
-  const split = body.indexOf(PLAYING_PREFIX)
-  const names = (list: string): Set<string> =>
-    new Set(
-      list.split(',').filter((name) => name !== '' && name.toLowerCase() !== own.toLowerCase())
-    )
-  return split < 0
-    ? { mic: names(body), playing: new Set() }
-    : { mic: names(body.slice(0, split)), playing: names(body.slice(split + PLAYING_PREFIX.length)) }
-}
-
 function macHelperPath(): string {
   return app.isPackaged
     ? join(process.resourcesPath, 'micwatch')
     : join(__dirname, '../../build/helpers/micwatch')
 }
 
+/**
+ * Lyra's own bundle id, read from the running app's Info.plist (`com.github.Electron` in
+ * development), so its own capture isn't reported as another app on the mic.
+ */
+function macOwnName(): OwnName {
+  try {
+    const id = bundleIdFromPlist(readFileSync(join(process.execPath, '../../Info.plist'), 'utf8'))
+    if (id) return ownBundleId(id)
+  } catch {
+    // Not in a bundle (an unusual dev setup): nothing to drop.
+  }
+  return ''
+}
+
 export class MicWatcher {
   private timer: ReturnType<typeof setInterval> | null = null
   private helper: ChildProcess | null = null
+  private restartTimer: ReturnType<typeof setTimeout> | null = null
+  /** Restarts of the Windows helper since it last ran for a good while. */
+  private restarts = 0
   private polling = false
   private failures = 0
 
   constructor(private readonly onChange: Listener) {}
 
   start(): void {
-    if (this.timer || this.helper) return
+    if (this.timer || this.helper || this.restartTimer) return
     if (process.platform === 'darwin') {
       this.startMacHelper()
       return
     }
     if (process.platform === 'win32') {
+      this.restarts = 0
       this.startWindowsHelper()
       return
     }
@@ -160,8 +156,12 @@ export class MicWatcher {
   stop(): void {
     if (this.timer) clearInterval(this.timer)
     this.timer = null
-    this.helper?.kill()
+    if (this.restartTimer) clearTimeout(this.restartTimer)
+    this.restartTimer = null
+    const helper = this.helper
+    // Cleared first, so the helper's exit isn't taken for a crash to recover from.
     this.helper = null
+    helper?.kill()
     log('micwatch', 'stopped')
   }
 
@@ -174,6 +174,7 @@ export class MicWatcher {
       { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }
     )
     this.helper = child
+    const startedAt = Date.now()
     let reported = false
     createInterface({ input: child.stdout }).on('line', (line) => {
       reported = true
@@ -189,11 +190,28 @@ export class MicWatcher {
     child.on('exit', (code) => {
       if (this.helper !== child) return
       this.helper = null
-      // Never got going (no PowerShell, or C# blocked by policy): fall back to the registry.
       log('micwatch', 'audio session helper exited', { code, reported, error: stderr.trim() })
-      if (!reported) this.startPolling(pollWindows)
+      // Never got going (no PowerShell, or C# blocked by policy): fall back to the registry.
+      if (!reported) {
+        this.startPolling(pollWindows)
+        return
+      }
+      // It worked and then died: the helpers only report changes, so without a restart the
+      // watcher would stay silent until Lyra restarts.
+      if (Date.now() - startedAt >= HELPER_STABLE_MS) this.restarts = 0
+      const delay = helperRestartDelay(this.restarts)
+      if (delay === null) {
+        log('micwatch', 'audio session helper keeps exiting; using the registry', { restarts: this.restarts })
+        this.startPolling(pollWindows)
+        return
+      }
+      this.restarts++
+      this.restartTimer = setTimeout(() => {
+        this.restartTimer = null
+        this.startWindowsHelper()
+      }, delay)
     })
-    log('micwatch', 'started', { platform: 'win32', source: 'audio sessions' })
+    log('micwatch', 'started', { platform: 'win32', source: 'audio sessions', restarts: this.restarts })
   }
 
   private startMacHelper(): void {
@@ -202,10 +220,11 @@ export class MicWatcher {
       log('micwatch', 'macOS helper missing; mic prompts unavailable', { path })
       return
     }
+    const own = macOwnName()
     const child = spawn(path, [], { stdio: ['ignore', 'pipe', 'ignore'] })
     this.helper = child
     createInterface({ input: child.stdout }).on('line', (line) => {
-      this.onChange(parseHelperLine(line))
+      this.onChange(parseHelperLine(line, own))
     })
     child.on('exit', (code) => {
       if (this.helper === child) this.helper = null

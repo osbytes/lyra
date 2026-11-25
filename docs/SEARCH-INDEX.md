@@ -66,7 +66,7 @@ Sources, from the persistence inventory:
 ## Schema
 
 The statements are in [`src/main/searchIndex/schema.ts`](../apps/lyra/src/main/searchIndex/schema.ts)
-(`SCHEMA_VERSION` 1). In short:
+(`SCHEMA_VERSION` 4). In short:
 
 | Table | One row per | Notes |
 | --- | --- | --- |
@@ -77,8 +77,10 @@ The statements are in [`src/main/searchIndex/schema.ts`](../apps/lyra/src/main/s
 | `segments`, `segment_edits` | transcript line, edit over it | edits are UTF-16 offsets into `original` |
 | `action_items` | `- [ ] Owner: task` line of the generated notes | |
 | `people`, `voiceprints` | person, voiceprint sample | voiceprints are float32 BLOBs (their length depends on the speaker model) |
-| `passages` + `passages_fts` + `passages_tri` | title, tag, paragraph, transcript line | FTS5 external-content tables (stems; trigrams), kept current by triggers |
-| `chunks`, `embeddings` | chunk of text to embed, vector per (text hash, model) | `embedding` is `F32_BLOB(768)`; no vector index |
+| `passages` + `passages_fts` + `passages_tri` | title, tag, paragraph, transcript line | FTS5 external-content tables (stems; trigrams), kept current by triggers; both fold diacritics |
+| `chunks` | chunk of text to embed | `hash` is the sha256 of what gets embedded |
+| `embed_queue` | chunk waiting for a vector in the current embedding space | `priority` is the session's `updated_at`; indexed, so the next batch is an index read |
+| `vectors`, `vector_meta` | vector per (text hash, embedding space) | `embedding` is `F32_BLOB(768)`; no vector index. Survives rebuilds (below) |
 
 Rules:
 - Every child row has `n`, its position in the document, so a session reads back in order.
@@ -91,6 +93,25 @@ Rules:
 Migrations: a different `SCHEMA_VERSION` or notes folder drops every table (triggers, then FTS
 tables, then the rest) and the app reindexes. Since the database is derived, nothing migrates in
 place. Rebuilds drop and recreate tables rather than deleting the file (the Windows `EBUSY` above).
+
+**Vectors are kept through a rebuild.** Reindexing 10k sessions takes seconds; re-embedding them
+takes hours of CPU. So `vectors` and `vector_meta` are left out of the drop, and have their own
+version (`VECTOR_STORE_VERSION` in `schema.ts`, stored in `vector_meta`); only a change to that
+drops them. A vector is keyed by its text's hash and its embedding space, never by session or
+notes folder, so the reindex after a schema bump or a moved notes folder finds its vectors again
+and embeds only text it hasn't seen. An older build (any `SCHEMA_VERSION` 3 or lower) drops
+everything, vectors included, on downgrade; upgrading again starts the vectors over.
+
+They're a table in the same file rather than an attached database: `@libsql/client` keeps a pool
+of connections and opens new ones as it needs them (a `batch` or transaction may get a fresh one),
+and `ATTACH` is per connection, so an attached file would vanish from some queries. One file also
+keeps a write to the queue and a write of the vector it pays off in one transaction.
+
+**A damaged file is rebuilt** (`searchIndex/openIndex.ts`). Opening runs `PRAGMA quick_check`;
+a file that won't open, fails the check or fails to prepare is closed and moved aside with its
+WAL files as `lyra.db*.corrupt-<time>` (only the newest such set is kept), and a fresh database
+is made and filled by the reconcile. Errors that say nothing about the file (busy, locked, disk
+full, no permission) are left to a retry instead, since moving the file would lose its vectors.
 
 ## Keeping it in sync
 
@@ -110,10 +131,22 @@ place. Rebuilds drop and recreate tables rather than deleting the file (the Wind
 
 `upsertSession` runs in one transaction: delete the session's rows, insert them again. A session is
 small (hundreds of rows), so this is simpler and safer than diffing. Chunks whose `hash` already
-has an embedding for the current model keep it; the rest go on the embedding queue.
+has a vector in the current embedding space keep it; the rest go on the embedding queue.
 
 The live transcriber updates the document many times a second; the per-id debounce (1.5 s) and the
-export debounce keep that from reindexing on every word.
+export debounce keep that from reindexing on every word. A `saved` event queues how to build the
+record, not the record: chunking and hashing run once, when the debounced write fires. The
+startup reconcile handles one session per turn of the event loop (`setImmediate`) so a rebuild
+of thousands of sessions doesn't hold up recording IPC; decoding each `doc.yjs` still happens on
+the main thread. Moving that decode into the worker is the end state, but the worker would then
+need the session store's file layout and frame reader, which import Electron; not done yet.
+
+**Failures.** A session write that fails is queued again (three tries, 2 s apart and growing)
+unless a newer change replaced it. A failed open, or a worker that exits without being asked,
+is restarted after a backoff (2 s, doubling, at most 5 min; a worker that ran a minute resets
+it), and the reconcile runs again then, since writes in flight were lost. After six failed starts
+in a row the index stays off until the next launch; Lyra works without it. Calls made during the
+backoff fail at once instead of forking a worker each.
 
 ## Chunking
 
@@ -125,8 +158,10 @@ export debounce keep that from reindexing on every word.
     1,000 characters or 45 s. Each window repeats the previous window's last line, so a thought
     that spans the cut is whole in one of them. Each window keeps its first line's id and start
     time, so a hit jumps there.
-  - What gets embedded (`input`) is the session title, then the chunk's text. Its sha256 keys
-    the vector, so unchanged text is never embedded twice, even when a session is reindexed.
+  - What gets embedded (`input`) is the chunk's text; the session's first chunk also leads with
+    the title. Only one: auto-titles land after the first minutes of a recording, and a rename
+    should re-embed one chunk, not the whole session. Its sha256 keys the vector, so unchanged
+    text is never embedded twice, even when a session is reindexed.
 
 ## Embeddings
 
@@ -145,15 +180,24 @@ export debounce keep that from reindexing on every word.
     that query.
   - An exact scan at 768-d costs about 3× the 256-d timings above, which is still fine at
     notebook scale.
+- **Embedding space.** A vector is stored under its space: the model file's pinned sha256 (not
+  its name), the dimensions, and `EMBED_RECIPE` (`embedder.ts`), a constant bumped whenever the
+  task prefixes or the chunking change. A change to any of them re-embeds instead of comparing
+  vectors made two different ways.
 - **The "Search by meaning" setting** (`semanticSearch`, off by default) downloads the model the
   first time and loads it in the worker. Turning it off unloads the model and keeps the vectors.
 - **Background work.**
   - The worker embeds one chunk at a time between requests, about 0.2 s per chunk on CPU with
     2 threads, so a search waits for at most one.
-  - There's no hook for "a recording started" to pause on. The 2-thread limit is what keeps
-    embedding from starving Whisper.
-  - Vectors no chunk uses any more, and other models' vectors, are pruned when the backlog
-    empties.
+  - The backlog is `embed_queue`, most recently updated session first, so the note being
+    worked on is searchable by meaning before last year's. It's filled as sessions are written
+    and refilled from `chunks` whenever the embedder changes.
+  - `setIndexBusy('recording' | 'battery', on)` (`searchIndex/service.ts`) holds the backlog
+    while a recording runs or the machine is on battery; searches still embed their query. The
+    2-thread limit still applies when it runs.
+  - Vectors no chunk uses any more, and other spaces' vectors, are pruned at the end of a
+    reconcile that indexed every session, not when the backlog empties: mid-rebuild, the
+    sessions that will reuse a vector may not be back yet.
 - **Tests.** The UI smoke test swaps in a word-hashing stand-in (`createHashEmbedder`), so it
   exercises chunking, embedding, the vector scan and fusion without the download. The real
   model was checked by hand (see the PR).
@@ -180,9 +224,11 @@ Then the worker (`searchIndex/query.ts`):
    within one edit (two from seven letters), or stems within reach of the word cut to their
    length ("meetign" → "meet"); the three most common are ORed in.
 4. **Parts of words:** when every word has three letters or more, the trigram table also matches
-   them inside longer words ("illo" → "Dillon"), at half weight.
+   them inside longer words ("illo" → "Dillon"), at half weight. It folds diacritics
+   (`remove_diacritics 2`) as the word table and the query do, so "ajose" finds "Mariajosé".
 5. **Rank:** a passage scores its field's weight (title 3, tags 2.5, summary 1.2, notes and
-   transcript 1) plus its bm25; a session scores its best passage. Each hit keeps its five best
+   transcript 1) plus its bm25; a session scores its best passage. The 2,000 passages read per
+   query are cut by that same score in SQL, so a title match isn't pushed out by a common word. Each hit keeps its five best
    passages (titles aside), with the matched words marked by `highlight()`.
 
 Pending index writes are flushed before each search, so a note saved a moment ago is found.

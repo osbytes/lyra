@@ -106,6 +106,10 @@ function createOverlay(): BrowserWindow {
   win.on('closed', () => {
     if (overlay === win) overlay = null
   })
+  // A dead page can't be reloaded into a useful state mid-prompt; the next show builds a new one.
+  win.webContents.on('render-process-gone', () => {
+    if (!win.isDestroyed()) win.destroy()
+  })
   return win
 }
 

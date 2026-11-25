@@ -103,16 +103,18 @@ function StorageSection({ settings, update }: SectionProps) {
   const [moveFrom, setMoveFrom] = useState<{ from: string; to: string } | null>(null)
 
   const changeFolder = async (): Promise<void> => {
-    const picked = await window.api.pickFolder()
-    if (!picked || picked === settings.notesDir) return
     const previous = settings.notesDir
-    await update({ notesDir: picked })
-    setMoveFrom({ from: previous, to: picked })
+    // Main shows the picker and switches the folder itself; the new settings arrive here and
+    // through the settings broadcast.
+    const next = await window.api.pickFolder()
+    if (!next || next.notesDir === previous) return
+    setMoveFrom({ from: previous, to: next.notesDir })
   }
 
-  const move = async (from: string): Promise<void> => {
+  const move = async (): Promise<void> => {
     setMoveFrom(null)
-    const { moved, skipped } = await window.api.moveNotes(from)
+    // Main remembers the folder it switched from; it takes no path from this window.
+    const { moved, skipped } = await window.api.moveNotes()
     setNotice(
       `Moved ${String(moved)} ${moved === 1 ? 'session' : 'sessions'}` +
         (skipped ? ` · ${String(skipped)} skipped (same name already there)` : '')
@@ -150,7 +152,7 @@ function StorageSection({ settings, update }: SectionProps) {
         <ConfirmDialog
           title="Move your existing sessions?"
           confirm="Move sessions"
-          onConfirm={() => void move(moveFrom.from)}
+          onConfirm={() => void move()}
           onCancel={() => {
             setMoveFrom(null)
             setNotice('Existing sessions were left where they were.')

@@ -20,6 +20,8 @@ const detector = new MeetingDetector({
 let latest: AudioUsers = { mic: new Set(), playing: new Set() }
 let current: PromptTarget | null = null
 let busy = false
+/** An update came in while `busy`; it is looked at once the pass in progress ends. */
+let missed = false
 let recheck: ReturnType<typeof setTimeout> | null = null
 
 function ignored(label: string): boolean {
@@ -50,8 +52,12 @@ async function onUsers(users: AudioUsers): Promise<void> {
     hidePrompt()
     current = null
   }
-  // A title read can outlast a poll; the next poll carries the newer state.
-  if (busy) return
+  // A title read can outlast an update. The helpers report changes only, so one that lands now
+  // is looked at once this pass ends rather than dropped.
+  if (busy) {
+    missed = true
+    return
+  }
   busy = true
   try {
     const settings = getSettings()
@@ -74,6 +80,11 @@ async function onUsers(users: AudioUsers): Promise<void> {
     }
   } finally {
     busy = false
+  }
+  if (missed) {
+    missed = false
+    void onUsers(latest)
+    return
   }
   scheduleRecheck()
 }

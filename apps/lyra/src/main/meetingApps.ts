@@ -56,8 +56,9 @@ const KNOWN: readonly Known[] = [
     id: 'slack',
     label: 'Slack',
     apps: ['slack', 'com.tinyspeck.slackmacgap'],
-    // Slack on the web only takes the mic for a huddle.
-    title: /\bslack\b|\bhuddle\b/i
+    // Slack on the web only takes the mic for a huddle. Its tab titles end in "- Slack"; the bare
+    // word in a page title ("cut yourself some slack") is not Slack.
+    title: /\s[-–—|]\s*slack(\s[-–—|]|$)|\bhuddle\b/i
   },
   {
     id: 'discord',
@@ -156,9 +157,13 @@ export function classifyMicUser(name: string): MicUserKind {
   return { kind: 'other' }
 }
 
+const SEARCH_PAGE = /\s[-–—|]\s(google search|search|bing|duckduckgo|brave search|yahoo search)\b/i
+
 /** The meeting a browser window title shows, if any. Titles are matched here and never logged. */
 export function meetingFromTitles(titles: readonly string[]): MeetingApp | null {
   for (const title of titles) {
+    // A search for "zoom" or "meet" is titled "zoom - Google Search": the word, not the call.
+    if (SEARCH_PAGE.test(title)) continue
     const known = KNOWN.find((entry) => entry.title?.test(title.trim()))
     if (known) return { id: known.id, label: known.label }
   }

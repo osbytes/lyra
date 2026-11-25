@@ -2,6 +2,7 @@ import type { SessionSnapshot } from '../../shared/sessionDoc'
 import { log } from '../log'
 import { onRecordingFinished } from '../recorder'
 import { peekManifest, readSession, setAutoTitle } from '../sessionStore'
+import { transcriptLines } from './notesChunks'
 import type { NotesWriter } from './notesWriter'
 
 /** Fewer words than this say too little to name. */
@@ -9,21 +10,22 @@ const MIN_WORDS = 12
 /** A title needs the gist, not the whole meeting: the start of a long session is plenty. */
 const MAX_CHARS = 20_000
 
-/** What the session says: the user's notes, then the transcript as `Name: text` lines. */
-function sessionText(snapshot: SessionSnapshot): string {
-  const names = new Map(snapshot.speakers.map((speaker) => [speaker.id, speaker.name]))
-  const lines = snapshot.transcript.map((segment) => {
-    const name = segment.cluster ? (names.get(segment.cluster) ?? 'Speaker') : 'Speaker'
-    return `${name}: ${segment.text}`
-  })
-  return [snapshot.notes.trim(), lines.join('\n')].filter(Boolean).join('\n\n').slice(0, MAX_CHARS)
+/**
+ * What the title is made from: the transcript as `Name: text` lines, with the user's typed notes
+ * first only when the writer is on this computer. Settings tells people that a summary provider
+ * receives the transcript; what they typed stays home.
+ */
+function sessionText(snapshot: SessionSnapshot, onDevice: boolean): string {
+  const typed = onDevice ? snapshot.notes.trim() : ''
+  return [typed, transcriptLines(snapshot)].filter(Boolean).join('\n\n').slice(0, MAX_CHARS)
 }
 
 export type TitleService = {
   /**
    * Asks the writer the user chose for a title, and sets it while the title is still Lyra's own
    * (the start time, or an earlier suggestion). Never runs with summaries off, and never starts the
-   * local model's download on its own.
+   * local model's download on its own. One request per session at a time (a second is ignored);
+   * the writer bounds each call with a timeout and an output cap.
    */
   suggestTitle(pageId: string): Promise<void>
   /** Suggests a title after each recording, from what was said and written so far. */
@@ -40,7 +42,7 @@ export function createTitleSuggestions(deps: { writer: () => Promise<NotesWriter
     try {
       writer = await deps.writer()
       if (!writer || !(await writer.canTitle())) return
-      const text = sessionText(await readSession(pageId))
+      const text = sessionText(await readSession(pageId), writer.onDevice)
       if ((text.match(/\S+/g)?.length ?? 0) < MIN_WORDS) return
       const title = await writer.title(text)
       if (!title) return

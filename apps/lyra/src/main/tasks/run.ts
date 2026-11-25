@@ -2,6 +2,7 @@ import { app, type BrowserWindow } from 'electron'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { config, ConfigError } from '../config'
 import type { Services } from '../services'
 import { overrideSettings } from '../settings'
 import { isTaskName, parseTask, type Task } from './args'
@@ -12,9 +13,18 @@ import { runUiSmoke } from './smoke'
 /** The temp profile folder a task run uses; the launch scripts delete it afterwards. */
 export const TASK_PROFILE_PREFIX = 'lyra-task-'
 
-/** The task on this launch's command line: after the executable, and after `.` in development. */
+/**
+ * The task on this launch's command line: after the executable, and after `.` in development.
+ * Tasks run in a throwaway profile, skip the single-instance lock and can send a transcript to a
+ * cloud model (`meeting --notes cloud`), so a packaged build runs them only when the environment
+ * says to (LYRA_ALLOW_TASKS): a bare `Lyra.exe smoke` from another program is refused.
+ */
 export function taskFromArgv(): Task | null {
-  return parseTask(process.argv.slice(app.isPackaged ? 1 : 2))
+  const task = parseTask(process.argv.slice(app.isPackaged ? 1 : 2))
+  if (task && app.isPackaged && !config().allowTasks) {
+    throw new ConfigError(`${task.kind}: tasks in a packaged build need LYRA_ALLOW_TASKS=1`)
+  }
+  return task
 }
 
 /** Whether the command line names a task, even one whose options failed to parse. */
