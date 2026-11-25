@@ -9,6 +9,8 @@ export type DiarizeRequest = {
   models: SpeakerModels
   /** Voiceprint similarity under which two windows are different people; higher splits more. */
   threshold: number
+  /** When transcribed words were heard, if they're known: a short speaker with words is kept. */
+  words: { start: number; end: number }[] | null
 }
 
 export type EmbedRequest = {

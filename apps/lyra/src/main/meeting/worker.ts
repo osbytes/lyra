@@ -42,6 +42,11 @@ const MIN_WINDOW_SECONDS = 1
 function minSpeakerSeconds(windowSeconds: number): number {
   return Math.min(15, Math.max(5, windowSeconds * 0.08))
 }
+/**
+ * A speaker under that bar who has this many transcribed words to themselves is kept: a cough
+ * or laugh has none, and a person who said one sentence is still a person.
+ */
+const MIN_OWN_WORDS = 5
 /** Lets the segmentation step cut at every change of voice; our clustering decides who is who. */
 const SEGMENTATION_THRESHOLD = 0.5
 
@@ -122,11 +127,21 @@ async function diarize(request: DiarizeRequest): Promise<DiarizeResult> {
       )
     )
   )
+  const micShares = system
+    ? windows.map(({ start, end }) => {
+        const from = Math.floor(start * SAMPLE_RATE)
+        const to = Math.ceil(end * SAMPLE_RATE)
+        const micEnergy = energy(mic, from, to)
+        const total = micEnergy + energy(system, from, to)
+        return total > 0 ? micEnergy / total : 1
+      })
+    : null
   const labels = foldShortSpeakers(
     clusterLongWindows(windows, prints, request.threshold, MIN_WINDOW_SECONDS),
     windows,
     prints,
-    minSpeakerSeconds(windows.reduce((sum, w) => sum + w.end - w.start, 0))
+    minSpeakerSeconds(windows.reduce((sum, w) => sum + w.end - w.start, 0)),
+    { micShares, words: request.words, minWords: MIN_OWN_WORDS, distinct: request.threshold }
   )
   const raw: SpeakerDiarizationSegment[] = labelTimeline(windows, labels)
 

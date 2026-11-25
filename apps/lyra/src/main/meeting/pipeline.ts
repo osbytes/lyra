@@ -372,7 +372,9 @@ export async function processMeeting(recording: MeetingRecording): Promise<void>
     micPath: recording.micPath,
     systemPath: recording.systemPath,
     models,
-    threshold: DIARIZE_THRESHOLD
+    threshold: DIARIZE_THRESHOLD,
+    // Diarization comes first here, so there are no words yet.
+    words: null
   })
   log('meeting', 'diarized', {
     pageId,
