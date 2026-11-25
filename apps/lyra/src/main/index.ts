@@ -30,6 +30,7 @@ import {
 } from './sessionStore'
 import { registerHotkeys, unregisterHotkeys } from './hotkey'
 import { registerMicPrompt, stopMicPrompt } from './micprompt'
+import { exportIgnoredApps, importIgnoredApps } from './ignoredAppsFile'
 import { registerOverlay, watchMainWindow } from './overlay'
 import { getMainWindow, registerSessionIpc, setMainWindow, showMainWindow } from './session'
 import { getSettings, onSettingsChanged, updateSettings } from './settings'
@@ -95,9 +96,18 @@ if (startup.error) {
   })
 }
 
+/** Passed by the login item so Lyra starts in the tray instead of opening its window. */
+const HIDDEN_ARG = '--hidden'
+
 function applyLoginItem(openAtLogin: boolean): void {
   if (isTestRun || !app.isPackaged) return
-  app.setLoginItemSettings({ openAtLogin })
+  app.setLoginItemSettings({ openAtLogin, args: [HIDDEN_ARG] })
+}
+
+/** Opened by the OS at login: stay in the tray (watching for meetings) until the user opens Lyra. */
+function startedAtLogin(): boolean {
+  if (process.argv.includes(HIDDEN_ARG)) return true
+  return process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin
 }
 
 function appIcon(): Electron.NativeImage {
@@ -171,7 +181,7 @@ function createWindow(): void {
 
   // Tasks run headless (the smoke test, evals and replays stay off screen and out of the way);
   // only screenshots need the window drawn.
-  if (!task || task.kind === 'screenshot') {
+  if ((!task && !startedAtLogin()) || task?.kind === 'screenshot') {
     mainWindow.on('ready-to-show', () => {
       mainWindow.show()
     })
@@ -220,6 +230,12 @@ function registerIpc(): void {
       : await dialog.showOpenDialog(options)
     return result.canceled ? null : (result.filePaths[0] ?? null)
   })
+  ipcMain.handle('prompts:exportIgnored', (event) =>
+    exportIgnoredApps(BrowserWindow.fromWebContents(event.sender))
+  )
+  ipcMain.handle('prompts:importIgnored', (event) =>
+    importIgnoredApps(BrowserWindow.fromWebContents(event.sender))
+  )
   ipcMain.handle('notes:move', (_event, fromDir: unknown) => {
     if (typeof fromDir !== 'string') throw new Error('Invalid folder')
     return moveNotes(fromDir)

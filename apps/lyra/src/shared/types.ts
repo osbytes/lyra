@@ -28,11 +28,26 @@ export type SessionState = {
 export type OverlayFrame = { level: number; status: string }
 
 /** Sent from main to the main window's recorder. */
-export type SessionCommand = { type: 'toggle' } | { type: 'stop' }
+export type SessionCommand =
+  | { type: 'toggle' }
+  | { type: 'stop' }
+  /** Start a new session unless one is recording; a meeting always records the computer's audio. */
+  | { type: 'start'; meeting: boolean }
 
-/** "Another app started using the mic" prompt. `app` is '' when the app is unknown (macOS). */
-export type MicPrompt = { app: string }
+/**
+ * The overlay's offer to record. `meeting`: a meeting app or meeting site took the mic, and `app`
+ * is its name ("Zoom"). `mic`: any other app, by its exe or bundle name; '' when unknown (macOS).
+ */
+export type MicPrompt = { kind: 'meeting' | 'mic'; app: string }
 export type PromptAnswer = 'start' | 'dismiss' | 'ignore'
+
+/** Exporting the "Don't ask" list to a file the user picks. */
+export type ExportIgnoredResult = { status: 'cancelled' } | { status: 'saved'; count: number }
+/** Importing it: names are only ever added, never removed. */
+export type ImportIgnoredResult =
+  | { status: 'cancelled' }
+  | { status: 'imported'; added: number; total: number }
+  | { status: 'invalid'; message: string }
 
 /** One global shortcut starts or stops a session from anywhere. */
 export type HotkeyAction = 'session'
@@ -180,6 +195,10 @@ export type VoicePagesApi = {
   /** Moves notes from the old folder into the current one. */
   moveNotes: (fromDir: string) => Promise<MoveNotesResult>
   revealNotesFolder: () => Promise<void>
+  /** Saves the "Don't ask" app list to a file the user picks. */
+  exportIgnoredApps: () => Promise<ExportIgnoredResult>
+  /** Adds the apps in a file the user picks to the "Don't ask" list. */
+  importIgnoredApps: () => Promise<ImportIgnoredResult>
   /** Main window: commands from the tray, global hotkey, or overlay. */
   onSessionCommand: (callback: (command: SessionCommand) => void) => () => void
   /** Main window: report recorder state changes. */

@@ -1,7 +1,8 @@
 /** `lyra smoke`: main-process checks, then the IPC bridge exercised from the renderer. */
 import { app, clipboard, type BrowserWindow } from 'electron'
 import { existsSync } from 'node:fs'
-import { mkdir, readdir, readFile, utimes, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { notesDir } from '../pages'
 import { ChunkedTranscriber } from '../transcriber'
@@ -55,13 +56,17 @@ import {
   toggleHighlight,
   type TranscriptEdit
 } from '../../shared/transcriptOverlay'
-import { getSettings, overrideSettings } from '../settings'
+import { getSettings, overrideSettings, updateSettings } from '../settings'
 import { assignSpeaker } from '../meeting/pipeline'
 import { defaultTitle, partOfDay } from '../sessionTitle'
 import { trackPath } from '../recorder'
 import { sweepAudio } from '../audioRetention'
 import { flushLog, log, logPath } from '../log'
-import { parseConsentStore } from '../micwatch'
+import { parseConsentStore, parseHelperLine } from '../micwatch'
+import { classifyMicUser, meetingFromTitles } from '../meetingApps'
+import { MeetingDetector, type DetectorPolicy } from '../meetingDetector'
+import { exportIgnoredAppsTo, importIgnoredAppsFrom } from '../ignoredAppsFile'
+import { mergeIgnoredApps } from '../../shared/ignoredApps'
 import { ConfigError, parseConfig } from '../config'
 import { parseTask } from './args'
 import { MockLanguageModelV4 } from 'ai/test'
@@ -104,6 +109,9 @@ function checkSettingsSchema(): void {
   }
   if (old.hotkey !== base.hotkey || old.fileFormat !== 'md') throw new Error('settings: a bad field took good ones with it')
   if (parseSettings('not an object', base).notesDir !== base.notesDir) throw new Error('settings: junk input')
+  // Files from before the meeting prompt get its default, and keep their mic prompt choices.
+  const before = parseSettings({ micPrompt: { enabled: true, ignoredApps: ['obs64'] } }, { ...base, meetingPrompt: true })
+  if (!before.meetingPrompt || before.micPrompt.ignoredApps.join() !== 'obs64') throw new Error('settings: meeting prompt default')
 }
 
 /**
@@ -255,6 +263,141 @@ function checkConsentParser(): void {
   if (users.join(',') !== 'MSTeams,Zoom') {
     throw new Error(`consent parser returned ${users.join(',')}`)
   }
+}
+
+/** The "Don't ask" list: merged without duplicates, and moved through a file without losing any. */
+async function checkIgnoredAppsFile(): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`ignored apps file: ${message}`)
+  }
+  const merged = mergeIgnoredApps(['Zoom'], [' zoom ', 'obs64', '', 'x'.repeat(101), 'obs64', 'Discord'])
+  if (merged.apps.join(',') !== 'Zoom,obs64,Discord' || merged.added !== 2) fail(`merged to ${merged.apps.join(',')}`)
+  const before = getSettings().micPrompt
+  const dir = await mkdtemp(join(tmpdir(), 'lyra-ignored-'))
+  try {
+    await updateSettings({ micPrompt: { ...before, ignoredApps: ['Zoom', 'obs64'] } })
+    const file = join(dir, 'apps.json')
+    if ((await exportIgnoredAppsTo(file)).status !== 'saved') fail('export did not save')
+    await updateSettings({ micPrompt: { ...before, ignoredApps: ['Discord', 'ZOOM'] } })
+    const imported = await importIgnoredAppsFrom(file)
+    const after = getSettings().micPrompt.ignoredApps.join(',')
+    if (imported.status !== 'imported' || imported.added !== 1 || after !== 'Discord,ZOOM,obs64') {
+      fail(`import gave ${JSON.stringify(imported)} and ${after}`)
+    }
+    await writeFile(join(dir, 'plain.json'), '["Element", 3]', 'utf8')
+    if ((await importIgnoredAppsFrom(join(dir, 'plain.json'))).status !== 'invalid') fail('took a list with a number in it')
+    await writeFile(join(dir, 'plain.json'), '["Element"]', 'utf8')
+    if ((await importIgnoredAppsFrom(join(dir, 'plain.json'))).status !== 'imported') fail('refused a plain list')
+    await writeFile(join(dir, 'bad.json'), '{ "settings": true }', 'utf8')
+    if ((await importIgnoredAppsFrom(join(dir, 'bad.json'))).status !== 'invalid') fail('took a file that is not a list')
+    await writeFile(join(dir, 'junk.json'), 'not json', 'utf8')
+    if ((await importIgnoredAppsFrom(join(dir, 'junk.json'))).status !== 'invalid') fail('took a file that is not JSON')
+  } finally {
+    await updateSettings({ micPrompt: before })
+    await rm(dir, { recursive: true, force: true })
+  }
+}
+
+/** Meeting prompts: which mic users are meetings, and when the detector asks. */
+async function checkMeetingDetector(): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`meeting detector: ${message}`)
+  }
+  const kinds = ['Zoom', 'MSTeams', '91750D7E.Slack', 'Discord', 'us.zoom.xos', 'chrome', 'com.apple.Safari', 'obs64', 'Element', '']
+    .map((name) => {
+      const found = classifyMicUser(name)
+      return found.kind === 'meeting' ? found.meeting.id : found.kind
+    })
+    .join(',')
+  if (kinds !== 'zoom,teams,slack,discord,zoom,browser,browser,not-call,other,other') fail(`classified ${kinds}`)
+  const titles = [
+    ['Meet - abc-defg-hij - Google Chrome'],
+    ['Zoom Meeting - Personal - Microsoft Edge'],
+    ['Zoom lens review - YouTube - Google Chrome'],
+    ['Inbox (3) - Gmail', 'Meet - xyz - Brave']
+  ]
+    .map((list) => meetingFromTitles(list)?.id ?? 'none')
+    .join(',')
+  if (titles !== 'meet,zoom,none,meet') fail(`titles matched ${titles}`)
+  const mac = [...parseHelperLine('apps:us.zoom.xos,com.apple.Safari').mic].join(',')
+  const win = parseHelperLine('apps:chrome,electron,Zoom;out:Spotify,electron,Zoom', 'Electron')
+  const parsed = `${[...win.mic].join(',')}|${[...win.playing].join(',')}`
+  if (mac !== 'us.zoom.xos,com.apple.Safari' || parsed !== 'chrome,Zoom|Spotify,Zoom' || parseHelperLine('1').mic.size !== 1 || parseHelperLine('0').mic.size) {
+    fail(`helper lines parsed as ${mac} and ${parsed}`)
+  }
+
+  let now = 0
+  let tabTitles: string[] = []
+  const detector = new MeetingDetector({
+    now: () => now,
+    titles: () => Promise.resolve(tabTitles),
+    sustainMs: 2000,
+    snoozeMs: 60_000,
+    maxTitleChecks: 2,
+    callWaitMs: 30_000
+  })
+  const policy: DetectorPolicy = { meetings: true, anyApp: false, recording: false, ignored: () => false }
+  const at = async (time: number, users: string[], over: Partial<DetectorPolicy> = {}, playing: string[] = []) => {
+    now = time
+    return (await detector.update({ mic: new Set(users), playing: new Set(playing) }, { ...policy, ...over }))?.key ?? null
+  }
+  // Already on the mic when watching starts: skipped until it lets go.
+  if ((await at(0, ['Discord'])) !== null || (await at(5000, ['Discord'])) !== null) fail('asked about a call already running')
+  if ((await at(6000, ['Zoom'])) !== null) fail('asked before the mic was held long enough')
+  if ((await at(7000, ['Zoom', 'obs64'])) !== null) fail('asked after 1 s')
+  if ((await at(8000, ['Zoom', 'obs64'])) !== 'zoom') fail('did not ask about Zoom after 2 s')
+  if ((await at(10_000, ['Zoom'])) !== null) fail('asked twice in one call')
+  detector.snooze('zoom')
+  await at(11_000, [])
+  await at(12_000, ['Zoom'])
+  if ((await at(15_000, ['Zoom'])) !== null) fail('asked during the snooze')
+  await at(80_000, [])
+  await at(81_000, ['Zoom'])
+  if ((await at(84_000, ['Zoom'])) !== 'zoom') fail('did not ask again after the snooze')
+  // A call that ran while Lyra recorded isn't asked about when the recording stops.
+  await at(85_000, [])
+  await at(86_000, ['Zoom'])
+  if ((await at(88_000, ['Zoom'], { recording: true })) !== null) fail('asked while recording')
+  if ((await at(89_000, ['Zoom'])) !== null) fail('asked about a call that was recorded')
+  // Helpers report changes only, so a waiting user gets a timed look.
+  if ((detector.nextCheckAt() ?? 0) !== 0) fail('a settled user wants a recheck')
+  // A browser asks only with a meeting tab in front, and stops looking after a few tries.
+  await at(90_000, ['chrome'])
+  if ((await at(92_000, ['chrome'])) !== null) fail('asked about a browser with no meeting tab')
+  if (detector.nextCheckAt() !== 93_000) fail('no timed look for a browser waiting on its tab')
+  tabTitles = ['Meet - abc-defg-hij - Google Chrome']
+  if ((await at(94_000, ['chrome'])) !== 'meet') fail('did not ask about Meet in a browser')
+  await at(95_000, [])
+  tabTitles = []
+  await at(96_000, ['chrome'])
+  await at(98_000, ['chrome'])
+  await at(100_000, ['chrome'])
+  tabTitles = ['Meet - abc-defg-hij - Google Chrome']
+  if ((await at(102_000, ['chrome'])) !== null) fail('kept reading titles past the limit')
+  // Any-app mode asks about everything; "Don't ask" silences a meeting app by its name.
+  await at(110_000, [])
+  await at(111_000, ['obs64'])
+  if ((await at(113_000, ['obs64'], { anyApp: true })) !== 'obs64') fail('any-app mode did not ask')
+  await at(114_000, ['Zoom'])
+  if ((await at(117_000, ['Zoom'], { ignored: (label) => label === 'Zoom' })) !== null) fail('asked about an ignored app')
+  // An unlisted app is a call when it is on the mic and playing sound, both for 2 s.
+  await at(120_000, [])
+  await at(121_000, ['Element'], {}, ['Element'])
+  if ((await at(122_000, ['Element'], {}, ['Element'])) !== null) fail('asked about a call after 1 s')
+  if ((await at(123_000, ['Element'], {}, ['Element'])) !== 'element') fail('missed an unlisted call app')
+  // On the mic without sound (dictation): waits a while for sound, then gives up for this use.
+  await at(124_000, [])
+  await at(125_000, ['Wispr Flow'])
+  if ((await at(127_000, ['Wispr Flow'])) !== null) fail('asked about dictation')
+  await at(160_000, ['Wispr Flow'])
+  await at(161_000, ['Wispr Flow'], {}, ['Wispr Flow'])
+  if ((await at(164_000, ['Wispr Flow'], {}, ['Wispr Flow'])) !== null) fail('kept waiting for sound past the limit')
+  // Recorders and browsers play sound without that meaning a call.
+  tabTitles = ['YouTube - Google Chrome']
+  await at(170_000, [])
+  await at(171_000, ['obs64', 'chrome'], {}, ['obs64', 'chrome'])
+  await at(173_000, ['obs64', 'chrome'], {}, ['obs64', 'chrome'])
+  if ((await at(176_000, ['obs64', 'chrome'], {}, ['obs64', 'chrome'])) !== null) fail('a recorder or a playing browser looked like a call')
 }
 
 /** Session store: concurrent edits merge, the log persists, and the export follows. */
@@ -791,6 +934,8 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
     checkSettingsSchema()
     await checkNotesWriters()
     checkConsentParser()
+    await checkMeetingDetector()
+    await checkIgnoredAppsFile()
     await checkSessionStore()
     await checkAudioRetention()
     await checkTranscriptModel()
@@ -802,6 +947,10 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
     const result: unknown = await win.webContents.executeJavaScript(`
       (async () => {
         const fail = (message) => { throw new Error(message) }
+        // The list's file dialogs can't run headless; the main-side work is checked directly.
+        if (typeof window.api.exportIgnoredApps !== 'function' || typeof window.api.importIgnoredApps !== 'function') {
+          fail('ignored-app import/export missing from the bridge')
+        }
         const list0 = await window.api.listPages()
         const legacy = list0.find((page) => page.id === 'legacy-smoke.md')
         if (!legacy || legacy.title !== 'Legacy page') fail('legacy page was not migrated')
