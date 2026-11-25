@@ -1,6 +1,6 @@
-import { useMemo } from 'react'
+import { memo, useMemo } from 'react'
 import type { PageSummary, UpdateStatus } from '../../../shared/types'
-import { dayGroup, shortcutLabel } from '../lib/format'
+import { dayGroup, keyLabel, shortcutLabel } from '../lib/format'
 import { useContextMenu } from './ContextMenu'
 import { ScrollArea } from './Controls'
 import { FolderIcon, GearIcon, PeopleIcon, PlusIcon, SearchIcon, TrashIcon } from './Icons'
@@ -56,7 +56,8 @@ function groupByDay(pages: PageSummary[]): Group[] {
   return groups
 }
 
-export function Sidebar({
+/** Memoized: the notes re-render the window on every keystroke, and the list hasn't changed. */
+export const Sidebar = memo(function Sidebar({
   pages,
   activeId,
   recordingId,
@@ -98,7 +99,7 @@ export function Sidebar({
           {
             label: 'Delete…',
             icon: <TrashIcon />,
-            shortcut: 'Del',
+            shortcut: keyLabel('Delete'),
             danger: true,
             run: () => onDelete(page)
           }
@@ -268,4 +269,4 @@ export function Sidebar({
       {menu.element}
     </aside>
   )
-}
+})

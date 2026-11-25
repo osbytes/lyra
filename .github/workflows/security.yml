@@ -4,6 +4,9 @@
 #   workflows     zizmor lints .github/workflows (template injection, credential persistence,
 #                 dangerous triggers, …); exceptions live in .github/zizmor.yml with a reason each
 #   secrets       gitleaks over the whole history (GitHub push protection only knows provider tokens)
+#   word-lists    (weekly) the vendored word lists still match their pinned upstream sources
+#   licenses      (weekly) every shipped dependency's licence is on the allowlist
+#                 (apps/lyra/scripts/check-licenses.mjs)
 # None of the jobs write anything, so they work the same on fork PRs.
 name: security
 
@@ -61,3 +64,41 @@ jobs:
           tar xzf gitleaks.tar.gz -C "$RUNNER_TEMP" gitleaks
           rm gitleaks.tar.gz
       - run: '"$RUNNER_TEMP/gitleaks" git --redact --no-banner .'
+
+  # src/main/data/hallucinations.json and src/shared/data/whisperLanguages.json are generated from
+  # sources pinned by revision and sha256; this catches a hand edit or a source that changed
+  # under its pin. Needs the network, so it runs on the schedule (or by hand), not on every PR.
+  word-lists:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: Word lists match their sources
+        working-directory: apps/lyra
+        run: node scripts/update-word-lists.cjs --check
+
+  licenses:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      # only the files are needed to read their licences: no Electron download, no native builds
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts --filter lyra...
+      - name: Licences are on the allowlist
+        run: |
+          pnpm --filter lyra licenses list --prod --json > "$RUNNER_TEMP/licenses.json"
+          node apps/lyra/scripts/check-licenses.mjs "$RUNNER_TEMP/licenses.json"

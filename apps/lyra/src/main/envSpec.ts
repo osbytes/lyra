@@ -14,7 +14,7 @@ import { z } from 'zod'
  */
 
 export type EnvDoc = {
-  kind: 'path' | 'url' | 'secret'
+  kind: 'path' | 'url' | 'secret' | 'flag'
   /** One or two sentences for docs/CONFIG.md. */
   description: string
   /** What applies when it's unset, in words. */
@@ -43,6 +43,12 @@ const url = (doc: Omit<EnvDoc, 'kind'>) =>
 
 const secret = (doc: Omit<EnvDoc, 'kind'>) =>
   z.preprocess(unset, z.string().trim().optional()).meta({ kind: 'secret', ...doc })
+
+/** On when set to `1` or `true`; anything else that is set is a mistake worth stopping for. */
+const flag = (doc: Omit<EnvDoc, 'kind'>) =>
+  z
+    .preprocess(unset, z.enum(['1', 'true'], { error: 'must be 1 or true' }).optional())
+    .meta({ kind: 'flag', ...doc })
 
 const KEY_NOTE =
   'Used when no key is saved in Settings; a saved key wins. Having a key never sends anything: summaries use a cloud model only when the user picks one.'
@@ -75,6 +81,11 @@ export const EnvVars = z.object({
   GOOGLE_GENERATIVE_AI_API_KEY: secret({
     description: `Google Gemini API key. ${KEY_NOTE}`,
     fallback: 'the key saved in Settings, if any'
+  }),
+  LYRA_ALLOW_TASKS: flag({
+    description:
+      'Set to `1` to let a packaged build run the one-off tasks below (smoke test, screenshots, meeting replays). Without it a packaged build that is given a task exits instead, so another program cannot drive Lyra through them. Development builds always allow them.',
+    fallback: 'packaged builds refuse tasks; development builds run them'
   }),
   ELECTRON_RENDERER_URL: url({
     description: 'Set by `electron-vite dev` to the dev server. Read only in development builds.',

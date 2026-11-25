@@ -43,7 +43,7 @@ jobs:
           # the title is data: written through printf into the file body, never evaluated. The
           # website (apps/website) is not released, so a bump that only touches it gets an empty one.
           app=false
-          if grep -qE '^(package\.json|apps/lyra/package\.json)$' <<<"$changed"; then
+          if grep -qE '^(package\.json|apps/lyra/package\.json|apps/lyra/scripts/llama/package(-lock)?\.json)$' <<<"$changed"; then
             app=true
           elif grep -qx 'pnpm-lock.yaml' <<<"$changed" && ! grep -qx 'apps/website/package.json' <<<"$changed"; then
             app=true

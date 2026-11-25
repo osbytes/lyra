@@ -38,7 +38,9 @@ counts are in the generated file).
 
 ## Runtime libraries
 
-The main ones; the full list is `pnpm-lock.yaml`, and each release attaches an SPDX SBOM.
+The main ones; the full list is `pnpm-lock.yaml` plus `apps/lyra/scripts/llama/package-lock.json`,
+and each release attaches an SPDX SBOM of both. `apps/lyra/scripts/check-licenses.mjs` checks every
+production package against a permissive-licence allowlist weekly (`security.yml`).
 
 | Package | Licence |
 | --- | --- |
@@ -46,9 +48,14 @@ The main ones; the full list is `pnpm-lock.yaml`, and each release attaches an S
 | `@kutalia/whisper-node-addon` (whisper.cpp) | MIT |
 | `sherpa-onnx-node` | Apache-2.0 |
 | `node-llama-cpp` (llama.cpp) | MIT |
+| `node-llama-cpp`'s own dependency tree, shipped beside the app in `resources/llama` and pinned by `apps/lyra/scripts/llama/package-lock.json` (139 packages, including the prebuilt `@node-llama-cpp/<platform>` binaries) | MIT, ISC, BlueOak-1.0.0, `BSD-2-Clause OR MIT OR Apache-2.0` (per the lockfile) |
+| `@libsql/client` and its prebuilt `@libsql/<platform>` binary (the search index) | MIT |
 | `ai` (AI SDK) and `@ai-sdk/anthropic`, `@ai-sdk/openai`, `@ai-sdk/google`, `@ai-sdk/openai-compatible` (only when cloud summaries are on) | Apache-2.0 |
 | `zod` | MIT |
 | `yjs` | MIT |
 | `fuse.js` | Apache-2.0 |
+| `react-hotkeys-hook` | MIT |
+| `react`, `react-dom` (bundled into the window) | MIT |
+| `@tiptap/react`, `@tiptap/starter-kit`, `@tiptap/markdown`, `@tiptap/extensions`, `@tiptap/pm` (the editor, bundled into the window; `@tiptap/pm` re-exports ProseMirror, `@tiptap/markdown` uses `marked`) | MIT |
 | `electron-updater` | MIT |
 | `@electron-toolkit/utils` | MIT |

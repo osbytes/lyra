@@ -35,12 +35,14 @@ const forApp = args.map((arg, i) =>
 )
 
 const home = mkdtempSync(join(tmpdir(), 'lyra-meeting-'))
-const result = spawnSync(electron, ['.', `--user-data-dir=${join(home, 'data')}`, 'meeting', ...forApp], {
+// A test run has no business in the real keychain; Chromium's mock stands in for it.
+const result = spawnSync(electron, ['.', `--user-data-dir=${join(home, 'data')}`, '--use-mock-keychain', 'meeting', ...forApp], {
   cwd: join(__dirname, '..'),
   env: {
     ...process.env,
-    USERPROFILE: home,
-    HOME: home
+    // Not on macOS: the login keychain is found through HOME, and a HOME without one makes
+    // macOS offer to reset the keychain. The profile and notes are already throwaway there.
+    ...(process.platform === 'darwin' ? {} : { USERPROFILE: home, HOME: home })
   },
   stdio: 'inherit'
 })

@@ -7,15 +7,16 @@ import {
   rename,
   unlink
 } from 'node:fs/promises'
-import { extname, join, relative, resolve } from 'node:path'
+import { extname, join, resolve } from 'node:path'
 import type { MoveNotesResult, NoteFormat, Page } from '../shared/types'
 import { log } from './log'
+import { checkSessionsDir, isNoteName, noteInRoot } from './notePath'
 import { moveSessionFiles } from './sessionStore'
 import { getSettings, onSettingsChanged } from './settings'
 
+export { isNoteName }
+
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/
-/** A file name we own: no separators, not hidden, `.txt` or `.md`. */
-const NOTE_NAME = /^[^\\/.][^\\/]*\.(txt|md)$/i
 /** A `.txt` first line longer than this is treated as body text, not a title. */
 const MAX_TITLE = 200
 /** Byte-order mark some editors put at the start of text files. */
@@ -25,21 +26,15 @@ export function notesDir(): string {
   return getSettings().notesDir
 }
 
-export function isNoteName(name: string): boolean {
-  return NOTE_NAME.test(name) && !name.includes('..')
-}
-
-/** Resolves a page id (its file name) inside the notes folder, refusing anything else. */
+/**
+ * Resolves a page id (its file name) inside the notes folder, refusing anything else. Every
+ * session path goes through here too (`sessionStore`'s `sessionDir`), so a `.sessions` that has
+ * been swapped for a link is refused before anything is written through it.
+ */
 export function resolveInNotes(id: unknown): string {
-  if (typeof id !== 'string' || !isNoteName(id)) {
-    throw new Error(`Invalid page id: ${String(id)}`)
-  }
-  const root = resolve(notesDir())
-  const full = resolve(root, id)
-  const rel = relative(root, full)
-  if (!rel || rel.startsWith('..') || rel !== id) {
-    throw new Error(`Invalid page id: ${id}`)
-  }
+  const root = notesDir()
+  const full = noteInRoot(root, id)
+  checkSessionsDir(root)
   return full
 }
 
@@ -142,6 +137,9 @@ export async function moveNotes(fromDir: string): Promise<MoveNotesResult> {
   const source = resolve(fromDir)
   const target = resolve(notesDir())
   if (source === target) return { moved: 0, skipped: 0 }
+  // Session folders are copied out of the old `.sessions` and into the new one.
+  checkSessionsDir(source)
+  checkSessionsDir(target)
   await ensurePagesDir()
   let moved = 0
   let skipped = 0

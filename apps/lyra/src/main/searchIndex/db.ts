@@ -5,7 +5,7 @@ import {
   type PersonRecord,
   type SessionRecord
 } from './protocol'
-import { SCHEMA, SCHEMA_VERSION } from './schema'
+import { PRESERVED_TABLES, SCHEMA, SCHEMA_VERSION, VECTOR_SCHEMA, VECTOR_STORE_VERSION } from './schema'
 
 /**
  * The index worker's queries. Children are written with `json_each` (one statement per table
@@ -24,7 +24,8 @@ const SESSION_TABLES = [
   'passes',
   'action_items',
   'passages',
-  'chunks'
+  'chunks',
+  'embed_queue'
 ] as const
 
 const flag = z.number().transform((value) => value !== 0)
@@ -38,37 +39,61 @@ async function rows<T extends z.ZodType>(db: Client, schema: T, stmt: InStatemen
   return result.rows.map((row) => schema.parse(row))
 }
 
-async function dropEverything(db: Client): Promise<void> {
-  const Named = z.object({ name: text, sql: textOrNull })
-  const triggers = await rows(db, Named, `SELECT name, sql FROM sqlite_master WHERE type = 'trigger'`)
-  for (const trigger of triggers) await db.execute(`DROP TRIGGER IF EXISTS "${trigger.name}"`)
+/** Drops every table, trigger and index except those of `keep`. */
+async function dropTables(db: Client, keep: readonly string[]): Promise<void> {
+  const Named = z.object({ name: text, tbl_name: text, sql: textOrNull })
+  const list = async (type: 'trigger' | 'table'): Promise<z.output<typeof Named>[]> =>
+    (await rows(db, Named, {
+      sql: `SELECT name, tbl_name, sql FROM sqlite_master WHERE type = ? AND name NOT LIKE 'sqlite_%'`,
+      args: [type]
+    })).filter((entry) => !keep.includes(entry.tbl_name))
+  for (const trigger of await list('trigger')) await db.execute(`DROP TRIGGER IF EXISTS "${trigger.name}"`)
   // Virtual tables first: dropping one drops its shadow tables with it.
-  const tables = await rows(db, Named, `SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
-  const virtual = tables.filter((table) => table.sql?.startsWith('CREATE VIRTUAL') === true)
+  const virtual = (await list('table')).filter((table) => table.sql?.startsWith('CREATE VIRTUAL') === true)
   for (const table of virtual) await db.execute(`DROP TABLE IF EXISTS "${table.name}"`)
-  const left = await rows(db, Named, `SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
-  for (const table of left) await db.execute(`DROP TABLE IF EXISTS "${table.name}"`)
+  for (const table of await list('table')) await db.execute(`DROP TABLE IF EXISTS "${table.name}"`)
 }
 
-async function metaValue(db: Client, key: string): Promise<string | null> {
-  const exists = await rows(db, z.object({ n: num }), `SELECT count(*) AS n FROM sqlite_master WHERE name = 'meta'`)
+async function metaValue(db: Client, table: 'meta' | 'vector_meta', key: string): Promise<string | null> {
+  const exists = await rows(db, z.object({ n: num }), {
+    sql: `SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = ?`,
+    args: [table]
+  })
   if (!exists[0]?.n) return null
-  const [row] = await rows(db, z.object({ value: text }), { sql: 'SELECT value FROM meta WHERE key = ?', args: [key] })
+  const [row] = await rows(db, z.object({ value: text }), { sql: `SELECT value FROM ${table} WHERE key = ?`, args: [key] })
   return row?.value ?? null
 }
 
 /**
+ * The vector store, kept through rebuilds; recreated empty only when its own version changes
+ * (or it isn't there: a new install, or an index from before it existed).
+ */
+async function prepareVectors(db: Client): Promise<void> {
+  if ((await metaValue(db, 'vector_meta', 'version')) === String(VECTOR_STORE_VERSION)) return
+  for (const table of PRESERVED_TABLES) await db.execute(`DROP TABLE IF EXISTS "${table}"`)
+  await db.batch(
+    [
+      ...VECTOR_SCHEMA,
+      { sql: 'INSERT INTO vector_meta (key, value) VALUES (?, ?)', args: ['version', String(VECTOR_STORE_VERSION)] }
+    ],
+    'write'
+  )
+}
+
+/**
  * Prepares the database for `notesDir`. Returns true when it was (re)created empty: a new
- * install, another schema version, or another notes folder.
+ * install, another schema version, or another notes folder. Stored vectors survive all three
+ * (prepareVectors): they're keyed by text and embedding space, not by folder or schema.
  */
 export async function prepare(db: Client, notesDir: string): Promise<boolean> {
   await db.execute('PRAGMA journal_mode = WAL')
   await db.execute('PRAGMA foreign_keys = ON')
   await db.execute('PRAGMA busy_timeout = 5000')
-  const version = await metaValue(db, 'schema_version')
-  const folder = await metaValue(db, 'notes_dir')
+  const version = await metaValue(db, 'meta', 'schema_version')
+  const folder = await metaValue(db, 'meta', 'notes_dir')
+  await prepareVectors(db)
   if (version === String(SCHEMA_VERSION) && folder === notesDir) return false
-  await dropEverything(db)
+  await dropTables(db, PRESERVED_TABLES)
   await db.batch(
     [
       ...SCHEMA,
@@ -78,6 +103,13 @@ export async function prepare(db: Client, notesDir: string): Promise<boolean> {
     'write'
   )
   return true
+}
+
+/** Corruption shows up here rather than in the middle of a write: a cheap structural check. */
+export async function quickCheck(db: Client): Promise<string | null> {
+  const result = await rows(db, z.object({ quick_check: text }), 'PRAGMA quick_check')
+  const problems = result.map((row) => row.quick_check).filter((line) => line !== 'ok')
+  return problems.length ? problems.slice(0, 3).join('; ') : null
 }
 
 function deleteSession(id: string): InStatement[] {
@@ -91,8 +123,26 @@ export async function removeSession(db: Client, id: string): Promise<void> {
   await db.batch(deleteSession(id), 'write')
 }
 
-/** Replaces everything the index holds about one session, in one transaction. */
-export async function upsertSession(db: Client, s: SessionRecord): Promise<void> {
+/**
+ * Chunks of a session that lack a vector in `space`, onto the embedding queue. A session's
+ * priority is when it was last updated, so the one being worked on is embedded first.
+ */
+function queueSession(id: string, space: string): InStatement {
+  return {
+    sql: `INSERT OR IGNORE INTO embed_queue (session_id, hash, priority)
+      SELECT c.session_id, c.hash, s.updated_at FROM chunks c JOIN sessions s ON s.id = c.session_id
+      WHERE c.session_id = ?
+        AND NOT EXISTS (SELECT 1 FROM vectors v WHERE v.hash = c.hash AND v.space = ?)`,
+    args: [id, space]
+  }
+}
+
+/**
+ * Replaces everything the index holds about one session, in one transaction. With an embedder
+ * (`space`), chunks that need a vector are queued; without one, the queue is refilled when an
+ * embedder is set (refillEmbedQueue).
+ */
+export async function upsertSession(db: Client, s: SessionRecord, space: string | null = null): Promise<void> {
   const id = s.id
   const json = JSON.stringify
   await db.batch(
@@ -173,52 +223,86 @@ export async function upsertSession(db: Client, s: SessionRecord): Promise<void>
             value->>'text', value->>'input', value->>'hash'
           FROM json_each(?) ORDER BY key`,
         args: [id, json(s.chunks)]
+      },
+      ...(space === null ? [] : [queueSession(id, space)])
+    ],
+    'write'
+  )
+}
+
+/** Rebuilds the embedding queue for `space`: every chunk without a vector in it. */
+export async function refillEmbedQueue(db: Client, space: string): Promise<void> {
+  await db.batch(
+    [
+      'DELETE FROM embed_queue',
+      {
+        sql: `INSERT OR IGNORE INTO embed_queue (session_id, hash, priority)
+          SELECT c.session_id, c.hash, s.updated_at FROM chunks c JOIN sessions s ON s.id = c.session_id
+          WHERE NOT EXISTS (SELECT 1 FROM vectors v WHERE v.hash = c.hash AND v.space = ?)`,
+        args: [space]
       }
     ],
     'write'
   )
 }
 
-/** Chunks with no vector from `model` yet, oldest first. */
-export async function chunksToEmbed(db: Client, model: string, limit: number): Promise<{ hash: string; input: string }[]> {
-  return rows(
+/**
+ * The next chunks to embed, from the most recently updated sessions: an index walk over the
+ * queue, however many chunks the index holds. A hash queued by two sessions comes once.
+ */
+export async function chunksToEmbed(db: Client, limit: number): Promise<{ hash: string; input: string | null }[]> {
+  const queued = await rows(
     db,
-    z.object({ hash: text, input: text }),
+    z.object({ hash: text, input: textOrNull }),
     {
-      sql: `SELECT hash, min(input) AS input FROM chunks c
-        WHERE NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.hash = c.hash AND e.model = ?)
-        GROUP BY hash ORDER BY min(id) LIMIT ?`,
-      args: [model, limit]
+      sql: `SELECT q.hash, (SELECT c.input FROM chunks c WHERE c.hash = q.hash LIMIT 1) AS input
+        FROM embed_queue q ORDER BY q.priority DESC LIMIT ?`,
+      args: [limit]
     }
   )
+  const byHash = new Map<string, { hash: string; input: string | null }>()
+  for (const chunk of queued) if (!byHash.has(chunk.hash)) byHash.set(chunk.hash, chunk)
+  return [...byHash.values()]
 }
 
+/** Saves vectors in `space` and takes their hashes off the queue. */
 export async function saveEmbeddings(
   db: Client,
-  model: string,
+  space: string,
   vectors: { hash: string; vector: Float32Array }[]
 ): Promise<void> {
   await db.batch(
-    vectors.map(({ hash, vector }) => ({
-      sql: 'INSERT OR REPLACE INTO embeddings (hash, model, embedding) VALUES (?, ?, ?)',
-      // A copy, so the blob is exactly this vector and not the buffer it may share.
-      args: [hash, model, vector.slice().buffer]
-    })),
+    vectors.flatMap(({ hash, vector }) => [
+      {
+        sql: 'INSERT OR REPLACE INTO vectors (hash, space, embedding) VALUES (?, ?, ?)',
+        // A copy, so the blob is exactly this vector and not the buffer it may share.
+        args: [hash, space, vector.slice().buffer]
+      },
+      { sql: 'DELETE FROM embed_queue WHERE hash = ?', args: [hash] }
+    ]),
     'write'
   )
 }
 
+/** Takes hashes off the queue without a vector (their chunk is gone). */
+export async function dequeue(db: Client, hashes: string[]): Promise<void> {
+  await db.execute({ sql: 'DELETE FROM embed_queue WHERE hash IN (SELECT value FROM json_each(?))', args: [JSON.stringify(hashes)] })
+}
+
 /**
- * Drops vectors no chunk uses any more (text that was edited away) and, when a model is in use,
- * other models' vectors. With semantic search off, vectors are kept for when it's back on.
+ * Drops vectors no chunk uses any more (text edited away, sessions deleted) and, when a space is
+ * in use, other spaces' vectors. With semantic search off, vectors are kept for when it's back
+ * on. Only run after a complete reconcile: mid-rebuild, the chunks that reuse a vector may not
+ * be back yet.
  */
-export async function pruneEmbeddings(db: Client, model: string | null): Promise<void> {
+export async function pruneEmbeddings(db: Client, space: string | null): Promise<number> {
   const orphans = 'hash NOT IN (SELECT hash FROM chunks)'
-  await db.execute(
-    model === null
-      ? `DELETE FROM embeddings WHERE ${orphans}`
-      : { sql: `DELETE FROM embeddings WHERE model != ? OR ${orphans}`, args: [model] }
+  const result = await db.execute(
+    space === null
+      ? `DELETE FROM vectors WHERE ${orphans}`
+      : { sql: `DELETE FROM vectors WHERE space != ? OR ${orphans}`, args: [space] }
   )
+  return result.rowsAffected
 }
 
 export async function indexKeys(db: Client): Promise<Record<string, string>> {
@@ -440,7 +524,7 @@ export async function readPeople(db: Client): Promise<PersonRecord[]> {
   }))
 }
 
-export async function stats(db: Client, model: string | null): Promise<Omit<IndexStats, 'embedError'>> {
+export async function stats(db: Client, space: string | null): Promise<Omit<IndexStats, 'embedError'>> {
   const count = async (stmt: InStatement): Promise<number> => {
     const [row] = await rows(db, z.object({ n: num }), stmt)
     return row?.n ?? 0
@@ -453,8 +537,8 @@ export async function stats(db: Client, model: string | null): Promise<Omit<Inde
     people: await count('SELECT count(*) AS n FROM people'),
     chunks: await count('SELECT count(*) AS n FROM chunks'),
     embedded: await count({
-      sql: 'SELECT count(*) AS n FROM chunks c WHERE EXISTS (SELECT 1 FROM embeddings e WHERE e.hash = c.hash AND e.model = ?)',
-      args: [model]
+      sql: 'SELECT count(*) AS n FROM chunks c WHERE EXISTS (SELECT 1 FROM vectors v WHERE v.hash = c.hash AND v.space = ?)',
+      args: [space]
     })
   })
 }

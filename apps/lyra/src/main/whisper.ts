@@ -2,13 +2,13 @@ import { BrowserWindow } from 'electron'
 import { createRequire } from 'node:module'
 import { arch, platform } from 'node:os'
 import { join } from 'node:path'
-import { z } from 'zod'
 import type { TranscriptWord, WhisperStatus } from '../shared/types'
-import hallucinationList from './data/hallucinations.json'
 import { log } from './log'
 import { getSettings } from './settings'
 import { ensureSpeechVad } from './speechVad'
 import { ensureModelFile, hasModelFile, modelsDir, type ModelFile } from './models'
+import { isHallucination, wordsFromTokens } from './whisperText'
+import { withVocabulary } from '../shared/vocabulary'
 
 /**
  * Whisper large-v3-turbo, 5-bit. Recordings are transcribed in whole chunks at pauses rather than
@@ -111,95 +111,6 @@ export async function ensureModel(): Promise<void> {
   modelReady = true
 }
 
-/** A sentence this many times, making up this share of a chunk, is Whisper looping. */
-const LOOP_REPEATS = 3
-const LOOP_SHARE = 0.6
-
-function seconds(stamp: unknown): number {
-  const match = /^(\d+):(\d+):(\d+)[,.](\d+)$/.exec(String(stamp))
-  if (!match) return 0
-  const [, h = 0, m = 0, s = 0, ms = 0] = match.map(Number)
-  return h * 3600 + m * 60 + s + ms / 1000
-}
-
-/**
- * With `max_len: 1` Whisper returns one row per token: [start, end, text].
- * Tokens that start with a space begin a new word; the rest (punctuation,
- * word pieces) attach to the previous word. Annotations such as [BLANK_AUDIO],
- * (music) or *Gunshot* (large-v3-turbo's name for a keyboard click) are dropped.
- */
-function wordsFromTokens(result: { transcription?: unknown }): TranscriptWord[] {
-  const rows: unknown[] = Array.isArray(result.transcription) ? result.transcription : []
-  const words: TranscriptWord[] = []
-  let bracketDepth = 0
-  let starred = false
-
-  for (const row of rows) {
-    if (!Array.isArray(row) || row.length < 3) continue
-    const text = String(row[2] ?? '')
-    const start = seconds(row[0])
-    const end = seconds(row[1])
-    const opens = (text.match(/[[(]/g) ?? []).length
-    const closes = (text.match(/[\])]/g) ?? []).length
-    const stars = (text.match(/\*/g) ?? []).length
-    const inside = bracketDepth > 0 || opens > 0 || starred || stars > 0
-    bracketDepth = Math.max(0, bracketDepth + opens - closes)
-    if (stars % 2 === 1) starred = !starred
-    if (inside || !text.trim()) continue
-
-    const last = words.at(-1)
-    if (last && !/^\s/.test(text)) {
-      last.text += text
-      last.end = end
-    } else {
-      words.push({ text: ` ${text.trim()}`, start, end })
-    }
-  }
-  // Whisper marks speech that runs past the end of the buffer with "..."; that is not dictation.
-  return words
-    .map((word) => ({ ...word, text: word.text.replace(/(?:\.\.\.|…)+/g, '') }))
-    .filter((word) => word.text.trim())
-}
-
-/** Letters and digits in any script, lowercased, single-spaced: "I'm" and "i m" compare equal. */
-function normalize(text: string): string {
-  return text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
-}
-
-const HallucinationList = z.object({ phrases: z.array(z.string()) })
-
-/**
- * What Whisper writes when it hears no speech ("Thanks for watching", "Subtitles by the Amara.org
- * community", and the same in other languages), from published lists pulled in by
- * `scripts/update-word-lists.cjs`. Only a whole chunk that is one of these is dropped.
- */
-const HALLUCINATIONS = new Set(HallucinationList.parse(hallucinationList).phrases.map(normalize).filter(Boolean))
-
-/**
- * Whisper looping on a sound it can't make out: mostly one sentence over and over ("I'm very
- * impressed. I'm very impressed. I'm very impressed."). Real speech repeats a word, rarely a
- * whole chunk of the same sentence.
- */
-function isLoop(raw: string): boolean {
-  const sentences = raw
-    .split(/(?<=[.!?。！？।؟])\s*/u)
-    .map(normalize)
-    .filter(Boolean)
-  if (sentences.length < LOOP_REPEATS) return false
-  const counts = new Map<string, number>()
-  for (const sentence of sentences) counts.set(sentence, (counts.get(sentence) ?? 0) + 1)
-  const most = Math.max(...counts.values())
-  return most >= LOOP_REPEATS && most / sentences.length >= LOOP_SHARE
-}
-
-/** Drops the stock phrases Whisper invents on silence, loops, and echoes of its own prompt. */
-function isHallucination(words: TranscriptWord[], prompt: string): boolean {
-  const raw = words.map((word) => word.text).join('')
-  const text = normalize(raw)
-  if (!text || HALLUCINATIONS.has(text) || isLoop(raw)) return true
-  return text.length > 12 && normalize(prompt).includes(text)
-}
-
 /**
  * whisper.cpp's Silero pass, set rather than left to its defaults. Those pad speech by only 30 ms,
  * far less than the chunker keeps around it (300 ms pre-roll and tail), so word edges could be
@@ -222,6 +133,12 @@ const BASE_OPTIONS = {
 }
 
 let useGpu = true
+/**
+ * GPU failures since launch. After the first, Whisper runs on the CPU until the next recording
+ * tries the GPU again (`retryGpu`); after the second, until the app restarts.
+ */
+let gpuFailures = 0
+const GPU_RETRIES = 1
 // The native addon shares one whisper context, so calls must never overlap.
 let queue: Promise<unknown> = Promise.resolve()
 
@@ -248,10 +165,32 @@ async function runWhisper(pcm: Float32Array, prompt: string): Promise<Transcript
     return wordsFromTokens(await transcribe({ ...options, use_gpu: useGpu }))
   } catch (gpuError) {
     if (!useGpu) throw gpuError
-    log('whisper', 'GPU transcription failed, falling back to CPU', gpuError)
+    gpuFailures++
     useGpu = false
+    // Once per failure, not per chunk: every later chunk runs on CPU, several times slower.
+    log('whisper', 'GPU transcription failed; transcribing on the CPU', {
+      error: gpuError instanceof Error ? gpuError.message : String(gpuError),
+      failures: gpuFailures,
+      until: gpuFailures > GPU_RETRIES ? 'restart' : 'next recording'
+    })
     return wordsFromTokens(await transcribe({ ...options, use_gpu: false }))
   }
+}
+
+/** Where Whisper runs right now. */
+export function whisperBackend(): 'gpu' | 'cpu' {
+  return useGpu ? 'gpu' : 'cpu'
+}
+
+/**
+ * Gives the GPU another try at the start of a recording after one failure (a driver reset, the
+ * GPU busy elsewhere), rather than leaving every later recording on the CPU until a restart. The
+ * call is the same one the first chunk made; if it fails again the chunk falls back as before.
+ */
+export function retryGpu(): void {
+  if (useGpu || gpuFailures > GPU_RETRIES) return
+  useGpu = true
+  log('whisper', 'trying the GPU again', { failures: gpuFailures })
 }
 
 let warmed: Promise<void> | null = null
@@ -269,9 +208,11 @@ export function warmUp(): Promise<void> {
 }
 
 /** Transcribes 16 kHz mono PCM into words with timestamps relative to the start of `pcm`. */
-export async function transcribePcm(pcm: Float32Array, prompt = ''): Promise<TranscriptWord[]> {
+export async function transcribePcm(pcm: Float32Array, context = ''): Promise<TranscriptWord[]> {
   if (pcm.length < 4800) return []
   await ensureModel()
+  // Read per chunk so a Settings change applies to the next one; an empty list leaves `context` as is.
+  const prompt = withVocabulary(context, getSettings().vocabulary)
   const queuedAt = Date.now()
   let startedAt = 0
   // whisper.cpp can't be cancelled, so a hung call blocks every later one; make that visible.
@@ -288,13 +229,17 @@ export async function transcribePcm(pcm: Float32Array, prompt = ''): Promise<Tra
       startedAt = Date.now()
       return runWhisper(pcm, prompt)
     })
-    const dropped = isHallucination(words, prompt)
+    const audioSec = pcm.length / 16000
+    const runMs = Date.now() - startedAt
+    const dropped = isHallucination(words, prompt, audioSec)
     // Counts only: transcripts never go in the log (AGENTS.md).
     log('whisper', dropped ? 'dropped as hallucination' : 'transcribed', {
-      audioSec: +(pcm.length / 16000).toFixed(2),
+      audioSec: +audioSec.toFixed(2),
       queuedMs: startedAt - queuedAt,
-      runMs: Date.now() - startedAt,
-      gpu: useGpu,
+      runMs,
+      // Over 1, Whisper is slower than the talk and recordings build a backlog.
+      rtf: +(runMs / 1000 / audioSec).toFixed(3),
+      backend: whisperBackend(),
       promptChars: prompt.length,
       words: words.length
     })

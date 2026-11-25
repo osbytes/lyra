@@ -24,7 +24,8 @@ You own `src/main/`, `src/preload/`, and `src/shared/types.ts`.
   queue like `runSerial` in `whisper.ts`.
 - Broadcast state changes to all windows with `webContents.send`, following `broadcastStatus`.
 - Log with `log(scope, …)`; include enough context to debug from a user's `lyra.log`.
-- Keep Windows and macOS working equally: path separators, CRLF, file-name rules (no `:`).
+- Keep Windows and macOS working equally: path separators, file-name rules (no `:`), and text
+  read from disk may still be CRLF (a user's notes, an old checkout): normalise before parsing.
 
 ## Done means
 

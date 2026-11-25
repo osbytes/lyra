@@ -24,11 +24,14 @@ import { tip } from './Tooltip'
 
 // --- Drawing a line -------------------------------------------------------------------------
 
-/** One line's words: raw text, removed words struck through, corrections marked. */
-export function LineText({ line, label }: { line: TranscriptSegment; label: string }) {
+/**
+ * One line's words: raw text, removed words struck through, corrections marked. `id` lets the
+ * line's row use the words as part of its accessible name; the words are read as they are.
+ */
+export function LineText({ line, id }: { line: TranscriptSegment; id?: string }) {
   const pieces = overlayPieces(line.original, line.edits)
   return (
-    <p className="line-text" data-line={line.id} aria-label={label}>
+    <p className="line-text" data-line={line.id} id={id}>
       {pieces.map((piece) => {
         const common = {
           key: `${piece.kind}:${String(piece.start)}:${String(piece.end)}`,
@@ -294,6 +297,13 @@ export function LineMenu({
     items.push('separator')
   }
   items.push({ label: 'Edit line…', run: () => actions.rewrite(line.id) })
+  if (!span && line.original) {
+    // The keyboard's way to highlight: without a mouse there's no word selection to act on.
+    const whole = { start: 0, end: line.original.length }
+    if (!isHighlighted(line.edits, whole)) {
+      items.push({ label: 'Highlight line', run: () => actions.setEdits(line.id, toggleHighlight(line.edits, whole)) })
+    }
+  }
   const { speaker } = actions
   if (speaker && line.cluster) {
     items.push({ label: 'Who said this…', run: () => speaker(line, new DOMRect(request.x, request.y)) })

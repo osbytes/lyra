@@ -3,6 +3,8 @@ out
 dist
 release
 package-lock.json
+# the pinned tree prepare-llama.cjs installs with npm ci (outside pnpm-lock.yaml)
+!apps/lyra/scripts/llama/package-lock.json
 yarn.lock
 .DS_Store
 *.log
@@ -13,8 +15,10 @@ models
 *.gguf
 *.bin
 !build/**
-build/helpers/
-build/llama/
+# build outputs inside the app's build/ resources (a pattern with a slash is anchored to this
+# file, so these name the app's folder; plain build/llama/ never matched apps/lyra/build/llama)
+apps/lyra/build/helpers/
+apps/lyra/build/llama/
 test-audio/
 eval-data/
 .turbo

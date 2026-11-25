@@ -41,3 +41,11 @@ export const DIARIZE_THRESHOLD = 0.3
  * session already matched them: the clustering split one person, so the two are merged.
  */
 export const SAME_PERSON_THRESHOLD = 0.65
+
+/**
+ * …unless the two speakers' own voiceprints are this far apart. Different people score under
+ * 0.35 against each other (see MATCH_THRESHOLD), and one person split in two doesn't; a saved
+ * person both of them match that well holds samples of two voices (a speaker was named as the
+ * wrong person once), and must not fold every later session's two speakers into one.
+ */
+export const SAME_PERSON_MIN_SIMILARITY = 0.35

@@ -7,27 +7,40 @@ import {
   type LanguageModel
 } from 'ai'
 import type { DownloadProgress } from '../models'
+import { estimateTokens, fitText, mapReduceNotes, titlePrompt, type TokenCounter } from './notesChunks'
+import { CALL_TIMEOUT_MS, callSignal, isAbort } from './notesJobs'
 import {
   cleanTitle,
   MeetingNotes,
   NOTES_SYSTEM_PROMPT,
-  tidyNotes,
   TITLE_SYSTEM_PROMPT,
   TitleSuggestion
 } from './notesFormat'
 
+export type NotesOptions = {
+  onDownload?: DownloadProgress | undefined
+  /** Aborts the run: the job was replaced, cancelled, or the app is quitting. */
+  signal?: AbortSignal | undefined
+}
+
 /**
  * What writes a session's notes and suggests its title. Callers depend on this, never on a model
  * SDK: `createModelNotesWriter` runs any AI SDK model (Anthropic, OpenAI, Google, an
- * OpenAI-compatible server), `createLocalNotesWriter` (notesLocal.ts) runs the on-device model,
- * and `createFakeNotesWriter` answers from fixed values for tests.
+ * OpenAI-compatible server), `createOllamaNotesWriter` (ollama.ts) talks to Ollama directly,
+ * `createLocalNotesWriter` (notesLocal.ts) runs the on-device model, and `createFakeNotesWriter`
+ * answers from fixed values for tests.
  */
 export type NotesWriter = {
   /** For logs and status, e.g. `anthropic:claude-opus-5-5` or `local`. */
   readonly name: string
-  notes(transcript: string, onDownload?: DownloadProgress): Promise<MeetingNotes>
+  /**
+   * Nothing sent to this writer leaves the computer: the built-in model, or a server on a
+   * loopback address. Decides whether the user's typed notes may go along with a title request.
+   */
+  readonly onDevice: boolean
+  notes(transcript: string, options?: NotesOptions): Promise<MeetingNotes>
   /** A short heading, or null when the model gave nothing usable. */
-  title(text: string): Promise<string | null>
+  title(text: string, signal?: AbortSignal): Promise<string | null>
   /**
    * Whether a title can be asked for now without a slow first step (a 2 GB download). Notes may
    * still take one; titles never start it.
@@ -36,7 +49,10 @@ export type NotesWriter = {
 }
 
 /** A failure the person can act on, with the provider's own error as the cause. */
-function friendlyError(name: string, error: unknown): unknown {
+function friendlyError(name: string, error: unknown, signal?: AbortSignal): unknown {
+  // A replaced or cancelled run keeps its own reason; a call that ran out of time says so.
+  if (signal?.aborted) return signal.reason
+  if (isAbort(error)) return new Error(`${name} took too long to answer. Try again.`, { cause: error })
   if (LoadAPIKeyError.isInstance(error)) {
     return new Error(`No API key for ${name}. Add one in Settings → Sessions.`, { cause: error })
   }
@@ -56,37 +72,100 @@ function friendlyError(name: string, error: unknown): unknown {
   return error
 }
 
+/** How much a model may write: notes are short, and a cap stops a runaway answer billing on. */
+const NOTES_OUTPUT_TOKENS = 2048
+const TITLE_OUTPUT_TOKENS = 100
+
+export type ModelWriterOptions = {
+  /** See `NotesWriter.onDevice`; false unless the caller knows the server is on this machine. */
+  onDevice?: boolean
+  /**
+   * Tokens of transcript one call may carry; a longer meeting is summarized in parts and merged.
+   * Hosted models take a large budget; an unknown server gets a small one, since servers like
+   * Ollama's `/v1` cut a long prompt silently instead of failing.
+   */
+  budget?: number
+  /** Caps each answer; defaults to NOTES_OUTPUT_TOKENS. */
+  outputTokens?: number
+  /** Counts tokens for the budget; defaults to a conservative estimate. */
+  count?: TokenCounter
+  /** How long one call may take before it counts as hung; a local server may be slow. */
+  callTimeoutMs?: number
+}
+
+/** Long enough for any meeting a hosted model's context holds (all are 128k tokens or more). */
+export const HOSTED_BUDGET = 100_000
+
 /** Notes and titles from any AI SDK language model, as structured output checked by zod. */
-export function createModelNotesWriter(model: LanguageModel, name: string): NotesWriter {
+export function createModelNotesWriter(model: LanguageModel, name: string, options: ModelWriterOptions = {}): NotesWriter {
+  const budget = options.budget ?? HOSTED_BUDGET
+  const outputTokens = options.outputTokens ?? NOTES_OUTPUT_TOKENS
+  const count = options.count ?? estimateTokens
+  const timeoutMs = options.callTimeoutMs ?? CALL_TIMEOUT_MS
   return {
     name,
-    async notes(transcript) {
+    onDevice: options.onDevice ?? false,
+    async notes(transcript, { signal } = {}) {
       try {
-        const { output } = await generateText({
-          model,
-          instructions: NOTES_SYSTEM_PROMPT,
-          prompt: `Transcript:\n\n${transcript}`,
-          output: Output.object({ schema: MeetingNotes, name: 'meeting_notes' })
+        return await mapReduceNotes({
+          transcript,
+          budget,
+          count,
+          signal,
+          ask: async (prompt) => {
+            const { output } = await generateText({
+              model,
+              instructions: NOTES_SYSTEM_PROMPT,
+              prompt,
+              output: Output.object({ schema: MeetingNotes, name: 'meeting_notes' }),
+              maxOutputTokens: outputTokens,
+              abortSignal: callSignal(signal, timeoutMs)
+            })
+            return output
+          }
         })
-        return tidyNotes(output)
       } catch (error) {
-        throw friendlyError(name, error)
+        throw friendlyError(name, error, signal)
       }
     },
-    async title(text) {
+    async title(text, signal) {
       try {
         const { output } = await generateText({
           model,
           instructions: TITLE_SYSTEM_PROMPT,
-          prompt: `Note:\n\n${text}`,
-          output: Output.object({ schema: TitleSuggestion, name: 'title' })
+          // A small server would cut a long note silently; the start is enough for a title.
+          prompt: titlePrompt(fitText(text, budget, count)),
+          output: Output.object({ schema: TitleSuggestion, name: 'title' }),
+          maxOutputTokens: TITLE_OUTPUT_TOKENS,
+          abortSignal: callSignal(signal, timeoutMs)
         })
         return cleanTitle(output.title)
       } catch (error) {
-        throw friendlyError(name, error)
+        throw friendlyError(name, error, signal)
       }
     },
     canTitle: () => Promise.resolve(true)
+  }
+}
+
+export type WriterTest = { ok: true; ms: number } | { ok: false; error: string }
+
+/**
+ * Runs one tiny structured request (a title for a two-line note) through a writer, for a
+ * Settings "Test" button: success, or the readable error the writer gives. Sends only the fixed
+ * sample text below, never anything from the user's notes.
+ */
+export async function testNotesWriter(writer: NotesWriter, signal?: AbortSignal): Promise<WriterTest> {
+  const started = Date.now()
+  try {
+    if (!(await writer.canTitle())) {
+      return { ok: false, error: 'The notes model isn’t downloaded yet. Write a summary once to download it.' }
+    }
+    const sample = 'Alex: Let’s plan the garden this weekend.\nSam: I’ll buy the seeds and the soil.'
+    await writer.title(sample, signal)
+    return { ok: true, ms: Date.now() - started }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
   }
 }
 
@@ -97,6 +176,7 @@ export function createFakeNotesWriter(answer: { notes: MeetingNotes; title: stri
   const asked: string[] = []
   return {
     name: 'fake',
+    onDevice: true,
     asked,
     notes(transcript) {
       asked.push(transcript)

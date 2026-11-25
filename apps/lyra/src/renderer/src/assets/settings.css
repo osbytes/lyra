@@ -1,0 +1,75 @@
+/*
+ * Settings additions: permission status, local servers, the About tab and the voice
+ * enrollment announcer. Tokens only (styles.css defines them for both themes).
+ */
+
+/* A permission's state beside its "Open Settings" button. */
+.settings-status {
+  color: var(--text-muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.settings-status.is-refused {
+  color: var(--danger);
+  font-weight: 500;
+}
+
+.settings-notice.is-success {
+  color: var(--success);
+}
+
+/* Servers "Find servers" turned up, each a button that fills in its address. */
+.settings-found {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.settings-found .btn[aria-pressed='true'] {
+  border-color: var(--accent);
+  color: var(--accent-soft-text);
+}
+
+/* About: where Lyra keeps its files, one line each. */
+.settings-places {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
+  gap: 8px 16px;
+  align-items: baseline;
+  margin: 0;
+  padding: 16px;
+  list-style: none;
+}
+
+.settings-places li {
+  display: contents;
+}
+
+.settings-place-label {
+  font-weight: 500;
+}
+
+.settings-place-size {
+  color: var(--text-muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* Read to screen readers only: the enrollment's start, a few marks of the countdown, saving. */
+.enroll-announce {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}

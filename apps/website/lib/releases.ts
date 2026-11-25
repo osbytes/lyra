@@ -25,7 +25,11 @@ export const RELEASE_CACHE_TAG = 'latest-release'
 
 /** Installer names from apps/lyra/electron-builder.yml, the recommended one first per platform. */
 const FORMATS: readonly { suffix: string; platform: Platform; format: string }[] = [
+  // First match wins, so the arch-specific names come before the plain ones older releases used.
+  { suffix: '-arm64.dmg', platform: 'mac', format: '.dmg (Apple silicon)' },
+  { suffix: '-x64.dmg', platform: 'mac', format: '.dmg (Intel)' },
   { suffix: '.dmg', platform: 'mac', format: '.dmg' },
+  { suffix: '-arm64-mac.zip', platform: 'mac', format: '.zip (Apple silicon)' },
   { suffix: '.zip', platform: 'mac', format: '.zip' },
   { suffix: '-setup.exe', platform: 'windows', format: 'Installer (.exe)' },
   { suffix: '.AppImage', platform: 'linux', format: 'AppImage' },
