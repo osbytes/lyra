@@ -1,4 +1,4 @@
-import { rms, SAMPLE_RATE, VoiceDetector } from './vad'
+import { rms, SAMPLE_RATE, VoiceDetector, type SpeechClassifier } from './vad'
 
 /**
  * Cuts one track of a recording into chunks for whole-chunk transcription, the way WhisperX's
@@ -10,12 +10,22 @@ import { rms, SAMPLE_RATE, VoiceDetector } from './vad'
  */
 
 const MS = SAMPLE_RATE / 1000
-/** A chunk with less speech than this waits for more rather than being transcribed alone. */
+/**
+ * A chunk with less speech than this (frames heard as voice, not the pauses between them) waits
+ * for more rather than being transcribed alone: one word on its own gives Whisper no context and
+ * is where it invents the most.
+ */
 const MIN_SPEECH = 1000 * MS
-/** …unless nothing follows it for this long ("Yes." and then quiet). */
+/**
+ * …unless nothing follows its last speech for this long ("Yes." and then quiet). Counted from the
+ * last speech, so it includes the voice detector's end pause and must stay longer than it.
+ */
 const ORPHAN_WAIT = 3000 * MS
-/** Speech shorter than this, with nothing after it, is a cough or a click: dropped. */
-const MIN_ORPHAN = 300 * MS
+/**
+ * Speech shorter than this, with nothing after it, is a cough or a click: dropped. Kept well under
+ * a quick one-word reply ("No.", "Yeah."), of which Silero may hear only 200-300 ms.
+ */
+const MIN_ORPHAN = 200 * MS
 /** Silence kept after the last speech in a chunk, so its last word isn't clipped. */
 const TAIL = 300 * MS
 /** Past this a chunk is cut even mid-speech, at its quietest point in the last CUT_SEARCH. */
@@ -34,12 +44,13 @@ type Open = {
   start: number
   frames: Float32Array[]
   levels: number[]
+  /** Per frame, whether the voice detector heard it as speech. */
+  voiced: boolean[]
   length: number
+  /** Samples heard as speech. */
   speech: number
   /** Samples into the chunk where the latest speech ended. */
   speechEnd: number
-  /** Samples of silence since the voice detector last heard speech end. */
-  idle: number
 }
 
 function concat(frames: readonly Float32Array[], length: number): Float32Array {
@@ -53,82 +64,119 @@ function concat(frames: readonly Float32Array[], length: number): Float32Array {
   return out
 }
 
+/** Marks the chunk's last `samples` as speech; frames already marked aren't counted twice. */
+function markSpeech(open: Open, samples: number): void {
+  let left = samples
+  for (let i = open.frames.length - 1; i >= 0 && left > 0; i--) {
+    const length = open.frames[i]?.length ?? 0
+    left -= length
+    if (open.voiced[i]) continue
+    open.voiced[i] = true
+    open.speech += length
+  }
+  open.speechEnd = open.length
+}
+
 /** What the voice detector said about the latest frame. */
-type Heard = { started: Float32Array[] | null; speaking: boolean; ended: boolean }
+type Heard = { started: Float32Array[] | null; onset: number; voiced: boolean; ended: boolean }
 
 export class PauseChunker {
   private open: Open | null = null
   private next = 0
-  private heard: Heard = { started: null, speaking: false, ended: false }
-  private readonly voice = new VoiceDetector({
-    onStart: (frames) => {
-      this.heard.started = frames
-      this.heard.speaking = true
-    },
-    onFrame: () => {
-      this.heard.speaking = true
-    },
-    onEnd: () => {
-      this.heard.ended = true
-    }
-  })
+  private heard: Heard = { started: null, onset: 0, voiced: false, ended: false }
+  /** Whether the voice detector is inside an utterance (its end pause included). */
+  private talking = false
+  private readonly voice: VoiceDetector
 
-  constructor(private readonly onChunk: (chunk: CutChunk) => void) {}
+  constructor(
+    private readonly onChunk: (chunk: CutChunk) => void,
+    /** Decides which frames are speech (Silero in main); without one, the energy detector does. */
+    classifier: SpeechClassifier | null = null
+  ) {
+    this.voice = new VoiceDetector(
+      {
+        onStart: (frames, onset) => {
+          this.heard.started = frames
+          this.heard.onset = onset
+          this.talking = true
+        },
+        onFrame: (_frame, voiced) => {
+          this.heard.voiced = voiced
+        },
+        onEnd: () => {
+          this.heard.ended = true
+          this.talking = false
+        }
+      },
+      classifier
+    )
+  }
 
-  /** One frame of 16 kHz audio starting at sample `at` of the session timeline. */
-  push(frame: Float32Array, at: number): void {
-    const heard: Heard = { started: null, speaking: false, ended: false }
+  /**
+   * One frame of 16 kHz audio starting at sample `at` of the session timeline. Speech is judged on
+   * `analysis` (the frame levelled); the chunk keeps `frame` as it was.
+   */
+  push(frame: Float32Array, at: number, analysis: Float32Array = frame): void {
+    const heard: Heard = { started: null, onset: 0, voiced: false, ended: false }
     this.heard = heard
-    const level = this.voice.push(frame)
+    const level = this.voice.push(frame, analysis)
     this.next = at + frame.length
 
-    const { started } = heard
-    if (!this.open && started) {
-      // The voice detector's pre-roll ends with this frame.
-      const length = started.reduce((sum, part) => sum + part.length, 0)
-      this.open = {
-        start: this.next - length,
-        frames: [...started],
-        levels: started.map(rms),
-        length,
-        speech: frame.length,
-        speechEnd: length,
-        idle: 0
-      }
-    } else if (this.open) {
-      const open = this.open
+    let open = this.open
+    if (open) {
+      // A short fragment waiting for more keeps every frame, so what follows joins it seamlessly.
       open.frames.push(frame)
       open.levels.push(level)
+      open.voiced.push(false)
       open.length += frame.length
-      if (heard.speaking) {
-        open.speech += frame.length
-        open.speechEnd = open.length
-        open.idle = 0
-      } else {
-        open.idle += frame.length
-      }
+    } else if (heard.started) {
+      open = this.begin(heard.started)
+    } else {
+      return
     }
+    // The onset frames came in before speech was declared, as silence (in the pre-roll, or in a
+    // fragment still waiting): they are the chunk's newest frames, this one included.
+    if (heard.started) markSpeech(open, heard.onset)
+    if (heard.voiced) markSpeech(open, frame.length)
 
-    const open = this.open
-    if (!open) return
     if (heard.ended) {
       if (open.speech >= MIN_SPEECH) this.emit()
-    } else if (!heard.speaking && open.idle >= ORPHAN_WAIT) {
+    } else if (!this.talking && open.length - open.speechEnd >= ORPHAN_WAIT) {
       this.emit()
     } else if (open.length >= MAX_CHUNK) {
       this.cutAtQuietest()
     }
   }
 
-  /** Hands out whatever is still open (recording stopped). */
+  /** Hands out whatever is still open (recording stopped), under the same rules as a pause. */
   flush(): void {
     this.voice.flush()
     this.emit()
   }
 
-  /** The earliest sample of this track not yet handed out in a chunk. */
+  /**
+   * The earliest sample of this track not yet handed out in a chunk. That includes the voice
+   * detector's pre-roll: the next chunk starts that far back, and lines on the other track must
+   * not be released ahead of it.
+   */
   pendingFrom(): number {
-    return this.open?.start ?? this.next
+    return this.open?.start ?? this.next - this.voice.preRolled()
+  }
+
+  /** Opens a chunk on the voice detector's pre-roll, which ends with the latest frame. */
+  private begin(frames: readonly Float32Array[]): Open {
+    const length = frames.reduce((sum, part) => sum + part.length, 0)
+    const open: Open = {
+      start: this.next - length,
+      frames: [...frames],
+      levels: frames.map(rms),
+      voiced: frames.map(() => false),
+      length,
+      speech: 0,
+      speechEnd: 0
+    }
+    this.open = open
+    return open
   }
 
   private emit(): void {
@@ -164,18 +212,27 @@ export class PauseChunker {
     const cut = best + 1
     const head = open.frames.slice(0, cut)
     const headLength = ends[best] ?? open.length
+    // Cut mid-stretch, so the head is not trimmed: the rest carries on from its last sample.
     this.onChunk({ start: open.start, pcm: concat(head, headLength) })
-    const rest = open.frames.slice(cut)
-    this.open = {
+    const rest: Open = {
       start: open.start + headLength,
-      frames: rest,
+      frames: open.frames.slice(cut),
       levels: open.levels.slice(cut),
+      voiced: open.voiced.slice(cut),
       length: open.length - headLength,
-      // Mid-speech: whatever is left counts as speech.
-      speech: open.length - headLength,
-      speechEnd: open.length - headLength,
-      idle: 0
+      speech: 0,
+      speechEnd: 0
     }
+    // The rest keeps only the speech heard in it: a cut in the end pause leaves silence, which is
+    // dropped unless more speech joins it.
+    let offset = 0
+    rest.frames.forEach((frame, i) => {
+      offset += frame.length
+      if (!rest.voiced[i]) return
+      rest.speech += frame.length
+      rest.speechEnd = offset
+    })
+    this.open = rest
   }
 }
 
@@ -198,16 +255,16 @@ const COUPLING_PERCENTILE = 0.3
  */
 const OPEN_FRAMES = 3
 const HOLD_FRAMES = 6
-/** A frame this loud on the mic, not gated, is the user's own speech. */
-const OWN_RMS = 0.006
+/** The coupling is re-measured this often (frames): sorting its history every frame is waste. */
+const COUPLING_EVERY = 16
 
 /**
- * Keeps the far end of a call out of the mic track. On speakers the remote voice plays into the
- * room and the mic hears it almost as loud as the system track, so it would be transcribed twice
- * and given to the user. The gate silences mic frames that are no louder than the echo expected
- * from what the system track just played. How much the speakers leak (the coupling) is measured
- * as the call goes, from the quieter mic frames while the far end talks: near zero on
- * headphones, so the user is never gated, and near one on laptop speakers.
+ * Keeps what's left of the far end out of the mic track, after `EchoCanceller` has removed what
+ * it can. On speakers the remote voice plays into the room, so it would be transcribed twice and
+ * given to the user. The gate silences mic frames that are no louder than the echo expected from
+ * what the system track just played. How much still leaks (the coupling) is measured as the call
+ * goes, from the quieter mic frames while the far end talks: near zero on headphones, and once the
+ * canceller has converged, so the user is rarely gated when talking over the far end.
  */
 export class EchoGate {
   private readonly far: number[] = []
@@ -218,8 +275,9 @@ export class EchoGate {
   private frames = 0
   private above = 0
   private hold = 0
-  /** Whether the latest frame was the user's own speech (loud enough, and not the echo). */
-  own = false
+  private sinceLearned = 0
+  /** Whether the latest frame was let through (the far end silent, or the mic above its echo). */
+  passed = true
 
   /** The mic frame, or silence where it only holds the far end's echo. */
   apply(mic: Float32Array, system: Float32Array): Float32Array {
@@ -233,7 +291,7 @@ export class EchoGate {
     if (far < FAR_ACTIVE) {
       this.above = 0
       this.hold = 0
-      this.own = near >= OWN_RMS
+      this.passed = true
       return mic
     }
     // Peaks over the same window, so the echo's delay and the gaps between syllables don't
@@ -243,10 +301,10 @@ export class EchoGate {
     if (this.above >= OPEN_FRAMES) this.hold = HOLD_FRAMES
     else if (this.hold > 0) this.hold--
     if (this.hold > 0) {
-      this.own = near >= OWN_RMS
+      this.passed = true
       return mic
     }
-    this.own = false
+    this.passed = false
     this.gated++
     return new Float32Array(mic.length)
   }
@@ -259,6 +317,8 @@ export class EchoGate {
     this.ratios.push(ratio)
     if (this.ratios.length > COUPLING_HISTORY) this.ratios.shift()
     if (this.ratios.length < COUPLING_MIN_SAMPLES) return
+    if (++this.sinceLearned < COUPLING_EVERY) return
+    this.sinceLearned = 0
     const sorted = [...this.ratios].sort((a, b) => a - b)
     this.coupling = sorted[Math.floor(sorted.length * COUPLING_PERCENTILE)] ?? this.coupling
   }

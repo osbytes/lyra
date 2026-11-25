@@ -1,5 +1,7 @@
 import { z } from 'zod'
 import { ModelId, ProviderId } from './ai'
+import { TranscriptionLanguage } from './languages'
+import { Vocabulary } from './vocabulary'
 
 /** Both formats are always readable; this one is used for new notes. */
 export const NoteFormat = z.enum(['txt', 'md'])
@@ -10,6 +12,29 @@ const AbsolutePath = z
   .string()
   .trim()
   .regex(/^(\/|[A-Za-z]:[\\/]|\\\\)/, 'must be an absolute path')
+
+/** Whether `raw` is a URL on this computer: `localhost`, `127.0.0.0/8` or `::1`. */
+export function isLoopbackUrl(raw: string): boolean {
+  let hostname: string
+  try {
+    hostname = new URL(raw).hostname.toLowerCase()
+  } catch {
+    return false
+  }
+  // The URL parser has already normalised `127.1` and `0x7f.0.0.1` to dotted decimal.
+  return hostname === 'localhost' || hostname === '[::1]' || /^127(\.\d{1,3}){3}$/.test(hostname)
+}
+
+/**
+ * An OpenAI-compatible server's address. Transcripts go to it, so plain `http` is only allowed
+ * when it never leaves this computer.
+ */
+const ServerUrl = z
+  .url({ protocol: /^https?$/ })
+  .refine(
+    (url) => url.toLowerCase().startsWith('https:') || isLoopbackUrl(url),
+    'must be https unless the server is on this computer'
+  )
 
 /**
  * How wide the side panels can be dragged, in pixels. Dragging past `closeBelow` closes the
@@ -30,20 +55,30 @@ export const SettingsSchema = z.object({
   /** Electron accelerator for the global start/stop shortcut. */
   hotkey: z.string(),
   launchAtLogin: z.boolean(),
+  /** Any app taking the mic offers a session. `ignoredApps` holds names the user said "Don't ask" for. */
   micPrompt: z.object({ enabled: z.boolean(), ignoredApps: z.array(z.string()) }),
+  /** A meeting (Zoom, Teams, Meet in a browser, …) taking the mic offers to record it. */
+  meetingPrompt: z.boolean(),
   /**
    * Days to keep recorded audio after a session: `null` keeps it forever, `0` deletes it once the
    * transcript is labeled. Transcripts are always kept.
    */
   audioRetentionDays: z.int().min(0).max(3650).nullable(),
   captureSystemAudio: z.boolean(),
+  /** What Whisper transcribes: a language code, or `auto` to detect it per chunk. */
+  transcriptionLanguage: TranscriptionLanguage,
+  /**
+   * Names and jargon to spell the user's way: put in front of Whisper's prompt for each chunk.
+   * Trimmed, without duplicates, at most 100 terms of 60 characters.
+   */
+  vocabulary: Vocabulary,
   /** Summaries and titles: off, a model on this computer, or a cloud model the user chose. */
   notesEngine: z.enum(['off', 'local', 'cloud']),
   cloudProvider: ProviderId,
   /** `null` uses the provider's default model, where it has one. */
   cloudModel: ModelId.nullable(),
   /** Address of an OpenAI-compatible server (Ollama, LM Studio, …), e.g. `http://localhost:11434/v1`. */
-  cloudBaseUrl: z.url({ protocol: /^https?$/ }).nullable(),
+  cloudBaseUrl: ServerUrl.nullable(),
   /** Show a session's details (dates, tags, speakers) in a side panel instead of inline. */
   detailsPanel: z.boolean(),
   /** Show the session list on the left. */

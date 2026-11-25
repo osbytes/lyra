@@ -300,7 +300,7 @@ export async function captureScreenshot(win: BrowserWindow, reviewDir: string | 
         await settle()
         await save(reviewDir, `settings-${theme}.png`)
         // The tabs after General, in nav order.
-        for (const [index, tab] of ['sessions', 'people', 'performance'].entries()) {
+        for (const [index, tab] of ['sessions', 'people', 'performance', 'about'].entries()) {
           await click(`.settings-nav button:nth-of-type(${String(index + 2)})`)
           await settle()
           if (tab === 'performance') {
@@ -330,6 +330,17 @@ export async function captureScreenshot(win: BrowserWindow, reviewDir: string | 
               `[...document.querySelectorAll('button')].find((b) => b.textContent === 'Off')?.click()`
             )
             await settle()
+            // Prompts, with a few apps on the "Don't ask" list.
+            await win.webContents.executeJavaScript(`(async () => {
+              const settings = await window.api.getSettings()
+              await window.api.updateSettings({ micPrompt: { ...settings.micPrompt, ignoredApps: ['Discord', 'obs64', 'Google Meet'] } })
+            })()`)
+            await settle()
+            await win.webContents.executeJavaScript(
+              `document.querySelector('[aria-label="App to never ask about"]')?.scrollIntoView({ block: 'center' })`
+            )
+            await settle()
+            await save(reviewDir, `settings-prompts-${theme}.png`)
           }
         }
       }

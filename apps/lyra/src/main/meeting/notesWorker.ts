@@ -2,30 +2,29 @@
  * Local meeting-notes worker (utilityProcess): runs a small instruct model with
  * llama.cpp, constrained to the notes JSON schema so output always parses.
  */
-import type { GbnfJsonObjectSchema, Llama, LlamaModel } from 'node-llama-cpp'
+import type { GbnfJsonObjectSchema, Llama, LlamaGrammar, LlamaModel } from 'node-llama-cpp'
 import { z } from 'zod'
 import { loadLlamaModule } from '../llamaModule'
+import { fitText, mapReduceNotes, titlePrompt, type TokenCounter } from './notesChunks'
 import {
   MeetingNotes,
   NOTES_SYSTEM_PROMPT,
   TitleSuggestion,
   TITLE_SYSTEM_PROMPT
 } from './notesFormat'
-
-export type NotesWorkerRequest = {
-  id: number
-  modelPath: string
-  /** Meeting notes, or a title suggestion. */
-  task: 'notes' | 'title'
-  /** Each prompt is answered independently, in a fresh chat. */
-  prompts: string[]
-}
-
-export type NotesWorkerResponse =
-  | { id: number; ok: true; results: unknown[] }
-  | { id: number; ok: false; error: string }
+import { callSignal } from './notesJobs'
+import { NotesWorkerRequest, type NotesWorkerResponse } from './notesProtocol'
 
 const CONTEXT_SIZE = 8192
+/** Notes for one part are short; the cap also stops a model that never closes its JSON. */
+const NOTES_OUTPUT_TOKENS = 1536
+const TITLE_OUTPUT_TOKENS = 64
+/** The chat template's own tokens around the system prompt and the message. */
+const TEMPLATE_TOKENS = 64
+/** A 3B model on a slow CPU takes a few minutes on a full context; longer than this, it's stuck. */
+const PROMPT_TIMEOUT_MS = 10 * 60_000
+/** The model (~2.5 GB in memory) is freed after this long unused, so Whisper has room. */
+const IDLE_UNLOAD_MS = 3 * 60_000
 
 let llama: Llama | null = null
 let loaded: { path: string; model: LlamaModel } | null = null
@@ -40,6 +39,12 @@ async function getModel(modelPath: string): Promise<{ llama: Llama; model: Llama
   return { llama, model: loaded.model }
 }
 
+async function unload(): Promise<void> {
+  const model = loaded?.model
+  loaded = null
+  await model?.dispose()
+}
+
 /**
  * The JSON Schema for a grammar, generated from the same zod schema the answer is parsed with.
  * node-llama-cpp types this parameter from literal schemas only; it checks the schema itself when
@@ -49,49 +54,115 @@ function grammarSchema(schema: z.ZodObject): GbnfJsonObjectSchema {
   return z.toJSONSchema(schema, { target: 'draft-07' }) as GbnfJsonObjectSchema
 }
 
-async function answer(request: NotesWorkerRequest): Promise<unknown[]> {
+/** One prompt in a fresh chat, constrained by `grammar`. */
+async function prompt(
+  model: LlamaModel,
+  options: { grammar: LlamaGrammar; system: string; text: string; maxTokens: number; signal: AbortSignal }
+): Promise<unknown> {
   const { LlamaChatSession } = await loadLlamaModule()
+  const context = await model.createContext({ contextSize: CONTEXT_SIZE })
+  try {
+    const session = new LlamaChatSession({ contextSequence: context.getSequence(), systemPrompt: options.system })
+    const text = await session.prompt(options.text, {
+      grammar: options.grammar,
+      temperature: 0.2,
+      maxTokens: options.maxTokens,
+      signal: callSignal(options.signal, PROMPT_TIMEOUT_MS)
+    })
+    // The grammar guarantees JSON; the caller checks its shape with the zod schema.
+    const value: unknown = JSON.parse(text)
+    return value
+  } finally {
+    await context.dispose()
+  }
+}
+
+type Work = Exclude<NotesWorkerRequest, { kind: 'cancel' } | { kind: 'release' }>
+
+async function answer(request: Work, signal: AbortSignal): Promise<unknown> {
+  signal.throwIfAborted()
   const { llama: runtime, model } = await getModel(request.modelPath)
-  const title = request.task === 'title'
-  const grammar = title
-    ? await runtime.createGrammarForJsonSchema(grammarSchema(TitleSuggestion))
-    : await runtime.createGrammarForJsonSchema(grammarSchema(MeetingNotes))
-  const results: unknown[] = []
-  for (const prompt of request.prompts) {
-    const context = await model.createContext({ contextSize: CONTEXT_SIZE })
-    try {
-      const session = new LlamaChatSession({
-        contextSequence: context.getSequence(),
-        systemPrompt: title ? TITLE_SYSTEM_PROMPT : NOTES_SYSTEM_PROMPT
+  // Chunks are measured with the model's own tokenizer: a character count is ~4x off for
+  // Chinese or Japanese, which would overflow the context.
+  const count: TokenCounter = (text) => model.tokenize(text).length
+  switch (request.kind) {
+    case 'title': {
+      const grammar = await runtime.createGrammarForJsonSchema(grammarSchema(TitleSuggestion))
+      const room = CONTEXT_SIZE - TITLE_OUTPUT_TOKENS - count(TITLE_SYSTEM_PROMPT) - TEMPLATE_TOKENS
+      const text = titlePrompt(fitText(request.text, room - count(titlePrompt('')), count))
+      return prompt(model, { grammar, system: TITLE_SYSTEM_PROMPT, text, maxTokens: TITLE_OUTPUT_TOKENS, signal })
+    }
+    case 'notes': {
+      const grammar = await runtime.createGrammarForJsonSchema(grammarSchema(MeetingNotes))
+      return mapReduceNotes({
+        transcript: request.transcript,
+        budget: CONTEXT_SIZE - NOTES_OUTPUT_TOKENS - count(NOTES_SYSTEM_PROMPT) - TEMPLATE_TOKENS,
+        count,
+        signal,
+        ask: async (text) =>
+          MeetingNotes.parse(
+            await prompt(model, { grammar, system: NOTES_SYSTEM_PROMPT, text, maxTokens: NOTES_OUTPUT_TOKENS, signal })
+          )
       })
-      const text = await session.prompt(prompt, { grammar, temperature: 0.2 })
-      results.push(grammar.parse(text))
-    } finally {
-      await context.dispose()
     }
   }
-  return results
 }
 
 /** One request at a time: a title and notes asked together would otherwise load the model twice. */
 let queue: Promise<unknown> = Promise.resolve()
+let busy = 0
+let idleTimer: ReturnType<typeof setTimeout> | null = null
+const running = new Map<number, AbortController>()
+
+function enqueue<T>(work: () => Promise<T>): Promise<T> {
+  busy += 1
+  if (idleTimer) clearTimeout(idleTimer)
+  idleTimer = null
+  const run = queue.then(work)
+  queue = run
+    .catch(() => undefined)
+    .finally(() => {
+      busy -= 1
+      if (busy === 0 && loaded) {
+        idleTimer = setTimeout(() => {
+          idleTimer = null
+          if (busy === 0) void unload()
+        }, IDLE_UNLOAD_MS)
+      }
+    })
+  return run
+}
+
+function reply(response: NotesWorkerResponse): void {
+  process.parentPort.postMessage(response)
+}
 
 process.parentPort.on('message', (event: Electron.MessageEvent) => {
-  const request = event.data as NotesWorkerRequest
-  const run = queue.then(() => answer(request))
-  queue = run.catch(() => undefined)
-  run.then(
-    (results) => {
-      const response: NotesWorkerResponse = { id: request.id, ok: true, results }
-      process.parentPort.postMessage(response)
-    },
-    (error: unknown) => {
-      const response: NotesWorkerResponse = {
-        id: request.id,
-        ok: false,
-        error: error instanceof Error ? error.message : String(error)
-      }
-      process.parentPort.postMessage(response)
+  const parsed = NotesWorkerRequest.safeParse(event.data)
+  if (!parsed.success) return
+  const request = parsed.data
+  switch (request.kind) {
+    case 'cancel':
+      running.get(request.id)?.abort(new Error('Cancelled'))
+      return
+    case 'release':
+      void enqueue(unload)
+      return
+    case 'notes':
+    case 'title': {
+      const controller = new AbortController()
+      running.set(request.id, controller)
+      enqueue(() => answer(request, controller.signal))
+        .then(
+          (result) => {
+            reply({ id: request.id, ok: true, result })
+          },
+          (error: unknown) => {
+            reply({ id: request.id, ok: false, error: error instanceof Error ? error.message : String(error) })
+          }
+        )
+        .finally(() => running.delete(request.id))
+      return
     }
-  )
+  }
 })

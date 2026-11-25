@@ -56,8 +56,9 @@ export const ActionItemRecord = z.object({
 
 /**
  * A stretch of a session embedded for semantic search: merged paragraphs, or a window of
- * transcript lines. `input` is what gets embedded (the title, then the text); `hash` is its
- * sha256, which keys the embedding so unchanged text is never embedded twice.
+ * transcript lines. `input` is what gets embedded (the text; the session's first chunk also
+ * leads with its title); `hash` is its sha256, which keys the vector so unchanged text is never
+ * embedded twice.
  */
 export const ChunkRecord = z.object({
   field: z.enum(['summary', 'notes', 'transcript']),
@@ -115,7 +116,7 @@ export const IndexStats = z.object({
   passages: z.number().int(),
   people: z.number().int(),
   chunks: z.number().int(),
-  /** Chunks with a vector from the current embedder. */
+  /** Chunks with a vector in the current embedder's space. */
   embedded: z.number().int(),
   /** Why background embedding last stopped, if it did. */
   embedError: z.string().nullable()
@@ -157,12 +158,20 @@ export const IndexRequest = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('setEmbedder'),
     embedder: z.discriminatedUnion('kind', [
-      z.object({ kind: z.literal('llama'), modelPath: z.string(), model: z.string() }),
+      /** `sha256` is the model file's pinned hash: it names the embedding space. */
+      z.object({ kind: z.literal('llama'), modelPath: z.string(), sha256: z.string() }),
       z.object({ kind: z.literal('hash') })
     ]).nullable()
   }),
-  /** Waits until every chunk has a vector (tests). */
+  /** Waits until every chunk has a vector (tests); runs even while paused. */
   z.object({ type: z.literal('drainEmbeddings') }),
+  /** Holds background embedding (recording, on battery); searches still embed their query. */
+  z.object({ type: z.literal('setPaused'), paused: z.boolean() }),
+  /**
+   * Drops vectors no chunk uses and other spaces' vectors. Main sends it after a complete
+   * reconcile, so a rebuild in progress never loses vectors it's about to reuse.
+   */
+  z.object({ type: z.literal('pruneEmbeddings') }),
   z.object({ type: z.literal('removeSession'), id: z.string() }),
   z.object({ type: z.literal('replacePeople'), people: z.array(PersonRecord) }),
   /** Each indexed session's `indexKey`, by id. */
@@ -184,5 +193,8 @@ export const IndexResponse = z.discriminatedUnion('ok', [
 ])
 export type IndexResponse = z.infer<typeof IndexResponse>
 
-/** What `open` reports: whether the index was (re)created and so needs a full reindex. */
-export const OpenResult = z.object({ fresh: z.boolean() })
+/**
+ * What `open` reports: whether the index was (re)created and so needs a full reindex, and
+ * whether that was because the old file was damaged (it's kept beside it as `*.corrupt-<time>`).
+ */
+export const OpenResult = z.object({ fresh: z.boolean(), recovered: z.boolean() })

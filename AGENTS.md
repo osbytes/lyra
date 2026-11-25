@@ -12,14 +12,16 @@ Roadmap: [docs/PLAN.md](docs/PLAN.md). Human contributor guide: [CONTRIBUTING.md
 | Run the app | `pnpm dev` |
 | Typecheck | `pnpm typecheck` |
 | Lint | `pnpm lint` (auto-fix: `pnpm lint:fix`) |
-| Typecheck + lint | `pnpm check` (also fails if `docs/CONFIG.md` is stale) — must pass before every commit |
+| Unit tests | `pnpm test` (in `apps/lyra`): vitest over `src/**/*.test.ts` and `scripts/**/*.test.mjs`; pure modules only, no Electron or models |
+| Typecheck + lint | `pnpm check` (typecheck, lint, unit tests; also fails if `docs/CONFIG.md` is stale) — must pass before every commit |
 | Config docs | `pnpm config:docs` (in `apps/lyra`) regenerates [docs/CONFIG.md](docs/CONFIG.md) from `src/main/envSpec.ts` and the task usage in `src/main/tasks/args.ts` |
 | UI smoke test | `pnpm smoke:ui` (builds, launches Electron headless, exercises the IPC bridge) |
 | Native addon smoke | `pnpm smoke` (only needed when touching `src/main/whisper.ts` or native deps) |
-| QA with real audio | `powershell -File scripts/make-demo-audio.ps1` makes `test-audio/meeting.wav` (two synthetic voices); see the `qa-test` skill |
+| QA with real audio | `node scripts/make-demo-audio.cjs` (in `apps/lyra`; Windows SAPI or macOS `say`) makes `test-audio/meeting.wav` (two synthetic voices); see the `qa-test` skill |
 | Meeting pipeline smoke | `pnpm smoke:meeting <file.wav> [system.wav]`: replays the audio as a live recording (chunked Whisper per track, track labels, relabel after stop); `--offline` runs diarize-then-transcribe instead; `--notes local` adds notes; `--no-relabel` keeps the track labels; `--enroll owner.wav` saves a voice first; `LYRA_MODELS_DIR` reuses downloads |
-| Speaker evals | `pnpm eval:sessions` (in `apps/lyra`): real voices (LibriSpeech, CC BY 4.0; needs ffmpeg) laid out as 2–6 person room, hybrid and call sessions with exact ground truth (Opus remote audio, speaker bleed, music or a video playing, a fan, backchannels, crosstalk); `--seeds 3` for three draws each, `--enroll` to save the owner's voice first; `pnpm eval:calls`: TTS call/room scenarios (speaker bleed, clipping, quick turns, crosstalk); `pnpm eval:ami` scores real AMI meetings (`--meetings`, `--minutes`, `--mic`). WER, cpWER, DER; data and results go to `eval-data/`. `--pipeline live` (default: what the app runs), `stream` (lines as they land while recording, before relabel) or `offline` |
+| Speaker evals | `pnpm eval:sessions` (in `apps/lyra`): real voices (LibriSpeech, CC BY 4.0; needs ffmpeg) laid out as 2–6 person room, hybrid and call sessions with exact ground truth (Opus remote audio, speaker bleed, music or a video playing, a fan, backchannels, crosstalk); `--seeds 3` for three draws each, `--enroll` to save the owner's voice first; `pnpm eval:calls`: TTS call/room scenarios (speaker bleed, clipping, quick turns, crosstalk); `pnpm eval:ami` scores real AMI meetings (`--meetings`, `--minutes`, `--mic`). WER, cpWER, DER; data and results go to `eval-data/`. `--pipeline live` (default: what the app runs), `stream` (lines as they land while recording, before relabel), `offline`, or `capture` (mic-only items played as a fake microphone through the window's real capture path, in real time). Experiments: `--asr parakeet`, `--no-context` (Whisper without its prompt). `--quick` runs a fixed subset (about 2 min for calls, 4 for sessions) for direction while working; `--jobs 2` runs items in parallel. Task runs are headless: no window opens |
 | Tune speaker clustering | In `apps/lyra`, with `LYRA_MODELS_DIR`: `node scripts/eval/cluster-lab.cjs` sweeps voice models, window sizes and clustering bars on the sessions in seconds, without Whisper; `node scripts/eval/voice-scores.cjs` shows how a saved voice scores against its owner and everyone else (the basis for `meeting/thresholds.ts`) |
+| Word lists | `pnpm word-lists` (in `apps/lyra`) regenerates `src/main/data/hallucinations.json` and `src/shared/data/whisperLanguages.json` from pinned upstream sources; never edit them by hand |
 | Debug a mislabeled session | `pnpm replay:session <session id or folder>` (in `apps/lyra`): re-runs its kept audio through each pipeline and prints who spoke each line; `--reference ref.json` scores it. A session's `raw/live.json` has each chunk's words and the track it was heard on |
 | Package (Windows dir build) | `pnpm build:unpack`; runs `prepare:llama`, which ships node-llama-cpp as its own npm install |
 | Run the website | `pnpm dev:web` (http://localhost:3100); check with `pnpm --filter web check` and `pnpm --filter web build` |
@@ -56,6 +58,8 @@ the server only).
 - `src/main/tasks/` — one-off tasks the app binary runs from its command line (`smoke`,
   `screenshot`, `meeting`); the `pnpm` scripts launch them.
 - `scripts/` — build, release and smoke-test launchers (CommonJS).
+- `scripts/llama/` — the pinned npm lockfile for the node-llama-cpp tree that `prepare-llama.cjs`
+  installs with `npm ci` and ships beside the app (outside `pnpm-lock.yaml`).
 - `.agents/` — roles, skills and rules for coding agents (see below).
 
 ## Rules
@@ -79,6 +83,8 @@ the server only).
   A new variable goes in `envSpec.ts`; prefer an existing standard name over a `LYRA_` one.
 - **Style:** match surrounding code. Prettier-style formatting: 2 spaces, single quotes, no
   semicolons, ~100-column lines. Comments explain *why*, not *what*.
+- **Line endings:** LF everywhere, on every OS; `.gitattributes` enforces it and `.editorconfig`
+  sets it for editors.
 - **Scope:** one change per commit/PR. Don't reformat or refactor unrelated files.
 
 ## Boundaries — never do these
@@ -93,8 +99,11 @@ the server only).
 ## Testing
 
 - Run `pnpm check` and `pnpm smoke:ui` before saying a change is done.
+- Pure logic (no Electron, no models, no app state) gets a vitest unit test next to the module
+  (`foo.ts` → `foo.test.ts`; `scripts/**/*.test.mjs` for scripts). `pnpm test` runs them and
+  `pnpm check` includes it. Compute expected values by hand; don't snapshot whatever the code returns.
 - New behavior in `src/main/` that the renderer can reach gets a case in `runUiSmoke`
-  (`src/main/index.ts`).
+  (`src/main/tasks/smoke.ts`).
 - Audio, transcription, diarization or meeting-notes changes: QA with real audio per the `qa-test` skill
   (`test-audio/meeting.wav`), comparing output to the known script. Smoke tests alone don't count.
   Speaker or diarization changes also run `pnpm eval:sessions` and `pnpm eval:calls` and report the
@@ -123,4 +132,5 @@ Pick the role that matches the task and follow its file; load a skill when its t
 | [add-ipc-channel](.agents/skills/add-ipc-channel/SKILL.md) | Exposing a new main-process capability to the renderer |
 | [add-setting](.agents/skills/add-setting/SKILL.md) | Adding a user-configurable setting |
 | [qa-test](.agents/skills/qa-test/SKILL.md) | Changes touching audio, Whisper, speakers or meeting notes; any request to QA or test with audio |
+| [investigate-session](.agents/skills/investigate-session/SKILL.md) | A real session came out wrong: find the cause, fix it, add a de-identified eval case (`/investigate-session` in Claude Code) |
 | [verify-change](.agents/skills/verify-change/SKILL.md) | Before declaring any change done or committing |

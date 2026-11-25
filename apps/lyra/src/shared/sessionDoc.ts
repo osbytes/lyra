@@ -19,10 +19,12 @@ import {
  *   meta: Y.Map { tags: Y.Array<string>, speakers: Y.Map<id, Y.Map> }
  *     speaker: { name, personId, confirmed, confidence, matches: { personId, score }[] }
  *   transcript: Y.Array<Y.Map>       one entry per segment, in time order
- *     segment: { id, rawId, start, end, cluster, text: Y.Text, original, edits, edited, confidence }
+ *     segment: { id, rawId, start, end, cluster, userCluster, text: Y.Text, original, edits, edited,
+ *                confidence }
  *       `original` is what the model heard and is never edited; `edits` are the user's
  *       corrections, removals and highlights over it (transcriptOverlay.ts); `text` is the
  *       result, kept in the document so exports and readers needn't apply the overlay.
+ *       `userCluster` is true once the user chose the line's speaker; later passes keep it.
  */
 
 /** Who made a change. Lets undo skip machine writes and lets main skip echoing a window. */
@@ -35,6 +37,9 @@ export const ORIGIN_TRANSCRIBER = 'transcriber'
 export const LOW_CONFIDENCE = 0.6
 /** A speaker matched at least this well to a saved voice is shown as a sure match. */
 export const SURE_MATCH = 0.85
+
+/** A segment's mark that the user chose its speaker (`TranscriptSegment.userCluster`). */
+const USER_CLUSTER = 'userCluster'
 
 export type SpeakerMatch = { personId: string; score: number }
 
@@ -56,6 +61,12 @@ export type TranscriptSegment = {
   start: number
   end: number
   cluster: string | null
+  /**
+   * The user chose this line's speaker (moved it, or merged its speaker into another). A new
+   * pass keeps their choice; without this a move on a live line, which has no raw pass to
+   * compare against, would be undone by the next relabel.
+   */
+  userCluster: boolean
   text: string
   /** What the model heard, before any edit. Locked: edits overlay it, never change it. */
   original: string
@@ -144,6 +155,7 @@ export function readSegment(entry: Y.Map<unknown>): TranscriptSegment {
     start: num(entry.get('start')),
     end: num(entry.get('end')),
     cluster: typeof cluster === 'string' ? cluster : null,
+    userCluster: entry.get(USER_CLUSTER) === true,
     text: current,
     original,
     edits,
@@ -230,49 +242,72 @@ export function initDoc(
 
 // --- Transcript edits ---------------------------------------------------------------
 
-export type NewSegment = Omit<TranscriptSegment, 'text' | 'original' | 'edits' | 'edited'> & {
+/**
+ * A line written by a pass. `userCluster` is for a pass that kept the user's choice of speaker
+ * for these words (relabel's pinned words), so the next pass keeps it too.
+ */
+export type NewSegment = Omit<
+  TranscriptSegment,
+  'text' | 'original' | 'edits' | 'edited' | 'userCluster'
+> & {
   text: string
+  userCluster?: boolean
 }
 
-function segmentMap(segment: NewSegment, keep?: TranscriptSegment): Y.Map<unknown> {
+/** `keep`: the old line over the same audio whose text and/or chosen speaker the new one keeps. */
+function segmentMap(
+  segment: NewSegment,
+  keep?: { text?: TranscriptSegment | undefined; cluster?: string | undefined }
+): Y.Map<unknown> {
   const entry = new Y.Map<unknown>()
+  const text = keep?.text
   entry.set('id', segment.id)
   entry.set('rawId', segment.rawId)
   entry.set('start', segment.start)
   entry.set('end', segment.end)
-  entry.set('cluster', segment.cluster)
+  entry.set('cluster', keep?.cluster ?? segment.cluster)
+  if (keep?.cluster !== undefined || segment.userCluster === true) entry.set(USER_CLUSTER, true)
   entry.set('confidence', segment.confidence)
   // A kept line keeps the words its edits were made over, so they still line up.
-  entry.set('original', keep ? keep.original : segment.text)
-  entry.set('edits', keep ? keep.edits : [])
-  entry.set('text', new Y.Text(keep ? keep.text : segment.text))
-  entry.set('edited', keep?.edited === true)
+  entry.set('original', text ? text.original : segment.text)
+  entry.set('edits', text ? text.edits : [])
+  entry.set('text', new Y.Text(text ? text.text : segment.text))
+  entry.set('edited', text?.edited === true)
   return entry
 }
+
+const hasEdits = (segment: TranscriptSegment): boolean => segment.edited || segment.edits.length > 0
 
 const overlap = (a: { start: number; end: number }, b: { start: number; end: number }): number =>
   Math.max(0, Math.min(a.end, b.end) - Math.max(a.start, b.start))
 
 /**
- * Replaces the transcript with a new pass. A line the user edited keeps their text when the
- * new pass has a line over the same stretch of audio, so re-labeling never undoes an edit.
+ * Replaces the transcript with a new pass. A line the user edited keeps their text, and a line
+ * whose speaker the user chose keeps that speaker (while it still exists), when the new pass has
+ * a line over the same stretch of audio, so re-labeling never undoes either.
  */
 export function replaceTranscript(doc: Y.Doc, segments: NewSegment[], origin: unknown): void {
   doc.transact(() => {
     const transcript = docTranscript(doc)
-    const edited = transcript
+    const speakers = speakersOf(doc)
+    const kept = transcript
       .toArray()
       .map(readSegment)
-      .filter((segment) => segment.edited || segment.edits.length > 0)
+      .filter((segment) => hasEdits(segment) || segment.userCluster)
     const used = new Set<string>()
     const entries = segments.map((segment) => {
-      const keep = edited
+      const keep = kept
         .filter((old) => !used.has(old.id))
         .map((old) => ({ old, shared: overlap(old, segment) }))
         .filter(({ old, shared }) => shared > 0.5 * Math.min(old.end - old.start, segment.end - segment.start))
         .sort((a, b) => b.shared - a.shared)[0]?.old
-      if (keep) used.add(keep.id)
-      return segmentMap(segment, keep)
+      if (!keep) return segmentMap(segment)
+      used.add(keep.id)
+      const cluster =
+        keep.userCluster && keep.cluster !== null && (!speakers || speakers.has(keep.cluster))
+          ? keep.cluster
+          : undefined
+      return segmentMap(segment, { text: hasEdits(keep) ? keep : undefined, cluster })
     })
     transcript.delete(0, transcript.length)
     transcript.insert(0, entries)
@@ -377,6 +412,8 @@ export function appendLiveSegment(
       lastText instanceof Y.Text &&
       last.get('cluster') === segment.cluster &&
       last.get('edited') !== true &&
+      // The user chose this line's speaker for these words only, not for whatever comes next.
+      last.get(USER_CLUSTER) !== true &&
       segment.start - num(last.get('end')) <= joinGap &&
       segment.end - num(last.get('start')) <= maxLine
     ) {
@@ -478,6 +515,15 @@ export function setSegmentText(doc: Y.Doc, id: string, next: string, origin: unk
   setSegmentEdits(doc, id, rewriteLine(segment.original, segment.edits, next), origin)
 }
 
+/**
+ * Points one line at a speaker. Done by the user (ORIGIN_USER), it also marks the speaker as
+ * their choice, which later passes keep; a machine writer leaves the mark as it is.
+ */
+function setCluster(entry: Y.Map<unknown>, cluster: string, origin: unknown): void {
+  entry.set('cluster', cluster)
+  if (origin === ORIGIN_USER && entry.get(USER_CLUSTER) !== true) entry.set(USER_CLUSTER, true)
+}
+
 /** Points lines at another speaker (per-line fix, or a split). */
 export function setSegmentsCluster(
   doc: Y.Doc,
@@ -489,9 +535,14 @@ export function setSegmentsCluster(
   doc.transact(() => {
     for (const entry of docTranscript(doc).toArray()) {
       const id = entry.get('id')
-      if (typeof id === 'string' && wanted.has(id)) entry.set('cluster', cluster)
+      if (typeof id === 'string' && wanted.has(id)) setCluster(entry, cluster, origin)
     }
   }, origin)
+}
+
+/** Whether the user chose this line's speaker (see `TranscriptSegment.userCluster`). */
+export function isUserAssigned(doc: Y.Doc, lineId: string): boolean {
+  return findSegment(doc, lineId)?.get(USER_CLUSTER) === true
 }
 
 /** Creates or updates a speaker. Fields left out keep their value. */
@@ -508,6 +559,7 @@ export function upsertSpeaker(
     if (!(entry instanceof Y.Map)) {
       entry = new Y.Map<unknown>()
       speakers.set(id, entry)
+      claimSpeakerId(doc, id)
     }
     for (const [key, value] of Object.entries(fields)) {
       entry.set(key, key === 'matches' ? [...(value as SpeakerMatch[])] : value)
@@ -580,6 +632,8 @@ export function joinSplitLines(doc: Y.Doc, maxLine: number, origin: unknown): vo
       if (!(text instanceof Y.Text) || !(beforeText instanceof Y.Text)) continue
       if (line.get('cluster') !== before.get('cluster') || line.get('cluster') === null) continue
       if (hasOverlay(line) || hasOverlay(before)) continue
+      // A line whose speaker the user chose stays apart from one that's still Lyra's guess.
+      if ((line.get(USER_CLUSTER) === true) !== (before.get(USER_CLUSTER) === true)) continue
       if (num(line.get('end')) - num(before.get('start')) > maxLine) continue
       const head = beforeText.toJSON().trimEnd()
       const tail = text.toJSON().trim()
@@ -655,23 +709,66 @@ export function restoreMissingSpeakers(doc: Y.Doc, origin: unknown): number {
   return missing.size
 }
 
-/** Moves every line of speaker `from` to `into`, then removes `from`. */
-export function mergeSpeakers(doc: Y.Doc, from: string, into: string, origin: unknown): void {
+/** Removes a speaker, keeping its id from being handed out again. */
+export function removeSpeaker(doc: Y.Doc, id: string, origin: unknown): void {
+  const speakers = speakersOf(doc)
+  if (!speakers?.has(id)) return
   doc.transact(() => {
-    for (const entry of docTranscript(doc).toArray()) {
-      if (entry.get('cluster') === from) entry.set('cluster', into)
-    }
-    speakersOf(doc)?.delete(from)
+    claimSpeakerId(doc, id)
+    speakers.delete(id)
   }, origin)
 }
 
-/** A speaker id not used yet in this document. */
+/**
+ * Moves every line of speaker `from` to `into`, then removes `from`. The user merging says those
+ * lines are `into`'s, so (as with a move) the next pass keeps them there.
+ */
+export function mergeSpeakers(doc: Y.Doc, from: string, into: string, origin: unknown): void {
+  doc.transact(() => {
+    for (const entry of docTranscript(doc).toArray()) {
+      if (entry.get('cluster') === from) setCluster(entry, into, origin)
+    }
+    removeSpeaker(doc, from, origin)
+  }, origin)
+}
+
+/**
+ * The next free speaker number, kept in `meta` and only ever raised. Voiceprints are looked up
+ * by speaker id across every raw pass, so an id handed out again after its speaker was merged
+ * away would give the new speaker the old one's voice.
+ */
+const SPEAKER_SEQ = 'speakerSeq'
+const SPEAKER_ID = /^c(\d+)$/
+
+function speakerNumber(id: unknown): number | null {
+  if (typeof id !== 'string') return null
+  const match = SPEAKER_ID.exec(id)
+  return match ? Number(match[1]) : null
+}
+
+/** Records that `id` has been used, so `newSpeakerId` never returns it again. */
+function claimSpeakerId(doc: Y.Doc, id: string): void {
+  const n = speakerNumber(id)
+  if (n === null || !Number.isSafeInteger(n)) return
+  const meta = docMeta(doc)
+  if (num(meta.get(SPEAKER_SEQ)) <= n) meta.set(SPEAKER_SEQ, n + 1)
+}
+
+/**
+ * A speaker id never used in this document: past every id the counter has seen, and every id
+ * still in the speakers or the transcript (documents from before the counter).
+ */
 export function newSpeakerId(doc: Y.Doc): string {
-  const taken = new Set<string>()
-  speakersOf(doc)?.forEach((_value, id) => taken.add(id))
-  let n = taken.size
-  while (taken.has(`c${String(n)}`)) n++
-  return `c${String(n)}`
+  let next = num(docMeta(doc).get(SPEAKER_SEQ))
+  const see = (id: unknown): void => {
+    const n = speakerNumber(id)
+    if (n !== null && n >= next) next = n + 1
+  }
+  speakersOf(doc)?.forEach((_value, id) => {
+    see(id)
+  })
+  for (const line of docTranscript(doc).toArray()) see(line.get('cluster'))
+  return `c${String(next)}`
 }
 
 /** Reads a binary update that arrived over IPC or from disk; anything else is rejected. */

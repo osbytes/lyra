@@ -3,7 +3,7 @@ import { PROVIDERS } from '../../../shared/ai'
 import type { HotkeyStatus, Settings } from '../../../shared/types'
 
 /** Settings tabs, so a problem can point at where it's fixed. */
-export type SettingsTab = 'general' | 'sessions' | 'people' | 'performance'
+export type SettingsTab = 'general' | 'sessions' | 'people' | 'performance' | 'about'
 
 export type SettingsIssue = { tab: SettingsTab; message: string }
 
@@ -65,7 +65,8 @@ export function useSettingsIssues(settings: Settings | null): SettingsIssue[] {
       issues.push({ tab: 'sessions', message: `Summaries with ${info.label} need an API key.` })
     }
     if (!settings.cloudModel && !info.defaultModel) {
-      issues.push({ tab: 'sessions', message: `Choose a ${info.label} model for summaries.` })
+      const whose = settings.cloudProvider === 'openai-compatible' ? 'the server’s' : `a ${info.label}`
+      issues.push({ tab: 'sessions', message: `Choose ${whose} model for summaries.` })
     }
     if (info.needsBaseUrl && !settings.cloudBaseUrl) {
       issues.push({ tab: 'sessions', message: 'Summaries need the server address.' })

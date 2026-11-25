@@ -1,5 +1,5 @@
 import { SAMPLE_RATE } from '../../shared/audio/vad'
-import { recorderFixture } from '../recorder'
+import { recorderFixture, type TranscribeExperiment } from '../recorder'
 import { readWav } from './wav'
 
 /**
@@ -23,10 +23,15 @@ function pcm16(samples: Float32Array): Int16Array {
   return out
 }
 
-export async function replayRecording(pageId: string, micPath: string, systemPath: string | null): Promise<void> {
+export async function replayRecording(
+  pageId: string,
+  micPath: string,
+  systemPath: string | null,
+  transcribe?: TranscribeExperiment
+): Promise<void> {
   const mic = await readWav(micPath)
   const system = systemPath ? await readWav(systemPath) : null
-  await recorderFixture.start(pageId, system !== null)
+  await recorderFixture.start(pageId, system !== null, transcribe)
   for (let at = 0; at < mic.length; at += BATCH) {
     recorderFixture.append('mic', pcm16(mic.subarray(at, at + BATCH)))
     if (system) recorderFixture.append('system', pcm16(system.subarray(at, at + BATCH)))

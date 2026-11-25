@@ -25,5 +25,6 @@ A channel touches four files. Add it to all four in one change.
 4. **Use** — call `window.api.doThing(...)` from a hook in `src/renderer/src/hooks/`, not directly
    from deep inside components.
 
-Then add a case to `runUiSmoke` in `src/main/index.ts` that calls the new method through
-`window.api`, and run the `verify-change` skill.
+Then add a case to `runUiSmoke` in `src/main/tasks/smoke.ts` that calls the new method through
+`window.api`, put any pure logic behind the handler in a module with a unit test next to it
+(`*.test.ts`, run by `pnpm test`), and run the `verify-change` skill.

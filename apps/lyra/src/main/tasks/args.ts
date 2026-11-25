@@ -9,6 +9,10 @@ import { ConfigError } from '../config'
  *   lyra screenshot [--review <dir>]            README shot; --review captures every state
  *   lyra meeting <mic.wav> [system.wav]         the real speaker pipeline (pnpm smoke:meeting)
  *     [--offline] [--no-relabel] [--output <file.json>] [--notes local|cloud] [--enroll <owner.wav>]
+ *     [--asr whisper|parakeet] [--no-context]   eval experiments: the speech model, and Whisper
+ *                                               without the earlier text as its prompt
+ *     [--capture]                               play mic.wav as a fake microphone through the
+ *                                               window's real capture path, in real time
  *
  * In development the scripts launch `electron . <task>`. Each task runs in a throwaway profile
  * and exits with its result.
@@ -22,7 +26,7 @@ export function isTaskName(value: string): value is z.infer<typeof TaskName> {
 }
 
 /** Options that take a value; every other `--flag` is a switch. */
-const VALUE_FLAGS = new Set(['--review', '--output', '--notes', '--enroll'])
+const VALUE_FLAGS = new Set(['--review', '--output', '--notes', '--enroll', '--asr'])
 
 const absolutePath = z.string().transform((path) => (isAbsolute(path) ? path : resolve(path)))
 
@@ -46,7 +50,10 @@ const Meeting = z
     '--no-relabel': z.literal(true).optional(),
     '--output': absolutePath.optional(),
     '--notes': z.enum(['local', 'cloud']).optional(),
-    '--enroll': absolutePath.optional()
+    '--enroll': absolutePath.optional(),
+    '--asr': z.enum(['whisper', 'parakeet']).optional(),
+    '--no-context': z.literal(true).optional(),
+    '--capture': z.literal(true).optional()
   })
   .strict()
   .transform((args) => ({
@@ -61,8 +68,19 @@ const Meeting = z
     output: args['--output'] ?? null,
     notes: args['--notes'] ?? null,
     /** A WAV saved as the laptop owner's voice first, as if they had set it up in People. */
-    enroll: args['--enroll'] ?? null
+    enroll: args['--enroll'] ?? null,
+    /** Which speech model live replays transcribe with (`whisper` is what the app runs). */
+    asr: args['--asr'] ?? 'whisper',
+    /** Whether Whisper gets a track's earlier text as its prompt. */
+    context: !args['--no-context'],
+    /**
+     * Record through the window (getUserMedia, the AudioContext, the worklet) from a fake
+     * microphone playing the WAV, instead of feeding main directly. Mic only: loopback can't be
+     * faked.
+     */
+    capture: args['--capture'] === true
   }))
+  .refine((task) => !task.capture || task.system === null, '--capture replays the mic track only')
 
 export type Task = z.output<typeof Smoke> | z.output<typeof Screenshot> | z.output<typeof Meeting>
 

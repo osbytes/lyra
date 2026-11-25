@@ -11,9 +11,13 @@ main can replay recordings through them), `src/renderer/src/hooks/useDictation.t
 
 ## Pipeline today
 
-Microphone → `startCapture` (AudioWorklet, 16 kHz mono, 512-sample frames) → `VoiceDetector`
-(energy VAD with pre-roll) → `StreamingTranscriber` (LocalAgreement-2 over a growing buffer) →
-`window.api.transcribe` → Whisper in main (serialized by `runSerial`).
+Raw microphone (no browser noise suppression or AGC) → 80 Hz high-pass → `startCapture`
+(AudioWorklet, 16 kHz, 512-sample frames; mic and system audio as two aligned channels) →
+`SessionRecorder` → main: raw WAV per track, and `ChunkedTranscriber`. On a call the mic goes
+through `EchoCanceller` (system track as reference), then `EchoGate`; each track is levelled
+(`LevelNormalizer`), then `PauseChunker` cuts at pauses Silero hears (`speechVad.ts`; energy
+fallback) → Whisper with whisper.cpp's own Silero pass (serialized by `runSerial`) →
+hallucination filter (lists from `pnpm word-lists`).
 
 ## How you work
 

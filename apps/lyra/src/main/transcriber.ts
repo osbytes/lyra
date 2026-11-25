@@ -1,6 +1,9 @@
+import { EchoCanceller } from '../shared/audio/aec'
 import { EchoGate, PauseChunker, type CutChunk } from '../shared/audio/chunker'
-import { SAMPLE_RATE } from '../shared/audio/vad'
+import { LevelNormalizer } from '../shared/audio/level'
+import { rms, SAMPLE_RATE, type SpeechClassifier } from '../shared/audio/vad'
 import type { AudioTrack, TranscriptWord } from '../shared/types'
+import { countBetween, ECHO_LEAD_SECONDS, FAR_ACTIVE_RMS, isEchoOnly } from './echoRule'
 import { log } from './log'
 
 /**
@@ -18,13 +21,15 @@ import { log } from './log'
 const FRAME = 512
 /** How much of a track's earlier text is Whisper's prompt for its next chunk. */
 const CONTEXT_CHARS = 300
-/**
- * A mic chunk with less of the user's own speech than this, on a call, is what slipped past the
- * echo gate: Whisper would invent words for it ("Hello? Hello?"), so it isn't transcribed.
- */
-const MIN_OWN_SECONDS = 0.4
-/** How long the mic's own-speech frames are remembered, enough for any chunk. */
+/** How long the mic's own-speech and far-end frames are remembered, enough for any chunk. */
 const OWN_MEMORY_SECONDS = 60
+/**
+ * Seconds of audio waiting for Whisper past which the backlog is logged: Whisper is then running
+ * slower than real time (a CPU fallback, a slow machine) and the text will trail the talk.
+ */
+const BACKLOG_WARN_SECONDS = 30
+/** A levelled mic frame this loud, let through by the echo gate, is the user's own speech. */
+const OWN_RMS = 0.006
 
 export type Transcribe = (pcm: Float32Array, prompt: string) => Promise<TranscriptWord[]>
 
@@ -36,16 +41,35 @@ export type TranscribedChunk = {
   words: TranscriptWord[]
 }
 
+export type TranscriberOptions = {
+  /** Text before this recording (the session's title and transcript so far). */
+  context?: string
+  /** A speech classifier per track (Silero); null falls back to the energy detector. */
+  classifier?: () => SpeechClassifier | null
+  /** Give Whisper a track's earlier text as its prompt (on unless an eval turns it off). */
+  carryContext?: boolean
+}
+
 export type TranscriberProgress = {
   /** Chunks cut and waiting for (or in) Whisper. */
   queued: number
+  /** Seconds of audio in those chunks. */
+  queuedSeconds: number
 }
 
-type Pending = { track: AudioTrack; start: number; result: TranscribedChunk | null }
+/** Audio of a track not handed out as words yet, in seconds on the session timeline. */
+export type UnfinishedSpan = { track: AudioTrack; start: number; end: number }
+
+type Pending = { track: AudioTrack; start: number; seconds: number; result: TranscribedChunk | null }
 
 type Lane = {
   track: AudioTrack
   chunker: PauseChunker
+  /**
+   * Levels what the voice detector judges. Whisper gets the audio unlevelled: it normalizes its
+   * own input, and levelled audio cost it accuracy in the evals (gain steps between frames).
+   */
+  level: LevelNormalizer
   /** Samples received but not yet fed to the chunker (waiting for the other track to catch up). */
   buffered: Float32Array[]
   bufferedLength: number
@@ -71,6 +95,10 @@ function take(lane: Lane, count: number): Float32Array {
   return out
 }
 
+function levelled(lane: Lane, frame: Float32Array): Float32Array {
+  return lane.level.apply(frame, rms(frame))
+}
+
 function lastWords(text: string): string {
   const trimmed = text.replace(/\s+/g, ' ').trim()
   if (trimmed.length <= CONTEXT_CHARS) return trimmed
@@ -80,11 +108,18 @@ function lastWords(text: string): string {
 
 export class ChunkedTranscriber {
   private readonly lanes = new Map<AudioTrack, Lane>()
+  private readonly carryContext: boolean
+  private readonly canceller: EchoCanceller | null
   private readonly gate: EchoGate | null
   private readonly pending: Pending[] = []
   /** Session-timeline samples where a mic frame of the user's own speech starts (calls only). */
   private readonly own: number[] = []
+  /** Session-timeline samples where a system frame with sound on it starts (calls only). */
+  private readonly far: number[] = []
   private dropped = 0
+  private peakQueued = 0
+  private peakQueuedSeconds = 0
+  private backlogWarned = false
   private work: Promise<void> = Promise.resolve()
   private failure: Error | null = null
 
@@ -95,15 +130,17 @@ export class ChunkedTranscriber {
     private readonly transcribe: Transcribe,
     private readonly onChunk: (chunk: TranscribedChunk) => void,
     private readonly onProgress: (progress: TranscriberProgress) => void = () => undefined,
-    /** Text before this recording (the session's title and transcript so far). */
-    context = ''
+    options: TranscriberOptions = {}
   ) {
+    const { context = '', classifier = () => null } = options
+    this.carryContext = options.carryContext ?? true
     for (const track of tracks) {
       const lane: Lane = {
         track,
         chunker: new PauseChunker((chunk) => {
           this.cut(lane, chunk)
-        }),
+        }, classifier()),
+        level: new LevelNormalizer(),
         buffered: [],
         bufferedLength: 0,
         at: start,
@@ -111,7 +148,9 @@ export class ChunkedTranscriber {
       }
       this.lanes.set(track, lane)
     }
-    this.gate = this.lanes.has('system') ? new EchoGate() : null
+    const call = this.lanes.has('system')
+    this.canceller = call ? new EchoCanceller() : null
+    this.gate = call ? new EchoGate() : null
   }
 
   /** Captured samples of one track, appended to what that track has had so far. */
@@ -134,11 +173,44 @@ export class ChunkedTranscriber {
   }
 
   progress(): TranscriberProgress {
-    return { queued: this.pending.filter((entry) => !entry.result).length }
+    const waiting = this.pending.filter((entry) => !entry.result)
+    const seconds = waiting.reduce((sum, entry) => sum + entry.seconds, 0)
+    return { queued: waiting.length, queuedSeconds: +seconds.toFixed(1) }
   }
 
-  stats(): Record<string, number> {
-    return { ...this.gate?.stats(), echoChunks: this.dropped, queued: this.pending.length }
+  /**
+   * Per track, the audio from the first chunk not handed out yet to the end of what was received:
+   * what a quit that couldn't wait for Whisper leaves untranscribed. Empty once all of it is out.
+   */
+  unfinished(): UnfinishedSpan[] {
+    return [...this.lanes.values()].flatMap((lane) => {
+      const waiting = this.pending.find((entry) => entry.track === lane.track)
+      const from = Math.min(waiting?.start ?? Infinity, lane.chunker.pendingFrom() / SAMPLE_RATE)
+      const end = (lane.at + lane.bufferedLength) / SAMPLE_RATE
+      return from < end ? [{ track: lane.track, start: +from.toFixed(3), end: +end.toFixed(3) }] : []
+    })
+  }
+
+  stats(): Record<string, number | boolean | null> {
+    const levels = Object.fromEntries(
+      [...this.lanes.values()].flatMap((lane) => {
+        const { gainDb, speechDb } = lane.level.stats()
+        return [
+          [`${lane.track}GainDb`, gainDb],
+          [`${lane.track}SpeechDb`, speechDb]
+        ]
+      })
+    )
+    const aec = this.canceller?.stats()
+    return {
+      ...this.gate?.stats(),
+      ...(aec ? { aecErleDb: aec.erleDb, aecAdapted: aec.adapted, aecResets: aec.resets, aecCopies: aec.copies } : {}),
+      ...levels,
+      echoChunks: this.dropped,
+      queued: this.pending.length,
+      peakQueued: this.peakQueued,
+      peakQueuedSeconds: +this.peakQueuedSeconds.toFixed(1)
+    }
   }
 
   /**
@@ -156,14 +228,15 @@ export class ChunkedTranscriber {
         const systemAt = system.at
         const far = take(system, FRAME)
         const near = take(mic, FRAME)
-        system.chunker.push(far, systemAt)
-        if (this.gate) {
-          const kept = this.gate.apply(near, far)
-          if (this.gate.own) this.rememberOwn(micAt)
-          mic.chunker.push(kept, micAt)
-        } else {
-          mic.chunker.push(near, micAt)
-        }
+        if (rms(far) >= FAR_ACTIVE_RMS) this.remember(this.far, systemAt)
+        system.chunker.push(far, systemAt, levelled(system, far))
+        // Raw tracks in, so the canceller's model of the room is linear: echo removed, then what
+        // the canceller missed gated, then levelled.
+        const cleaned = this.canceller ? this.canceller.process(near, far) : near
+        const kept = this.gate ? this.gate.apply(cleaned, far) : cleaned
+        const level = levelled(mic, kept)
+        if (this.gate?.passed && rms(level) >= OWN_RMS) this.remember(this.own, micAt)
+        mic.chunker.push(kept, micAt, level)
       }
       return
     }
@@ -171,35 +244,47 @@ export class ChunkedTranscriber {
       const frames = all ? Math.ceil(lane.bufferedLength / FRAME) : Math.floor(lane.bufferedLength / FRAME)
       for (let i = 0; i < frames; i++) {
         const at = lane.at
-        lane.chunker.push(take(lane, FRAME), at)
+        const frame = take(lane, FRAME)
+        lane.chunker.push(frame, at, levelled(lane, frame))
       }
     }
   }
 
-  private rememberOwn(at: number): void {
-    this.own.push(at)
+  private remember(frames: number[], at: number): void {
+    frames.push(at)
     const forget = at - OWN_MEMORY_SECONDS * SAMPLE_RATE
-    while ((this.own[0] ?? at) < forget) this.own.shift()
+    while ((frames[0] ?? at) < forget) frames.shift()
   }
 
-  /** Seconds of the user's own speech on the mic in a chunk. */
-  private ownSeconds(chunk: CutChunk): number {
+  /**
+   * On a call, a mic chunk that is only the far end's echo: little of the user's own speech while
+   * the far end was playing. With the far end silent the chunk is kept however short it is.
+   */
+  private echoOnly(chunk: CutChunk): boolean {
     const end = chunk.start + chunk.pcm.length
-    return (this.own.filter((at) => at >= chunk.start && at < end).length * FRAME) / SAMPLE_RATE
+    const seconds = (frames: number): number => (frames * FRAME) / SAMPLE_RATE
+    const own = seconds(countBetween(this.own, chunk.start, end))
+    const far = seconds(countBetween(this.far, chunk.start - ECHO_LEAD_SECONDS * SAMPLE_RATE, end))
+    return isEchoOnly(own, far)
   }
 
   private cut(lane: Lane, chunk: CutChunk): void {
-    if (lane.track === 'mic' && this.gate && this.ownSeconds(chunk) < MIN_OWN_SECONDS) {
+    if (lane.track === 'mic' && this.gate && this.echoOnly(chunk)) {
       this.dropped++
       return
     }
-    const entry: Pending = { track: lane.track, start: chunk.start / SAMPLE_RATE, result: null }
+    const entry: Pending = {
+      track: lane.track,
+      start: chunk.start / SAMPLE_RATE,
+      seconds: chunk.pcm.length / SAMPLE_RATE,
+      result: null
+    }
     this.pending.push(entry)
     this.pending.sort((a, b) => a.start - b.start)
-    this.onProgress(this.progress())
+    this.reportBacklog()
     this.work = this.work.then(async () => {
       try {
-        const words = await this.transcribe(chunk.pcm, lastWords(lane.context))
+        const words = await this.transcribe(chunk.pcm, this.carryContext ? lastWords(lane.context) : '')
         const base = entry.start
         const limit = base + chunk.pcm.length / SAMPLE_RATE
         const placed = words.map((word) => ({
@@ -216,8 +301,23 @@ export class ChunkedTranscriber {
         entry.result = { track: lane.track, start: entry.start, end: entry.start, words: [] }
       }
       this.release()
-      this.onProgress(this.progress())
+      this.reportBacklog()
     })
+  }
+
+  /** Reports the queue, keeps its peak for `stats()`, and logs when Whisper falls far behind. */
+  private reportBacklog(): void {
+    const progress = this.progress()
+    this.peakQueued = Math.max(this.peakQueued, progress.queued)
+    this.peakQueuedSeconds = Math.max(this.peakQueuedSeconds, progress.queuedSeconds)
+    if (!this.backlogWarned && progress.queuedSeconds >= BACKLOG_WARN_SECONDS) {
+      this.backlogWarned = true
+      log('transcriber', 'falling behind', progress)
+    } else if (this.backlogWarned && progress.queued === 0) {
+      this.backlogWarned = false
+      log('transcriber', 'caught up', { peakQueuedSeconds: +this.peakQueuedSeconds.toFixed(1) })
+    }
+    this.onProgress(progress)
   }
 
   /** Hands out finished chunks that nothing earlier is still waiting on. */

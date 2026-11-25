@@ -1,5 +1,6 @@
-import { app, type ProcessMetric } from 'electron'
+import type { ProcessMetric } from 'electron'
 import { availableParallelism, totalmem } from 'node:os'
+import { metricsReader } from './appMetrics'
 import type { AppUsage, ProcessUsage, UsageSample } from '../shared/types'
 
 type Kind = ProcessUsage['kind']
@@ -41,13 +42,13 @@ function kindOf(metric: ProcessMetric): Kind {
 
 /**
  * Sampled in the background rather than on request, so the history shows what Lyra did while
- * Settings was closed (and only one caller resets Electron's since-last-call CPU counters).
- * One `getAppMetrics` call every 5 seconds is too cheap to show up in the readings.
+ * Settings was closed. One metrics read every 5 seconds is too cheap to show up in the readings.
  */
 const INTERVAL_MS = 5000
 const KEEP = (30 * 60 * 1000) / INTERVAL_MS
 
 const samples: UsageSample[] = []
+const readMetrics = metricsReader()
 let timer: NodeJS.Timeout | null = null
 
 export function startUsageSampler(): void {
@@ -73,7 +74,7 @@ export function appUsage(): AppUsage {
 function sample(): UsageSample {
   const cores = process.platform === 'win32' ? 1 : Math.max(1, availableParallelism())
   const totals = new Map<Kind, ProcessUsage>()
-  for (const metric of app.getAppMetrics()) {
+  for (const metric of readMetrics()) {
     const kind = kindOf(metric)
     const entry = totals.get(kind) ?? { kind, cpuPercent: 0, memoryBytes: 0 }
     entry.cpuPercent += metric.cpu.percentCPUUsage / cores

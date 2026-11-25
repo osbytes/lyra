@@ -1,4 +1,5 @@
 // @ts-check
+import { builtinModules } from 'node:module'
 import js from '@eslint/js'
 import reactHooks from 'eslint-plugin-react-hooks'
 import globals from 'globals'
@@ -13,16 +14,13 @@ const CAST_BASELINE = [
   'src/main/meeting/notesFormat.ts',
   'src/main/meeting/notesWorker.ts',
   'src/main/meeting/pipeline.ts',
-  'src/main/meeting/relabel.ts',
   'src/main/meeting/worker.ts',
   'src/main/pages.ts',
-  'src/main/recorder.ts',
   'src/main/session.ts',
   'src/main/sessionStore.ts',
   'src/main/settings.ts',
   'src/main/tasks/screenshot.ts',
   'src/main/tasks/smoke.ts',
-  'src/main/voices.ts',
   'src/main/whisper.ts',
   'src/renderer/src/components/Settings.tsx',
   'src/renderer/src/lib/log.ts',
@@ -130,6 +128,36 @@ export default tseslint.config(
     rules: {
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/exhaustive-deps': 'error'
+    }
+  },
+
+  {
+    // The process boundary (AGENTS.md): the renderer and the code it shares with main run in the
+    // browser sandbox, so they reach Node and Electron only through window.api (preload). Unit
+    // tests run under Node in vitest, not in the window, so they may read fixtures from disk.
+    files: ['src/renderer/**/*.{ts,tsx}', 'src/shared/**/*.ts'],
+    ignores: ['**/*.test.ts', '**/*.test.tsx'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            ...['electron', ...builtinModules.filter((name) => !name.startsWith('_'))].map(
+              (name) => ({ name, message: 'The renderer reaches Node and Electron through window.api.' })
+            )
+          ],
+          patterns: [
+            {
+              group: ['node:*', 'electron/*'],
+              message: 'The renderer reaches Node and Electron through window.api.'
+            },
+            {
+              regex: '(^|/)(main|preload)(/|$)',
+              message: 'Main-process code runs in another process: add an IPC channel (add-ipc-channel skill).'
+            }
+          ]
+        }
+      ]
     }
   },
 

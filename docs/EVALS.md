@@ -25,8 +25,8 @@ Every run uses the same model files: they are pinned by revision and sha256
 
 Speaker and diarization changes report the `eval:sessions` and `eval:calls` tables before and
 after in their pull request (AGENTS.md) and add their rows below with the date, the commit and
-the number of sessions or scenarios. Sessions WER is high because of overlapping speech and Whisper base on
-context-free read sentences; speaker errors are cpWER minus WER.
+the number of sessions or scenarios. Sessions WER is driven by overlapping speech and the music and video sessions
+(context-free read sentences under a loud backdrop); speaker errors are cpWER minus WER.
 
 | Date | Commit | Suite | Pipeline | n | WER | cpWER | DER |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -34,6 +34,33 @@ context-free read sentences; speaker errors are cpWER minus WER.
 | 2026-11-24 | #48 | sessions v2, seed 1 | live | 16 (75 min) | 45.6% | 51.9% | 14.1% |
 | 2026-11-24 | b5e98d6 (before #48) | calls | live | 11 | 10.9% | 44.6% | 25.1% |
 | 2026-11-24 | #48 | calls | live | 11 | 10.2% | 24.7% | 11.3% |
+| 2026-11-25 | a1b9824 (before audio audit) | sessions v2, seed 1 | live | 16 (75 min) | 22.8% | 28.8% | 13.9% |
+| 2026-11-25 | audio audit (raw mic, Silero chunking, echo canceller) | sessions v2, seed 1 | live | 16 (75 min) | 21.4% | 26.9% | 12.6% |
+| 2026-11-25 | a1b9824 (before audio audit) | calls | live | 11 | 2.3% | 19.4% | 13.5% |
+| 2026-11-25 | audio audit (raw mic, Silero chunking, echo canceller) | calls | live | 11 | 2.5% | 19.8% | 12.5% |
+
+## Known limits of these numbers
+
+An audit of the eval setup (2026-11-25) found these, and none of them is fixed yet. Read the
+results above with them in mind:
+
+- **Tuned on the test set.** The speaker thresholds (`src/main/meeting/thresholds.ts`, the
+  clustering bars) were tuned with `cluster-lab.cjs` and `voice-scores.cjs` on the same sessions
+  `eval:sessions` scores. There is no held-out set, so the sessions numbers are optimistic for
+  voices and rooms they haven't seen.
+- **`cluster-lab.cjs` is a copy.** It re-implements the clustering instead of importing the app's
+  `clustering.ts`, so a sweep can disagree with what the app does after either one changes.
+- **Speaker naming is not scored.** cpWER and DER only check that lines are grouped by the right
+  person. Whether a saved voice puts the right *name* on them (or a wrong one) isn't measured.
+- **No number or spelling normalisation.** The scorer (`scripts/eval/metrics.cjs`) lowercases and
+  drops punctuation and fillers, but "twenty five" vs "25", "OK" vs "okay" or British vs American
+  spellings count as errors, which inflates WER and cpWER against published results.
+- **One seed, no variance.** Each row is a single draw (`seed 1`) of each session. Chunk
+  boundaries alone move one session's WER by several points, and no row reports a spread, so a
+  difference of a point or two between rows may be noise. `--seeds 3` exists but isn't used for
+  the table.
+- **No CI gate.** Nothing fails when these numbers get worse; they are run by hand and pasted in.
+  The scorers themselves now have unit tests (`scripts/eval/metrics.test.mjs`, in `pnpm check`).
 
 ## Not yet
 

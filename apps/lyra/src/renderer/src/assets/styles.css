@@ -18,6 +18,8 @@
   --text-subtle: #6b6b7a;
   --border: #e5e5eb;
   --border-strong: #d3d3dc;
+  /* The edge of a text field or select: 3:1 against --surface (WCAG 1.4.11), unlike dividers. */
+  --border-input: #8a8a98;
   --accent: #5046e5;
   --accent-hover: #4338ca;
   --accent-text: #ffffff;
@@ -26,6 +28,8 @@
   --record: #dc2626;
   --record-soft: #fde8e8;
   --danger: #c81e1e;
+  /* Behind white text on a destructive button: 4.5:1 or better in both themes. */
+  --danger-fill: #c81e1e;
   --success: #15803d;
   --warning: #a15c07;
   --warning-soft: #fff4e0;
@@ -34,6 +38,10 @@
   --scrollbar-hover: rgba(24, 24, 40, 0.38);
   --toast-bg: #18181f;
   --toast-text: #ffffff;
+  /* Find in session: every match, and the current one (text stays readable on both). */
+  --find-match: #fcefb4;
+  --find-current: #f59e0b;
+  --find-current-text: #18181f;
 
   --shadow-sm: 0 1px 2px rgba(20, 20, 40, 0.06);
   --shadow-md: 0 1px 2px rgba(20, 20, 40, 0.06), 0 4px 12px -2px rgba(20, 20, 40, 0.08);
@@ -83,6 +91,7 @@
     --text-subtle: #8b8b9a;
     --border: #2a2a32;
     --border-strong: #3a3a44;
+    --border-input: #73737f;
     --accent: #6158f0;
     --accent-hover: #7069f5;
     --accent-soft: rgba(124, 117, 255, 0.16);
@@ -90,6 +99,7 @@
     --record: #ef4444;
     --record-soft: rgba(239, 68, 68, 0.16);
     --danger: #f87171;
+    --danger-fill: #b91c1c;
     --success: #4ade80;
     --warning: #fbbf24;
     --warning-soft: rgba(251, 191, 36, 0.12);
@@ -98,6 +108,7 @@
     --scrollbar-hover: rgba(255, 255, 255, 0.34);
     --toast-bg: #ececf1;
     --toast-text: #16161b;
+    --find-match: #5c4d12;
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
     --shadow-md: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 12px -2px rgba(0, 0, 0, 0.4);
     --shadow-lg: 0 2px 4px rgba(0, 0, 0, 0.4), 0 16px 40px -8px rgba(0, 0, 0, 0.65);
@@ -106,6 +117,16 @@
 
 * {
   box-sizing: border-box;
+}
+
+/* Read by screen readers, not drawn (live regions, extra context). */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 html,
@@ -347,7 +368,7 @@ code {
 .settings-input,
 .hotkey-input {
   height: 32px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border-input);
   border-radius: var(--radius-md);
   background: var(--surface);
   box-shadow: var(--shadow-sm);
@@ -935,6 +956,8 @@ code {
 }
 
 /*
+ * .ghost and .transcriber-caret: the app no longer draws these; the website's demo editor does,
+ * through this stylesheet (apps/website/scripts/sync-app-styles.mjs).
  * The transcriber's cursor: a second author's caret, labeled, where its words land. Zero width,
  * so it never shifts the text it sits in; drawn in the mirror under the textarea.
  */
@@ -1019,6 +1042,10 @@ code {
   box-shadow: var(--shadow-md);
   font-size: 13px;
   animation: rise 160ms ease-out;
+}
+
+.dock-notice-action {
+  margin-left: 10px;
 }
 
 .dock-error {
@@ -2084,6 +2111,13 @@ code {
   list-style: none;
 }
 
+/* Chips that belong to the row above (its padding gives the gap): no rule of their own. */
+.settings-card > .settings-chips.is-block {
+  justify-content: flex-start;
+  padding: 0 16px 16px;
+  border-top: 0;
+}
+
 .settings-chips li {
   display: inline-flex;
   align-items: center;
@@ -2411,6 +2445,29 @@ code {
   color: var(--danger);
 }
 
+/* Work still running on this session: a pill with a spinner, so it isn't taken for finished. */
+.meeting-status.is-busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 2px 12px 2px 10px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-soft-text);
+  font-weight: 600;
+}
+
+.meeting-status-spinner {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  border: 2px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: palette-spin 700ms linear infinite;
+}
+
 .speaker-chip {
   display: inline-flex;
   align-items: center;
@@ -2576,6 +2633,23 @@ code {
 
 .line:first-child {
   margin-top: 0;
+}
+
+/* The list's keyboard focus (one line at a time; the arrow keys move it). */
+.line:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: var(--radius-sm);
+}
+
+/*
+ * Long meetings have thousands of lines: skip laying out the words of those off screen. On the
+ * words rather than the whole .line, because containment clips and the gutter hangs outside the
+ * line in the wide layout. `auto` remembers each line's real height once it has been drawn.
+ */
+.line .line-text {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 32px;
 }
 
 .gutter {
@@ -2895,7 +2969,7 @@ code {
   width: 100%;
   height: 36px;
   padding: 0 12px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border-input);
   border-radius: var(--radius-md);
   outline: none;
   background: var(--surface);
@@ -3136,6 +3210,18 @@ code {
   text-align: right;
 }
 
+/* After a recording ends: no stop button, so the text starts further in. */
+.overlay-saved {
+  padding-left: 12px;
+}
+
+.overlay-open {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .overlay-prompt {
   display: flex;
   flex-direction: column;
@@ -3154,6 +3240,11 @@ code {
 .overlay-prompt p {
   margin: 0;
   line-height: 1.4;
+}
+
+.overlay-prompt .overlay-prompt-key {
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 .overlay-prompt-actions {
@@ -3196,7 +3287,7 @@ code {
 .select-field {
   min-width: 180px;
   padding: 0 8px 0 12px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border-input);
   border-radius: var(--radius-md);
   background: var(--surface);
   box-shadow: var(--shadow-sm);
@@ -4211,7 +4302,7 @@ p.line-text {
 .correct-pop input {
   height: 34px;
   padding: 0 10px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border-input);
   border-radius: var(--radius-md);
   outline: none;
   background: var(--surface);
@@ -4395,11 +4486,12 @@ p.line-text {
 }
 
 .btn.primary.is-danger {
-  background: var(--danger);
+  background: var(--danger-fill);
+  color: var(--accent-text);
 }
 
 .btn.primary.is-danger:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--danger) 85%, black);
+  background: color-mix(in srgb, var(--danger-fill) 85%, black);
 }
 
 /* Find in session (Ctrl/Cmd+F): floats at the top right of the column, over the notes. */
@@ -4464,11 +4556,43 @@ p.line-text {
 }
 
 ::highlight(lyra-find) {
-  background-color: color-mix(in srgb, #facc15 40%, transparent);
+  background-color: var(--find-match);
   color: inherit;
 }
 
 ::highlight(lyra-find-current) {
-  background-color: #f59e0b;
-  color: #18181f;
+  background-color: var(--find-current);
+  color: var(--find-current-text);
+}
+
+/* A rendering error: the whole window, or just the session's panes (the dock stays usable). */
+.error-boundary {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 100vh;
+  padding: 48px;
+  background: var(--bg);
+  color: var(--text);
+  text-align: center;
+}
+
+.error-boundary.is-pane {
+  min-height: 0;
+  padding: 48px 48px 104px;
+  background: transparent;
+}
+
+.error-boundary h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.error-boundary p {
+  max-width: 400px;
+  margin: 0;
+  color: var(--text-muted);
 }

@@ -1,11 +1,13 @@
 import { app, BrowserWindow } from 'electron'
-import { readFileSync } from 'node:fs'
-import { mkdir, rename, writeFile } from 'node:fs/promises'
+import { mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { defaultLanguage } from '../shared/languages'
 import { PANEL_WIDTHS, parseSettings, type Settings } from '../shared/settings'
+import { writeFileAtomic } from './atomicFile'
 import { config } from './config'
 import { log } from './log'
+import { readSettingsFile, settingsForDisk } from './settingsFile'
 
 export function defaultSettings(): Settings {
   return {
@@ -15,9 +17,14 @@ export function defaultSettings(): Settings {
     hotkey: 'CommandOrControl+Shift+Space',
     launchAtLogin: false,
     micPrompt: { enabled: false, ignoredApps: [] },
+    // On: it only asks, never records, and runs on this computer (see meetingApps.ts).
+    meetingPrompt: true,
     // Long enough to replay or re-transcribe recent sessions, short enough not to pile up.
     audioRetentionDays: 30,
     captureSystemAudio: true,
+    transcriptionLanguage: defaultLanguage(app.getPreferredSystemLanguages()),
+    // Empty: Whisper's prompt is then exactly what it was before the setting existed.
+    vocabulary: [],
     notesEngine: 'off',
     cloudProvider: 'anthropic',
     cloudModel: null,
@@ -35,6 +42,11 @@ export function defaultSettings(): Settings {
 type Listener = (next: Settings, prev: Settings) => void
 
 let current: Settings | null = null
+/**
+ * The file as read. Keys this build doesn't know (from a newer Lyra) are written back with it,
+ * so running an older build doesn't strip them.
+ */
+let stored: Record<string, unknown> = {}
 const listeners = new Set<Listener>()
 
 function settingsPath(): string {
@@ -43,22 +55,36 @@ function settingsPath(): string {
 
 export function getSettings(): Settings {
   if (current) return current
-  let stored: unknown = null
-  try {
-    stored = JSON.parse(readFileSync(settingsPath(), 'utf8'))
-  } catch {
-    // Missing or unreadable: start from defaults.
+  const read = readSettingsFile(settingsPath())
+  switch (read.kind) {
+    case 'missing':
+      break
+    case 'ok':
+      stored = read.raw
+      break
+    case 'corrupt':
+      // Kept, so a hand edit with a typo can be fixed rather than lost to the defaults.
+      log('settings', 'settings file was unreadable; using defaults', {
+        reason: read.reason,
+        aside: read.aside
+      })
+      break
   }
   current = parseSettings(stored, defaultSettings())
   return current
 }
 
-async function persist(settings: Settings): Promise<void> {
+/** Writes in call order: overlapping updates never interleave or land out of order. */
+let writing: Promise<void> = Promise.resolve()
+
+function persist(settings: Settings): Promise<void> {
   const path = settingsPath()
-  const temp = `${path}.tmp`
-  await mkdir(dirname(path), { recursive: true })
-  await writeFile(temp, JSON.stringify(settings, null, 2), 'utf8')
-  await rename(temp, path)
+  const run = writing.then(async () => {
+    await mkdir(dirname(path), { recursive: true })
+    await writeFileAtomic(path, JSON.stringify(settingsForDisk(stored, settings), null, 2))
+  })
+  writing = run.catch(() => undefined)
+  return run
 }
 
 export async function updateSettings(patch: Partial<Settings>): Promise<Settings> {

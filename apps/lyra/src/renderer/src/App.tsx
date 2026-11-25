@@ -26,10 +26,12 @@ import { SettingsDialog } from './components/Settings'
 import { CommandPalette } from './components/CommandPalette'
 import { Sidebar } from './components/Sidebar'
 import { ConfirmDialog } from './components/ConfirmDialog'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { FindBar } from './components/FindBar'
 import { PanelResizer, type PanelLayout } from './components/PanelResizer'
 import { TooltipLayer } from './components/Tooltip'
-import { useDictation } from './hooks/useDictation'
+import { useDictation, type StartResult } from './hooks/useDictation'
+import { sessionCommandAction } from './hooks/sessionCommands'
 import { usePages, type OpenPage } from './hooks/usePages'
 import { useSettings } from './hooks/useSettings'
 import { useSettingsIssues } from './hooks/useSettingsIssues'
@@ -42,7 +44,9 @@ import {
   undo as undoAction,
   undoAt as historyUndoAt
 } from './lib/history'
-import { notify, onToast, type ToastMessage } from './lib/toast'
+import { scrollBehavior } from './lib/motion'
+import { behindLabel } from './lib/status'
+import { notify, onToast, replacesToast, type ToastMessage } from './lib/toast'
 import { tip } from './components/Tooltip'
 import lyraIcon from './assets/lyra-icon.png'
 
@@ -118,7 +122,7 @@ function revealLine(lineId: string, frame = 0): void {
     if (frame < REVEAL_FRAMES) requestAnimationFrame(() => revealLine(lineId, frame + 1))
     return
   }
-  line.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  line.scrollIntoView({ block: 'center', behavior: scrollBehavior() })
   line.classList.add('search-flash')
   line.addEventListener('animationend', () => line.classList.remove('search-flash'), { once: true })
 }
@@ -201,22 +205,54 @@ export default function App(): React.JSX.Element {
     await flush()
   }, [stopDictation, flush])
 
-  /** Records into a session: the mic, plus the computer's audio when that setting is on. */
+  /**
+   * Records into a session: the mic, plus the computer's audio when that setting is on or the
+   * recording is of a meeting (the other people are only in the computer's audio).
+   */
   const record = useCallback(
-    async (pageId: string) => {
-      await start({ pageId, systemAudio: settingsRef.current?.captureSystemAudio ?? true })
-    },
+    (pageId: string, meeting = false): Promise<StartResult> =>
+      start({ pageId, systemAudio: meeting || (settingsRef.current?.captureSystemAudio ?? true) }),
     [start]
   )
 
+  const phaseRef = useRef(dictation.phase)
+  phaseRef.current = dictation.phase
+  /** A new session is being made; a second request meanwhile would only add an empty one. */
+  const sessionStarting = useRef(false)
+
   /** A new session, named for this moment, recording straight away. */
-  const startSession = useCallback(async () => {
-    await stop()
-    // A new recording shows its transcript arriving, whatever the last session's layout was.
-    setPaneMode('split')
-    const page = await create({ startedAt: new Date().toISOString() })
-    await record(page.id)
-  }, [stop, create, record])
+  const startSession = useCallback(
+    async (meeting = false) => {
+      if (sessionStarting.current) return
+      sessionStarting.current = true
+      try {
+        if (phaseRef.current === 'finishing') {
+          notify('Starting a new session once the last recording finishes transcribing.')
+        }
+        // Waits for a recording that's still finishing, too: main records one at a time.
+        await stop()
+        // A new recording shows its transcript arriving, whatever the last session's layout was.
+        setPaneMode('split')
+        const page = await create({ startedAt: new Date().toISOString() })
+        const result = await record(page.id, meeting)
+        if (result !== 'failed' && result !== 'cancelled') return
+        // Nothing was recorded: don't leave an empty "Untitled" behind for every failed try.
+        // Only while it's still open and untouched; `remove` adds no undo toast for it.
+        const open = currentRef.current
+        const untouched =
+          open?.id === page.id &&
+          open.title === page.title &&
+          !open.body.trim() &&
+          !open.summary.trim() &&
+          open.transcript.length === 0 &&
+          open.tags.length === 0
+        if (untouched) await remove(page.id)
+      } finally {
+        sessionStarting.current = false
+      }
+    },
+    [stop, create, record, remove, currentRef]
+  )
 
   // Commands from the tray, the global hotkey, and the overlay pill.
   const recordingRef = useRef(recording)
@@ -224,11 +260,37 @@ export default function App(): React.JSX.Element {
   useEffect(
     () =>
       window.api.onSessionCommand((command) => {
-        if (command.type === 'stop' || recordingRef.current) void stop()
-        else void startSession()
+        const open = currentRef.current
+        const action = sessionCommandAction(command, phaseRef.current, document.hasFocus() && open !== null)
+        switch (action.do) {
+          case 'start':
+            void startSession(action.meeting)
+            break
+          case 'continue':
+            if (open) void record(open.id)
+            else void startSession()
+            break
+          case 'stop':
+            void stop()
+            break
+          case 'ignore':
+            if (action.notice) notify(action.notice)
+            break
+        }
       }),
-    [stop, startSession]
+    [stop, startSession, record, currentRef]
   )
+
+  /**
+   * Ctrl/Cmd+N, the sidebar and the palette: a new session. One already recording would be cut
+   * off by it, so that asks first.
+   */
+  const [confirmNew, setConfirmNew] = useState(false)
+  const cancelNew = useCallback(() => setConfirmNew(false), [])
+  const newSession = useCallback(() => {
+    if (recordingRef.current) setConfirmNew(true)
+    else void startSession()
+  }, [startSession])
 
   // Mirror recorder state to main for the tray and the overlay pill.
   const { phase, progress, micName, subscribeLevel } = dictation
@@ -266,7 +328,7 @@ export default function App(): React.JSX.Element {
     const view = scroller.current
     if (!view || !followHere || lineCount === 0) return
     if (view.scrollHeight - view.scrollTop - view.clientHeight > FOLLOW_SLACK) return
-    requestAnimationFrame(() => view.scrollTo({ top: view.scrollHeight, behavior: 'smooth' }))
+    requestAnimationFrame(() => view.scrollTo({ top: view.scrollHeight, behavior: scrollBehavior() }))
   }, [lineCount, followHere])
 
   /** The dock: continue recording the open session, or stop the recording (wherever it is). */
@@ -281,28 +343,48 @@ export default function App(): React.JSX.Element {
     setFind(null)
     await open(id)
   }
+  // Stable handlers for the memoized sidebar, so typing in the notes doesn't redraw it.
+  const openPageRef = useRef(openPage)
+  openPageRef.current = openPage
+  const openFromSidebar = useCallback((id: string) => void openPageRef.current(id), [])
+  const openSettings = useCallback(() => setShowSettings(true), [])
+  const openSearch = useCallback(() => setShowSearch(true), [])
 
   const [toast, setToast] = useState<ToastMessage | null>(null)
+  // The toast under the pointer or holding focus; it stays up until it's let go.
+  const [heldToast, setHeldToast] = useState<ToastMessage | null>(null)
+  const toastHeld = toast !== null && heldToast === toast
+  const toastButton = useRef<HTMLButtonElement>(null)
+  // Where focus was before F6 jumped to the toast's button, to go back there afterwards.
+  const toastReturn = useRef<Element | null>(null)
   useEffect(() => {
-    if (!toast) return
+    if (!toast || toastHeld) return
     const timer = setTimeout(() => setToast(null), TOAST_MS)
     return () => clearTimeout(timer)
-  }, [toast])
+  }, [toast, toastHeld])
+  const showToast = useCallback((next: ToastMessage) => {
+    setToast((current) => (replacesToast(current, next) ? next : current))
+  }, [])
+  const leaveToast = useCallback(() => {
+    const back = toastReturn.current
+    toastReturn.current = null
+    if (back instanceof HTMLElement && back.isConnected) back.focus()
+  }, [])
 
-  useEffect(() => onToast(setToast), [])
+  useEffect(() => onToast(showToast), [showToast])
 
   // Every undoable action outside a session's document says what it did, with Undo or Redo.
   useEffect(
     () =>
       onHistory((event) => {
         if (event.quiet && event.kind === 'done') return
-        setToast(
+        showToast(
           event.kind === 'undone'
             ? { text: event.undoneLabel, action: { label: 'Redo', run: () => void redoAction() } }
             : { text: event.label, action: { label: 'Undo', run: () => void undoAction() } }
         )
       }),
-    []
+    [showToast]
   )
 
   /** Undo or redo whichever came last: an edit to the open session, or an action elsewhere. */
@@ -334,15 +416,35 @@ export default function App(): React.JSX.Element {
     })
   }
 
+  // Hovering or focusing the toast holds it; F6 reaches its button from anywhere (see onKey).
   const toastElement = toast ? (
-    <div className="toast" role="status">
+    <div
+      className="toast"
+      role="status"
+      onMouseMove={() => {
+        if (heldToast !== toast) setHeldToast(toast)
+      }}
+      onMouseLeave={() => setHeldToast(null)}
+      onFocus={() => setHeldToast(toast)}
+      onBlur={() => setHeldToast(null)}
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape') return
+        event.preventDefault()
+        setToast(null)
+        leaveToast()
+      }}
+    >
       <span>{toast.text}</span>
       {toast.action ? (
         <button
+          ref={toastButton}
           type="button"
+          aria-keyshortcuts="F6"
+          {...tip(toast.action.label, 'F6')}
           onClick={() => {
             toast.action?.run()
             setToast(null)
+            leaveToast()
           }}
         >
           {toast.action.label}
@@ -412,6 +514,13 @@ export default function App(): React.JSX.Element {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
+      // F6 jumps to the toast's action (Undo, Move them…) before it times out.
+      if (event.key === 'F6' && !event.metaKey && !event.ctrlKey && toastButton.current) {
+        event.preventDefault()
+        toastReturn.current = document.activeElement
+        toastButton.current.focus()
+        return
+      }
       if (!(event.metaKey || event.ctrlKey)) return
       const key = event.key.toLowerCase()
       // The page's text lives in a shared document, so undo goes through it (and skips text
@@ -433,7 +542,7 @@ export default function App(): React.JSX.Element {
         toggleDictation()
       } else if (key === 'n') {
         event.preventDefault()
-        void startSession()
+        newSession()
       } else if (key === '.') {
         event.preventDefault()
         toggleLayout()
@@ -457,11 +566,16 @@ export default function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [toggleDictation, startSession, toggleLayout, toggleSidebar, undo, redo, undoLatest, currentRef])
+  }, [toggleDictation, newSession, toggleLayout, toggleSidebar, undo, redo, undoLatest, currentRef])
 
-  const words = current
-    ? wordCount([current.summary, current.body, ...current.transcript.map((line) => line.text)].join(' '))
-    : 0
+  // Counted apart so typing in the notes doesn't re-count a long transcript on every keystroke
+  // (`usePages` keeps the transcript array the same object until it changes).
+  const openTranscript = current?.transcript
+  const transcriptWords = useMemo(
+    () => (openTranscript ? wordCount(openTranscript.map((line) => line.text).join(' ')) : 0),
+    [openTranscript]
+  )
+  const words = current ? wordCount(`${current.summary} ${current.body}`) + transcriptWords : 0
   const summary = current ? pages.find((page) => page.id === current.id) : undefined
   const editedAt = summary?.updatedAt
   const systemAudio = settings?.captureSystemAudio ?? true
@@ -531,12 +645,12 @@ export default function App(): React.JSX.Element {
           activeId={current?.id}
           recordingId={recordingId}
           update={update}
-          onOpen={(id) => void openPage(id)}
-          onCreate={() => void startSession()}
+          onOpen={openFromSidebar}
+          onCreate={newSession}
           onDelete={setConfirmDelete}
-          onSettings={() => setShowSettings(true)}
+          onSettings={openSettings}
           settingsIssue={settingsIssues.length > 0}
-          onSearch={() => setShowSearch(true)}
+          onSearch={openSearch}
           tags={knownTags}
           tagFilter={tagFilter}
           onTagFilter={setTagFilter}
@@ -627,6 +741,7 @@ export default function App(): React.JSX.Element {
             }
           >
             <div className="panes" ref={column}>
+            <ErrorBoundary scope="session" variant="pane" resetKey={current.id}>
             <ScrollArea
               className={
                 !hasTranscript || paneMode === 'notes'
@@ -766,6 +881,7 @@ export default function App(): React.JSX.Element {
                 </ScrollArea>
               </>
             ) : null}
+            </ErrorBoundary>
             </div>
             {find ? (
               <FindBar root={column} initial={find.initial} request={find.request} onClose={closeFind} />
@@ -782,6 +898,7 @@ export default function App(): React.JSX.Element {
               onSystemAudioChange={(captureSystemAudio) => void updateSettings({ captureSystemAudio })}
               subscribeLevel={dictation.subscribeLevel}
               transcribing={transcribing}
+              behind={progress ? behindLabel(progress) : null}
               onToggle={toggleDictation}
               startedAt={listeningSince}
               elsewhere={elsewhere}
@@ -813,7 +930,7 @@ export default function App(): React.JSX.Element {
                 Start a session and talk, alone or on a call. Lyra transcribes on this computer,
                 names speakers when there’s more than one, and saves a plain text file you own.
               </p>
-              <button className="btn primary" type="button" onClick={() => void startSession()}>
+              <button className="btn primary" type="button" onClick={newSession}>
                 <MicIcon />
                 Start session
                 <kbd>{shortcutLabel('N')}</kbd>
@@ -859,7 +976,7 @@ export default function App(): React.JSX.Element {
               keywords: 'create record start',
               shortcut: shortcutLabel('N'),
               icon: <PlusIcon />,
-              run: () => void startSession()
+              run: newSession
             },
             ...(current
               ? [
@@ -937,6 +1054,21 @@ export default function App(): React.JSX.Element {
         >
           Its notes, transcript and audio are removed. You can undo this with{' '}
           <kbd>{shortcutLabel('Z')}</kbd> until Lyra quits; after that it’s in the system trash.
+        </ConfirmDialog>
+      ) : null}
+
+      {confirmNew ? (
+        <ConfirmDialog
+          title={`Stop recording “${recordingPage?.title ? recordingPage.title : 'Untitled'}”?`}
+          confirm="Stop and start new"
+          onConfirm={() => {
+            setConfirmNew(false)
+            void startSession()
+          }}
+          onCancel={cancelNew}
+        >
+          A new session can only start once this recording stops. What’s been recorded so far is
+          kept and finishes transcribing.
         </ConfirmDialog>
       ) : null}
 

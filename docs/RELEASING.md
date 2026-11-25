@@ -14,8 +14,10 @@ Lyra is one desktop app shipped as installers for macOS, Windows and Linux, vers
 3. If the change needs anything from the user at upgrade time (a moved notes folder, a setting
    that changed meaning, a model to re-download, a behaviour that changed), add an `**Upgrade:**`
    line to the changeset. It ends up in the changelog and the GitHub release.
-4. CI (`ci.yml`) typechecks, lints and bundles the app, and refuses a PR without a changeset. It
-   doesn't package installers; only `release.yml` does.
+4. CI (`ci.yml`) runs `pnpm check` (typecheck, lint, unit tests, `docs/CONFIG.md`) on Linux,
+   Windows and macOS, bundles the app, runs the native and UI smoke tests on Windows and macOS,
+   and refuses a PR without a changeset. It runs again on every push to `main`. It doesn't package
+   installers; only `release.yml` does.
 
 ## Versions (before 1.0)
 
@@ -35,15 +37,18 @@ in a way older versions cannot read says so in its `**Upgrade:**` line.
    any PR: is the changelog readable, are upgrade notes present.
 2. Before merging the release PR, build the release candidate: run `release.yml` by hand on the
    release PR's branch (`gh workflow run release --ref changeset-release/main`). A manual run
-   builds and attests the installers but doesn't publish. Don't skip it: it is the only build
-   before the tag, and a release that fails on its tag never reaches users (see "A release that
-   failed"). Download the installers from that run (the
+   builds the installers, launches each packaged app's smoke test and attests them, but doesn't
+   publish. Don't skip it: it is the only build before the tag, and a release that fails on its
+   tag never reaches users (see "A release that failed"). Download the installers from that run (the
    `*-dist` artifacts), install at least one over the current release, and check that pages open,
    dictation records and transcribes, and Settings shows the new version.
 3. Merge. `version.yml` runs `pnpm release:tag`, which pushes `vX.Y.Z`. `release.yml` builds the
-   installers on macOS, Windows and Linux, attests them (`gh attestation verify <file> --owner
-   osbytes`), and publishes the GitHub release with the `.dmg`, `.zip`, `-setup.exe`,
-   `.AppImage`, `.deb`, blockmaps and `latest*.yml`. The release notes are the changelog section
+   installers on macOS (Apple silicon on `macos-latest`, Intel on `macos-15-intel`: native addons
+   only install for the build machine's CPU), Windows and Linux, launches each unpacked app with
+   its `smoke` task, attests them (`gh attestation verify <file> --owner osbytes`), and publishes
+   the GitHub release with `lyra-X.Y.Z-arm64.dmg`, `lyra-X.Y.Z-x64.dmg`, the Mac `.zip`s,
+   `-setup.exe`, `.AppImage`, `.deb`, blockmaps and `latest*.yml` (the two Macs' entries merged
+   into one `latest-mac.yml`, which electron-updater reads by CPU), plus the SBOM. The release notes are the changelog section
    (`scripts/release-notes.mjs`; maintainers' "Thanks @…!" credits are dropped, outside
    contributors' stay).
 4. On a machine running the previous release, use **Check for updates** and confirm it finds,
@@ -60,7 +65,10 @@ By hand, without the workflow: `pnpm release:version` on `main`, commit, `pnpm r
 
 If `release.yml` fails on a tag, the tag exists but has no GitHub release, and `releases/latest`
 keeps offering the previous version. Re-running that run doesn't help: it uses the workflow as it
-was at the tag. Fix the cause on `main`, then publish the tag from there:
+was at the tag. What to do depends on where the cause is. Read the failed job's log first.
+
+**The workflow or the runner** (a step in `release.yml`, a runner image change, a missing
+secret): fix it on `main`, then publish the tag from there:
 
 ```bash
 gh workflow run release --ref main -f tag=vX.Y.Z
@@ -68,7 +76,16 @@ gh workflow run release --ref main -f tag=vX.Y.Z
 
 That run builds the tag's own source with `main`'s workflow, attests it and publishes the release.
 It is marked latest only if no newer version tag exists, and a tag that already has a release is
-refused.
+refused. (v0.4.0 is this case: the Windows runner checked the tag out with CRLF line endings,
+which `config-docs.mjs` couldn't parse; `release.yml` now checks out with LF on Windows.)
+
+**The tag's own source** (the app, a build script, a dependency, a check that fails on that
+commit): no run can fix it, because every run builds the tag's commit and a published tag never
+moves (the `v*` ruleset). Fix it on `main` with a changeset and release the next patch version
+the usual way; the failed tag stays without a release. Say in the next changelog entry that
+vX.Y.Z was never published, so nobody looks for it. To check a fix before tagging, run
+`release.yml` by hand on the branch (`gh workflow run release --ref <branch>`), which builds
+without publishing.
 
 ## Pre-releases
 
@@ -81,6 +98,15 @@ refused.
 Branch from the tag (`git switch -c hotfix/1.2.1 v1.2.0`), cherry-pick the fix with its
 changeset, `pnpm release:version`, commit, `pnpm release:tag`. Merge the branch back into `main`
 so the changelog and version stay ahead.
+
+## The node-llama-cpp tree
+
+Packaged builds ship node-llama-cpp as its own npm install in `resources/llama`
+(`scripts/prepare-llama.cjs`), pinned by `apps/lyra/scripts/llama/package-lock.json` and
+installed with `npm ci --ignore-scripts`, so it is outside `pnpm-lock.yaml`. To bump it, change
+the version in `apps/lyra/package.json` and `apps/lyra/scripts/llama/package.json`, run
+`npm install --package-lock-only --ignore-scripts` in `apps/lyra/scripts/llama`, and commit
+both; the build fails while the three disagree. The release SBOM includes that lockfile.
 
 ## Setup (once per repository)
 
@@ -103,8 +129,9 @@ setting.
     only catches a workflow that forgets to. Nothing creates PRs with `GITHUB_TOKEN`.
   - "Require actions to be pinned to a full-length commit SHA": **on**. Every `uses:` is a SHA
     with a `# vX.Y.Z` comment.
-- Settings → Branches → `main`: require the `changeset`, `macOS`, `Windows` and `Linux` checks
-  (`ci`), with branches up to date before merging. The Release PR is merged like any other. The
+- Settings → Branches → `main`: require the `ci` checks `changeset`, `website`, `build`,
+  `smoke (Windows)` and `smoke (macOS)` (the job names in `ci.yml`; rename them there and here
+  together), with branches up to date before merging. The Release PR is merged like any other. The
   `main` ruleset also blocks force pushes and deletion.
 - Settings → Rules → tag ruleset `v*`: restricts creation, update, deletion and force pushes, with
   only `adavila0703` on the bypass list. A `v*` tag push publishes installers that every install

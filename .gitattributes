@@ -1,0 +1,24 @@
+# LF everywhere, on every OS: Windows checkouts get the same bytes as macOS and Linux, so scripts
+# that parse source (config-docs.mjs) and the release build see identical files. PowerShell reads
+# LF scripts fine, so the .ps1 files are LF too.
+* text=auto eol=lf
+
+# Binary: never converted or diffed as text.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary
+*.wav binary
+*.mp3 binary
+*.ogg binary
+*.gguf binary
+*.onnx binary
+*.bin binary
+*.node binary
+*.zip binary
+*.pdf binary

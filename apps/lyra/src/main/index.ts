@@ -7,20 +7,45 @@ import {
   ipcMain,
   nativeImage,
   nativeTheme,
+  powerMonitor,
   session,
-  shell
+  shell,
+  type IpcMainEvent,
+  type IpcMainInvokeEvent,
+  type WebContents
 } from 'electron'
 import { join } from 'node:path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import { installAppMenu } from './appMenu'
+import { isAppPage, type AppPages } from './appOrigin'
 import { checkConfig, config, ConfigError, configSummary } from './config'
 import { attachEditMenu } from './editMenu'
-import { migrateLegacyPages, moveNotes, notesDir, resolveInNotes, startWatchingNotes } from './pages'
+import {
+  CreatePageArg,
+  ModelNameArg,
+  PageIdArg,
+  parseSettingsPatch,
+  PermissionKindArg,
+  RetentionDaysArg,
+  RevealTargetArg,
+  SavePageArg,
+  ServerUrlArg,
+  SessionUpdateArg
+} from './ipcSchemas'
+import { migrateLegacyPages, resolveInNotes, startWatchingNotes } from './pages'
+import {
+  moveFromPreviousFolder,
+  pickNotesFolder,
+  revealNotesFolder,
+  switchNotesFolder
+} from './notesFolder'
 import {
   applySessionUpdate,
   closeSessionFor,
   createSession as createPage,
   deleteSession as deletePage,
   emptySessionTrash,
+  reexportDirtySessions,
   restoreSession,
   flushAllSessions,
   getSessionPage as getPage,
@@ -30,32 +55,63 @@ import {
 } from './sessionStore'
 import { registerHotkeys, unregisterHotkeys } from './hotkey'
 import { registerMicPrompt, stopMicPrompt } from './micprompt'
+import { exportIgnoredApps, importIgnoredApps } from './ignoredAppsFile'
 import { registerOverlay, watchMainWindow } from './overlay'
-import { getMainWindow, registerSessionIpc, setMainWindow, showMainWindow } from './session'
+import { registerPowerHandling, watchSessionEnd } from './power'
+import { startResourceLog } from './resources'
+import {
+  getMainWindow,
+  isFromMainWindow,
+  registerSessionIpc,
+  onSessionState,
+  resetSessionState,
+  setMainWindow,
+  showMainWindow
+} from './session'
 import { getSettings, onSettingsChanged, updateSettings } from './settings'
 import { registerMeetingPipeline } from './meeting/pipeline'
 import { registerKeyIpc } from './secrets'
 import { createServices, type Services } from './services'
-import { stopNotesWorker } from './meeting/notesLocal'
+import { releaseNotesModel, stopNotesWorker } from './meeting/notesLocal'
 import { stopSpeakerWorker } from './meeting/speakers'
 import { relabelSession } from './meeting/relabel'
 import {
   finishRecordingForQuit,
   identifiesSpeakers,
   onRecordingFinished,
-  registerRecorderIpc
+  registerRecorderIpc,
+  repairInterruptedAudio
 } from './recorder'
-import { startAudioRetention } from './audioRetention'
+import { previewAudioSweep, startAudioRetention } from './audioRetention'
+import { getDiagnostics, noteWhisperUsed, revealFolder } from './diagnostics'
+import { cancelModelDownload } from './models'
+import { detectServers, listServerModels, testWriter } from './notesServers'
+import { openPermissionSettings, permissionStatus } from './permissions'
 import { createTray } from './tray'
 import { registerUpdater } from './updater'
 import { broadcastStatus, warmUp } from './whisper'
 import { log, logPath } from './log'
 import { searchSessions } from './search'
 import { appUsage, startUsageSampler } from './usage'
-import { closeSearchIndex, startSearchIndex } from './searchIndex/service'
+import { closeSearchIndex, setIndexBusy, startSearchIndex } from './searchIndex/service'
 import type { Task } from './tasks/args'
 import { isTaskLaunch, prepareTaskProfile, runTaskIn, taskFromArgv } from './tasks/run'
-import type { Page, Settings } from '../shared/types'
+import { rememberWindowBounds, savedWindowBounds } from './windowState'
+import type { Settings } from '../shared/types'
+
+const errorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error)
+
+// Without these an error in a promise nobody awaited vanishes, and one thrown from an event
+// handler shows Electron's dialog with no trace in the user's log. The message only: a stack can
+// carry a note's text through an error message built from it, but the message alone is enough to
+// find the place.
+process.on('unhandledRejection', (reason) => {
+  log('app', 'unhandled rejection', errorMessage(reason))
+})
+process.on('uncaughtException', (error) => {
+  log('app', 'uncaught exception', errorMessage(error))
+})
 
 /**
  * Bad configuration (an environment variable or a task option) is found before anything else
@@ -85,6 +141,9 @@ let quitting = false
 /** Built once the app is ready and the configuration has been checked. */
 let services: Services | null = null
 
+/** Finishes a recording and writes sessions before a power event; set once the app is ready. */
+let saveForPower: ((reason: string) => Promise<void>) | null = null
+
 // One Lyra at a time: a second launch focuses the first instead.
 if (startup.error) {
   // Reported once the app is ready (dialogs need it); nothing else is set up.
@@ -96,9 +155,18 @@ if (startup.error) {
   })
 }
 
+/** Passed by the login item so Lyra starts in the tray instead of opening its window. */
+const HIDDEN_ARG = '--hidden'
+
 function applyLoginItem(openAtLogin: boolean): void {
   if (isTestRun || !app.isPackaged) return
-  app.setLoginItemSettings({ openAtLogin })
+  app.setLoginItemSettings({ openAtLogin, args: [HIDDEN_ARG] })
+}
+
+/** Opened by the OS at login: stay in the tray (watching for meetings) until the user opens Lyra. */
+function startedAtLogin(): boolean {
+  if (process.argv.includes(HIDDEN_ARG)) return true
+  return process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin
 }
 
 function appIcon(): Electron.NativeImage {
@@ -114,8 +182,35 @@ function isWebUrl(raw: string): boolean {
   }
 }
 
+/** Lyra's own pages: the bundled renderer, or the dev server in development. */
+function appPages(): AppPages {
+  return {
+    rendererFile: join(__dirname, '../renderer/index.html'),
+    devUrl: is.dev ? config().rendererUrl : null
+  }
+}
+
+function isOwnWindow(contents: WebContents): boolean {
+  return BrowserWindow.fromWebContents(contents) !== null
+}
+
+function isMainContents(contents: WebContents): boolean {
+  return contents === getMainWindow()?.webContents
+}
+
+/**
+ * Settings, keys and the notes folder are changed only from the main window. The overlay shares
+ * its preload, and its page has no use for them.
+ */
+function requireMainWindow(event: IpcMainEvent | IpcMainInvokeEvent): void {
+  if (!isFromMainWindow(event)) throw new Error('Not allowed from this window')
+}
+
 /** The app's top band (`--band` in styles.css), which the window controls share. */
 const BAND_HEIGHT = 56
+
+const DEFAULT_SIZE = { width: 1080, height: 720 }
+const MIN_SIZE = { width: 760, height: 520 }
 
 /**
  * Windows draws its caption buttons over the app's own top band instead of a separate title
@@ -128,13 +223,38 @@ function captionOverlay(): { color: string; symbolColor: string; height: number 
     : { color: '#ffffff', symbolColor: '#5d5d6b', height: BAND_HEIGHT }
 }
 
+/** Renderer crashes in the last minute; past the limit the window is left alone. */
+const rendererCrashes: number[] = []
+const MAX_RENDERER_RELOADS = 3
+
+/**
+ * The main window's renderer died (crash, OOM, killed). Its recorder is gone with it, so main
+ * finishes the recording it was feeding (its WAV headers and manifest are written, as on quit),
+ * writes the sessions, and reloads the page.
+ */
+async function recoverMainWindow(win: BrowserWindow): Promise<void> {
+  resetSessionState()
+  await saveWork('renderer gone')
+  const now = Date.now()
+  while (rendererCrashes.length && now - (rendererCrashes[0] ?? now) > 60_000) rendererCrashes.shift()
+  if (rendererCrashes.length >= MAX_RENDERER_RELOADS) {
+    log('app', 'renderer keeps crashing; not reloading again', { crashes: rendererCrashes.length })
+    return
+  }
+  rendererCrashes.push(now)
+  if (!win.isDestroyed()) win.webContents.reload()
+}
+
 function createWindow(): void {
   const icon = appIcon()
+  // Task runs keep the fixed size (screenshots depend on it) and a throwaway profile anyway.
+  const restored = isTestRun ? null : savedWindowBounds(MIN_SIZE)
   const mainWindow = new BrowserWindow({
-    width: 1080,
-    height: 720,
-    minWidth: 760,
-    minHeight: 520,
+    width: restored?.bounds.width ?? DEFAULT_SIZE.width,
+    height: restored?.bounds.height ?? DEFAULT_SIZE.height,
+    ...(restored ? { x: restored.bounds.x, y: restored.bounds.y } : {}),
+    minWidth: MIN_SIZE.width,
+    minHeight: MIN_SIZE.height,
     show: false,
     autoHideMenuBar: true,
     title: 'Lyra',
@@ -156,6 +276,8 @@ function createWindow(): void {
   })
   setMainWindow(mainWindow)
   watchMainWindow(mainWindow)
+  if (!isTestRun) rememberWindowBounds(mainWindow)
+  if (saveForPower) watchSessionEnd(mainWindow, saveForPower)
   if (process.platform === 'win32') {
     const recolor = (): void => mainWindow.setTitleBarOverlay(captionOverlay())
     nativeTheme.on('updated', recolor)
@@ -169,22 +291,22 @@ function createWindow(): void {
     event.preventDefault()
     mainWindow.hide()
   })
+  mainWindow.on('unresponsive', () => {
+    log('app', 'main window unresponsive')
+  })
+  mainWindow.on('responsive', () => {
+    log('app', 'main window responsive again')
+  })
 
-  if (task?.kind !== 'smoke') {
+  // Tasks run headless (the smoke test, evals and replays stay off screen and out of the way);
+  // only screenshots need the window drawn.
+  if ((!task && !startedAtLogin()) || task?.kind === 'screenshot') {
     mainWindow.on('ready-to-show', () => {
+      // Maximizing shows the window, so it waits until the window is to be shown anyway.
+      if (restored?.maximized) mainWindow.maximize()
       mainWindow.show()
     })
   }
-
-  // Only hand web links to the OS; file:, smb:, custom-protocol URLs etc. can launch local code.
-  mainWindow.webContents.setWindowOpenHandler((details) => {
-    if (isWebUrl(details.url)) void shell.openExternal(details.url)
-    return { action: 'deny' }
-  })
-  // The renderer is a single local page; never let it navigate to anything else.
-  mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (url !== mainWindow.webContents.getURL()) event.preventDefault()
-  })
 
   if (task && services) runTaskIn(mainWindow, task, services)
 
@@ -196,73 +318,213 @@ function createWindow(): void {
   }
 }
 
+/**
+ * `settings:update`. The notes folder can only be set this way in task runs; the app changes it
+ * through `settings:pickFolder`, so the renderer never names a folder.
+ */
+async function updateSettingsFromRenderer(raw: unknown): Promise<Settings> {
+  const { patch, dropped } = parseSettingsPatch(raw, { allowNotesDir: isTestRun })
+  if (dropped.length) log('settings', 'dropped invalid fields', dropped)
+  const { notesDir: folder, ...rest } = patch
+  if (folder !== undefined) await switchNotesFolder(folder)
+  return updateSettings(rest)
+}
+
 function registerIpc(): void {
   ipcMain.handle('pages:list', () => listPages())
   ipcMain.handle('pages:search', (_event, query: unknown) =>
     typeof query === 'string' ? searchSessions(query.slice(0, 200)) : []
   )
-  ipcMain.handle('pages:get', (_event, id: string) => getPage(id))
-  ipcMain.handle('pages:create', (_event, options: unknown) =>
-    createPage(options && typeof options === 'object' ? options : {})
-  )
   ipcMain.handle('app:usage', () => appUsage())
+  ipcMain.handle('pages:get', (_event, id: unknown) => getPage(PageIdArg.parse(id)))
+  ipcMain.handle('pages:create', (_event, options: unknown) => createPage(CreatePageArg.parse(options)))
   ipcMain.handle('settings:get', () => getSettings())
-  ipcMain.handle('settings:update', (_event, patch: Partial<Settings>) => updateSettings(patch))
-  ipcMain.handle('settings:pickFolder', async (event) => {
-    const options: Electron.OpenDialogOptions = {
-      title: 'Choose sessions folder',
-      defaultPath: notesDir(),
-      properties: ['openDirectory', 'createDirectory']
-    }
-    const win = BrowserWindow.fromWebContents(event.sender)
-    const result = win
-      ? await dialog.showOpenDialog(win, options)
-      : await dialog.showOpenDialog(options)
-    return result.canceled ? null : (result.filePaths[0] ?? null)
+  ipcMain.handle('settings:update', (event, patch: unknown) => {
+    requireMainWindow(event)
+    return updateSettingsFromRenderer(patch)
   })
-  ipcMain.handle('notes:move', (_event, fromDir: unknown) => {
-    if (typeof fromDir !== 'string') throw new Error('Invalid folder')
-    return moveNotes(fromDir)
+  ipcMain.handle('settings:pickFolder', (event) => {
+    requireMainWindow(event)
+    return pickNotesFolder(BrowserWindow.fromWebContents(event.sender))
   })
-  ipcMain.handle('notes:reveal', async () => {
-    const error = await shell.openPath(notesDir())
-    if (error) throw new Error(error)
+  ipcMain.handle('prompts:exportIgnored', (event) => {
+    requireMainWindow(event)
+    return exportIgnoredApps(BrowserWindow.fromWebContents(event.sender))
   })
-  ipcMain.handle('pages:save', (_event, page: Pick<Page, 'id' | 'title' | 'body'>) =>
-    savePage(page)
-  )
-  ipcMain.handle('pages:delete', (_event, id: unknown) => {
-    if (typeof id !== 'string') throw new Error('Invalid page id')
-    return deletePage(id)
+  ipcMain.handle('prompts:importIgnored', (event) => {
+    requireMainWindow(event)
+    return importIgnoredApps(BrowserWindow.fromWebContents(event.sender))
   })
-  ipcMain.handle('pages:restore', (_event, id: unknown) => {
-    if (typeof id !== 'string') throw new Error('Invalid page id')
-    return restoreSession(id)
+  ipcMain.handle('notes:move', (event) => {
+    requireMainWindow(event)
+    return moveFromPreviousFolder()
   })
+  ipcMain.handle('notes:reveal', (event) => {
+    requireMainWindow(event)
+    return revealNotesFolder()
+  })
+  ipcMain.handle('pages:save', (_event, page: unknown) => savePage(SavePageArg.parse(page)))
+  ipcMain.handle('pages:delete', (_event, id: unknown) => deletePage(PageIdArg.parse(id)))
+  ipcMain.handle('pages:restore', (_event, id: unknown) => restoreSession(PageIdArg.parse(id)))
   ipcMain.handle('pages:reveal', (_event, id: unknown) => {
-    shell.showItemInFolder(resolveInNotes(id))
+    shell.showItemInFolder(resolveInNotes(PageIdArg.parse(id)))
   })
-  ipcMain.handle('sessions:open', (event, id: unknown) => {
-    if (typeof id !== 'string') throw new Error('Invalid session id')
-    return openSessionFor(id, event.sender.id)
-  })
-  ipcMain.handle('sessions:update', (event, id: unknown, update: unknown) => {
-    if (typeof id !== 'string') throw new Error('Invalid session id')
-    return applySessionUpdate(id, update, event.sender.id)
-  })
+  ipcMain.handle('sessions:open', (event, id: unknown) =>
+    openSessionFor(PageIdArg.parse(id), event.sender.id)
+  )
+  ipcMain.handle('sessions:update', (event, id: unknown, update: unknown) =>
+    applySessionUpdate(PageIdArg.parse(id), SessionUpdateArg.parse(update), event.sender.id)
+  )
   ipcMain.on('sessions:close', (event, id: unknown) => {
-    if (typeof id === 'string') closeSessionFor(id, event.sender.id)
+    const parsed = PageIdArg.safeParse(id)
+    if (parsed.success) closeSessionFor(parsed.data, event.sender.id)
   })
   ipcMain.on('log:write', (_event, scope: unknown, message: unknown, data: unknown) => {
     log(String(scope), String(message), data)
   })
-  ipcMain.handle('whisper:warmUp', () => warmUp())
+  ipcMain.handle('whisper:warmUp', async () => {
+    await warmUp()
+    noteWhisperUsed()
+  })
   // Sandboxed preloads no longer get Electron's clipboard module, so copying goes through main.
   ipcMain.on('clipboard:write', (_event, text: unknown) => {
     if (typeof text === 'string') clipboard.writeText(text)
   })
+  registerSettingsToolsIpc()
 }
 
+/** Settings' helpers: retention preview, summary servers, About, permissions, downloads. */
+function registerSettingsToolsIpc(): void {
+  ipcMain.handle('retention:preview', (event, days: unknown) => {
+    requireMainWindow(event)
+    return previewAudioSweep(RetentionDaysArg.parse(days))
+  })
+  // These three reach the network, so each runs only from a click in Settings.
+  ipcMain.handle('notes:detectServers', (event) => {
+    requireMainWindow(event)
+    return detectServers()
+  })
+  ipcMain.handle('notes:listModels', (event, baseUrl: unknown) => {
+    requireMainWindow(event)
+    return listServerModels(ServerUrlArg.parse(baseUrl))
+  })
+  ipcMain.handle('notes:testWriter', (event) => {
+    requireMainWindow(event)
+    return testWriter()
+  })
+  ipcMain.handle('diagnostics:get', (event) => {
+    requireMainWindow(event)
+    return getDiagnostics()
+  })
+  ipcMain.handle('diagnostics:reveal', (event, target: unknown) => {
+    requireMainWindow(event)
+    return revealFolder(RevealTargetArg.parse(target))
+  })
+  ipcMain.handle('models:cancel', (event, name: unknown) => {
+    requireMainWindow(event)
+    const cancelled = cancelModelDownload(ModelNameArg.parse(name))
+    if (cancelled) log('models', 'download cancelled from the window')
+    return cancelled
+  })
+  ipcMain.handle('permissions:status', () => permissionStatus())
+  ipcMain.handle('permissions:openSettings', (event, kind: unknown) => {
+    requireMainWindow(event)
+    return openPermissionSettings(PermissionKindArg.parse(kind))
+  })
+}
+
+/**
+ * Every window, including ones created later (the overlay) or by accident: no navigation away
+ * from the app's page, no new windows (web links go to the OS browser), no `<webview>`.
+ */
+function lockDownContents(contents: WebContents): void {
+  // Only hand web links to the OS; file:, smb:, custom-protocol URLs etc. can launch local code.
+  contents.setWindowOpenHandler((details) => {
+    if (isWebUrl(details.url)) void shell.openExternal(details.url)
+    return { action: 'deny' }
+  })
+  contents.on('will-navigate', (event, url) => {
+    if (url !== contents.getURL()) event.preventDefault()
+  })
+  contents.on('will-attach-webview', (event) => {
+    event.preventDefault()
+  })
+}
+
+app.on('web-contents-created', (_event, contents) => {
+  lockDownContents(contents)
+})
+
+/**
+ * The microphone only for the main window on the app's own page (the overlay never records);
+ * clipboard writes for any of the app's windows on its page. Everything else is refused.
+ */
+function registerPermissions(): void {
+  const pages = appPages()
+  const allowed = (contents: WebContents | null, permission: string, url: string): boolean => {
+    if (!contents || !isAppPage(url, pages)) return false
+    if (permission === 'media') return isMainContents(contents)
+    if (permission === 'clipboard-sanitized-write') return isOwnWindow(contents)
+    return false
+  }
+  session.defaultSession.setPermissionCheckHandler((contents, permission, _origin, details) =>
+    allowed(contents, permission, details.requestingUrl ?? contents?.getURL() ?? '')
+  )
+  session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+    // Lyra records sound only; a request for the camera is not one of its own.
+    const video = 'mediaTypes' in details && (details.mediaTypes ?? []).includes('video')
+    callback(!video && allowed(contents, permission, details.requestingUrl))
+  })
+  // Meetings ask for system audio via getDisplayMedia; answer with the loopback
+  // device and the primary screen (its video track is discarded), so no picker shows.
+  session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
+    const main = getMainWindow()
+    const frame = request.frame
+    if (!main || frame?.top !== main.webContents.mainFrame || !isAppPage(frame.url, pages)) {
+      callback({})
+      return
+    }
+    desktopCapturer.getSources({ types: ['screen'] }).then(
+      ([screen]) => {
+        callback(screen ? { video: screen, audio: 'loopback' } : {})
+      },
+      (error: unknown) => {
+        log('capture', 'could not list screens for system audio', String(error))
+        callback({})
+      }
+    )
+  })
+}
+
+/** Renderer and helper process deaths go to the log; the main window's renderer is recovered. */
+function watchProcesses(): void {
+  app.on('render-process-gone', (_event, contents, details) => {
+    const main = getMainWindow()
+    const isMain = main !== null && contents === main.webContents
+    log('app', 'renderer gone', {
+      reason: details.reason,
+      exitCode: details.exitCode,
+      window: isMain ? 'main' : 'other'
+    })
+    if (!isMain || quitting || details.reason === 'clean-exit') return
+    // A task run has nobody to recover for; a crash is its failure.
+    if (isTestRun) {
+      app.exit(1)
+      return
+    }
+    void recoverMainWindow(main)
+  })
+  app.on('child-process-gone', (_event, details) => {
+    if (details.reason === 'clean-exit') return
+    log('app', 'child process gone', {
+      type: details.type,
+      reason: details.reason,
+      exitCode: details.exitCode,
+      name: details.name ?? null,
+      service: details.serviceName ?? null
+    })
+  })
+}
 
 void app.whenReady().then(() => {
   if (startup.error) {
@@ -286,29 +548,9 @@ void app.whenReady().then(() => {
     app.dock?.setIcon(icon)
   }
 
-  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
-    return permission === 'media' || permission === 'clipboard-sanitized-write'
-  })
-  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-    callback(permission === 'media' || permission === 'clipboard-sanitized-write')
-  })
-  // Meetings ask for system audio via getDisplayMedia; answer with the loopback
-  // device and the primary screen (its video track is discarded), so no picker shows.
-  session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
-    if (request.frame?.top !== getMainWindow()?.webContents.mainFrame) {
-      callback({})
-      return
-    }
-    desktopCapturer.getSources({ types: ['screen'] }).then(
-      ([screen]) => {
-        callback(screen ? { video: screen, audio: 'loopback' } : {})
-      },
-      (error: unknown) => {
-        log('capture', 'could not list screens for system audio', String(error))
-        callback({})
-      }
-    )
-  })
+  installAppMenu({ developer: is.dev })
+  registerPermissions()
+  watchProcesses()
 
   app.on('browser-window-created', (_event, window) => {
     optimizer.watchWindowShortcuts(window)
@@ -317,7 +559,9 @@ void app.whenReady().then(() => {
   registerIpc()
   startUsageSampler()
   registerSessionIpc()
-  registerRecorderIpc({ identifySpeakers: !isTestRun, transcribe: !isTestRun })
+  // A capture replay records through the window, so it needs the real recorder.
+  const recordsForReal = !isTestRun || (task.kind === 'meeting' && task.capture)
+  registerRecorderIpc({ identifySpeakers: recordsForReal, transcribe: recordsForReal })
   // Evals pass --no-relabel to score the track-labeled lines on their own.
   if (task?.kind !== 'meeting' || task.relabel) {
     onRecordingFinished((recording) => {
@@ -329,7 +573,26 @@ void app.whenReady().then(() => {
   services.notes.register()
   services.titles.register()
   registerKeyIpc()
-  registerUpdater({ enabled: !isTestRun })
+  registerUpdater({
+    enabled: !isTestRun,
+    beforeInstall: () => {
+      quitting = true
+    }
+  })
+  saveForPower = registerPowerHandling(saveWork)
+  startResourceLog()
+  // While recording, Whisper gets the machine: the embedding backlog waits and the notes model
+  // (a few GB) lets go of its memory.
+  let wasRecording = false
+  onSessionState((state) => {
+    const recording = state.phase !== 'idle'
+    if (recording === wasRecording) return
+    wasRecording = recording
+    setIndexBusy('recording', recording)
+    // A recording transcribes as it goes, so Whisper's backend is now a fact, not a plan.
+    if (recording) noteWhisperUsed()
+    if (recording) releaseNotesModel()
+  })
   if (!isTestRun) {
     createTray()
     registerHotkeys()
@@ -340,11 +603,25 @@ void app.whenReady().then(() => {
       if (next.launchAtLogin !== prev.launchAtLogin) applyLoginItem(next.launchAtLogin)
     })
   }
-  void migrateLegacyPages().finally(() => {
+  void migrateLegacyPages().finally(async () => {
+    // A crash mid-recording leaves WAV headers that say "no audio"; fix them before anything reads.
+    await repairInterruptedAudio().catch((error: unknown) => {
+      log('app', 'could not repair interrupted audio', error instanceof Error ? error.message : String(error))
+    })
     // Sessions deleted before a crash were never emptied into the system trash.
     void emptySessionTrash()
+    // A crash mid-export leaves a note file behind its document.
+    void reexportDirtySessions()
     startWatchingNotes()
     startSearchIndex()
+    // Embedding old sessions can wait for the charger.
+    setIndexBusy('battery', powerMonitor.isOnBatteryPower())
+    powerMonitor.on('on-battery', () => {
+      setIndexBusy('battery', true)
+    })
+    powerMonitor.on('on-ac', () => {
+      setIndexBusy('battery', false)
+    })
     startAudioRetention()
     createWindow()
   })
@@ -356,18 +633,49 @@ void app.whenReady().then(() => {
   })
 })
 
-/** Longest the app waits on its own shutdown work before quitting anyway. */
-const QUIT_FLUSH_MS = 10_000
+/** Longest the app waits on all its own shutdown work before quitting anyway. */
+const QUIT_FLUSH_MS = 12_000
+/** Each step's own bound, so one slow step can't use up the others' time. */
+const RECORDING_FINISH_MS = 8_000
+const SESSION_FLUSH_MS = 3_000
+const CLEANUP_MS = 2_000
+
+/** Waits for `work`, at most `ms`; a failure or a timeout is logged, never thrown. */
+async function within(step: string, work: () => Promise<unknown>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timedOut = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => {
+      resolve('timeout')
+    }, ms)
+  })
+  try {
+    const result = await Promise.race([work().then(() => 'done' as const), timedOut])
+    if (result === 'timeout') log('app', `${step} timed out`, { ms })
+  } catch (error) {
+    log('app', `${step} failed`, errorMessage(error))
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * Finishes a recording in progress and writes the sessions: on quit, before sleep or shutdown,
+ * and after the renderer dies. The session flush doesn't wait for the recording: a slow finish
+ * (Whisper still working through the last chunks) must not keep notes from being written. Once
+ * the recording is done, its last lines are flushed too.
+ */
+async function saveWork(reason: string): Promise<void> {
+  log('app', 'saving work', { reason })
+  const recording = within('finish recording', finishRecordingForQuit, RECORDING_FINISH_MS)
+  const sessions = within('flush sessions', flushAllSessions, SESSION_FLUSH_MS)
+  await Promise.all([recording, sessions])
+  await within('flush sessions after the recording', flushAllSessions, SESSION_FLUSH_MS)
+}
 
 async function shutdownWork(): Promise<void> {
-  await finishRecordingForQuit().catch((error: unknown) => {
-    log('app', 'could not finish the recording on quit', error)
-  })
-  await flushAllSessions()
-  await closeSearchIndex().catch((error: unknown) => {
-    log('app', 'could not close the search index on quit', error)
-  })
-  await emptySessionTrash()
+  await saveWork('quit')
+  await within('close the search index', closeSearchIndex, CLEANUP_MS)
+  await within('empty the session trash', emptySessionTrash, CLEANUP_MS)
 }
 
 let flushed = false
@@ -377,26 +685,10 @@ app.on('before-quit', (event) => {
   // process goes away, but never let a stuck disk or worker keep the app from quitting.
   if (flushed) return
   event.preventDefault()
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const timedOut = new Promise<'timeout'>((resolve) => {
-    timer = setTimeout(() => {
-      resolve('timeout')
-    }, QUIT_FLUSH_MS)
+  void within('quit flush', shutdownWork, QUIT_FLUSH_MS).finally(() => {
+    flushed = true
+    app.quit()
   })
-  void Promise.race([shutdownWork().then(() => 'done' as const), timedOut])
-    .then(
-      (result) => {
-        if (result === 'timeout') log('app', 'quit flush timed out; quitting', { ms: QUIT_FLUSH_MS })
-      },
-      (error: unknown) => {
-        log('app', 'quit flush failed', error)
-      }
-    )
-    .finally(() => {
-      clearTimeout(timer)
-      flushed = true
-      app.quit()
-    })
 })
 
 app.on('will-quit', () => {

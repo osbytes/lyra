@@ -8,20 +8,19 @@ const CHUNK_CHARS = 1000
 /** A transcript window also ends after this much talk. */
 const WINDOW_SECONDS = 45
 
-function chunk(
-  title: string,
-  fields: Omit<ChunkRecord, 'input' | 'hash'>
-): ChunkRecord {
+type ChunkFields = Omit<ChunkRecord, 'input' | 'hash'>
+
+function chunk(fields: ChunkFields, title: string): ChunkRecord {
   const input = title ? `${title}\n${fields.text}` : fields.text
   return { ...fields, input, hash: createHash('sha256').update(input).digest('hex') }
 }
 
 /** Paragraphs merged up to CHUNK_CHARS. */
-function textChunks(title: string, field: 'summary' | 'notes', text: string): ChunkRecord[] {
-  const out: ChunkRecord[] = []
+function textChunks(field: 'summary' | 'notes', text: string): ChunkFields[] {
+  const out: ChunkFields[] = []
   let current = ''
   const flush = (): void => {
-    if (current) out.push(chunk(title, { field, segmentId: null, cluster: null, start: null, end: null, text: current }))
+    if (current) out.push({ field, segmentId: null, cluster: null, start: null, end: null, text: current })
     current = ''
   }
   for (const paragraph of paragraphs(text)) {
@@ -37,12 +36,12 @@ function textChunks(title: string, field: 'summary' | 'notes', text: string): Ch
  * WINDOW_SECONDS. Each window repeats the previous one's last line, so a thought that spans the
  * cut is whole in one of them. A window points at its first line, to jump there.
  */
-function transcriptChunks(title: string, snapshot: SessionSnapshot): ChunkRecord[] {
+function transcriptChunks(snapshot: SessionSnapshot): ChunkFields[] {
   const names = new Map(snapshot.speakers.map((speaker) => [speaker.id, speaker.name]))
   const lines = snapshot.transcript
     .filter((line) => line.text.trim())
     .map((line) => ({ line, text: `${line.cluster ? (names.get(line.cluster) ?? 'Speaker') : 'Speaker'}: ${line.text.trim()}` }))
-  const out: ChunkRecord[] = []
+  const out: ChunkFields[] = []
   let from = 0
   while (from < lines.length) {
     const start = lines[from]?.line.start ?? 0
@@ -57,29 +56,32 @@ function transcriptChunks(title: string, snapshot: SessionSnapshot): ChunkRecord
     const [first] = window
     const last = window.at(-1)
     if (!first || !last) break
-    out.push(
-      chunk(title, {
-        field: 'transcript',
-        segmentId: first.line.id,
-        cluster: first.line.cluster,
-        start: first.line.start,
-        end: last.line.end,
-        text: window.map((entry) => entry.text).join('\n')
-      })
-    )
+    out.push({
+      field: 'transcript',
+      segmentId: first.line.id,
+      cluster: first.line.cluster,
+      start: first.line.start,
+      end: last.line.end,
+      text: window.map((entry) => entry.text).join('\n')
+    })
     if (to >= lines.length) break
     from = to - from > 1 ? to - 1 : to
   }
   return out
 }
 
+/**
+ * Only the first chunk leads with the title: it gives the session's opening its topic, while a
+ * rename (auto-titles come after the first minutes of talk) re-embeds one chunk, not all of
+ * them. Changing what goes into `input` means bumping EMBED_RECIPE (embedder.ts).
+ */
 export function chunksOf(snapshot: SessionSnapshot): ChunkRecord[] {
   const title = snapshot.title.trim()
   return [
-    ...textChunks(title, 'summary', snapshot.summary),
-    ...textChunks(title, 'notes', snapshot.notes),
-    ...transcriptChunks(title, snapshot)
-  ]
+    ...textChunks('summary', snapshot.summary),
+    ...textChunks('notes', snapshot.notes),
+    ...transcriptChunks(snapshot)
+  ].map((fields, index) => chunk(fields, index === 0 ? title : ''))
 }
 
 /** Paragraphs of notes or a summary; a list item counts as its own paragraph. */

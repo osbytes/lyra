@@ -1,15 +1,22 @@
-# CI: typecheck, lint, check docs/CONFIG.md and bundle the app; run the UI smoke test on Windows;
-# check and build the website; and refuse a PR without a changeset (.changeset/README.md). Runs on
-# PRs only. Installers are packaged only by release.yml, from a version tag; a manual run of
-# release.yml builds them without publishing.
+# CI: typecheck, lint, check docs/CONFIG.md, run the unit tests and bundle the app (`pnpm check`
+# on Linux, Windows and macOS); run the native and UI smoke tests on Windows and macOS; check and
+# build the website; and refuse a PR without a changeset (.changeset/README.md). Runs on PRs and on
+# every push to main, so main's own state is always known. Installers are packaged only by
+# release.yml, from a version tag; a manual run of release.yml builds them without publishing.
+#
+# The job names (`changeset`, `website`, `build`, `smoke (Windows)`, `smoke (macOS)`) are the
+# required status checks in the main branch ruleset (docs/RELEASING.md); rename them together.
 name: ci
 
 on:
   pull_request:
+  push:
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # a newer push to a PR replaces its run; every commit on main keeps its own result
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -80,13 +87,14 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y patchelf
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      # typecheck, lint and bundle; installers are only packaged by release.yml
-      - name: Typecheck, lint and bundle
+      # typecheck, lint, config docs, unit tests and bundle; installers are only packaged by release.yml
+      - name: Typecheck, lint, test and bundle
         run: pnpm --filter lyra run build
 
-  # The UI smoke test on Windows, where Lyra is mostly developed: launches the built app with
-  # `electron . smoke`, runs the main-process checks and drives the IPC bridge from the renderer.
-  # Also loads the native Whisper addon. No models are downloaded.
+  # The checks and smoke tests on Windows, where Lyra is mostly developed: `pnpm check` (path,
+  # line-ending and platform differences show up here first), then the UI smoke test, which
+  # launches the built app with `electron . smoke`, runs the main-process checks and drives the
+  # IPC bridge from the renderer. Also loads the native Whisper addon. No models are downloaded.
   smoke:
     name: smoke (Windows)
     runs-on: windows-latest
@@ -101,6 +109,33 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Typecheck, lint, config docs and unit tests
+        run: pnpm --filter lyra run check
+      - name: Native addon smoke
+        run: pnpm --filter lyra run smoke
+      - name: UI smoke
+        run: pnpm --filter lyra run smoke:ui
+
+  # The same on macOS (Apple silicon), which otherwise was first built by release.yml on a tag.
+  # Also compiles the Swift mic-watch helper the Mac app ships (native/mac).
+  smoke-mac:
+    name: smoke (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck, lint, config docs and unit tests
+        run: pnpm --filter lyra run check
+      - name: Build the Mac helpers
+        run: pnpm --filter lyra run build:mac-helpers
       - name: Native addon smoke
         run: pnpm --filter lyra run smoke
       - name: UI smoke

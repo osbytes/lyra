@@ -25,7 +25,9 @@ const ConfigSchema = EnvVars.transform((env) => ({
     anthropic: env.ANTHROPIC_BASE_URL ?? null,
     openai: env.OPENAI_BASE_URL ?? null
   },
-  rendererUrl: env.ELECTRON_RENDERER_URL ?? null
+  rendererUrl: env.ELECTRON_RENDERER_URL ?? null,
+  /** Packaged builds run command-line tasks only when this is set. */
+  allowTasks: env.LYRA_ALLOW_TASKS !== undefined
 }))
 
 export type Config = z.output<typeof ConfigSchema>
@@ -50,7 +52,14 @@ let current: Config | null = null
 
 /** The parsed environment. Throws ConfigError on a bad value; startup checks this first. */
 export function config(): Config {
-  current ??= parseConfig(process.env)
+  if (current === null) {
+    // Set but empty means unset here, and must to the libraries that read the environment
+    // themselves too: the AI SDK providers throw on an empty `*_BASE_URL` as they load.
+    for (const name of Object.keys(EnvVars.shape)) {
+      if (process.env[name]?.trim() === '') Reflect.deleteProperty(process.env, name)
+    }
+    current = parseConfig(process.env)
+  }
   return current
 }
 

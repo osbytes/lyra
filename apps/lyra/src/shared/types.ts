@@ -54,11 +54,26 @@ export type SessionState = {
 export type OverlayFrame = { level: number; status: string }
 
 /** Sent from main to the main window's recorder. */
-export type SessionCommand = { type: 'toggle' } | { type: 'stop' }
+export type SessionCommand =
+  | { type: 'toggle' }
+  | { type: 'stop' }
+  /** Start a new session unless one is recording; a meeting always records the computer's audio. */
+  | { type: 'start'; meeting: boolean }
 
-/** "Another app started using the mic" prompt. `app` is '' when the app is unknown (macOS). */
-export type MicPrompt = { app: string }
+/**
+ * The overlay's offer to record. `meeting`: a meeting app or meeting site took the mic, and `app`
+ * is its name ("Zoom"). `mic`: any other app, by its exe or bundle name; '' when unknown (macOS).
+ */
+export type MicPrompt = { kind: 'meeting' | 'mic'; app: string }
 export type PromptAnswer = 'start' | 'dismiss' | 'ignore'
+
+/** Exporting the "Don't ask" list to a file the user picks. */
+export type ExportIgnoredResult = { status: 'cancelled' } | { status: 'saved'; count: number }
+/** Importing it: names are only ever added, never removed. */
+export type ImportIgnoredResult =
+  | { status: 'cancelled' }
+  | { status: 'imported'; added: number; total: number }
+  | { status: 'invalid'; message: string }
 
 /** One global shortcut starts or stops a session from anywhere. */
 export type HotkeyAction = 'session'
@@ -105,10 +120,19 @@ export type TranscriptProgress = {
   pageId: string
   /** Chunks of speech waiting for (or in) Whisper. */
   queued: number
+  /** Seconds of audio in those chunks: how far behind the transcript is. */
+  queuedSeconds: number
+  /** What Whisper is running on; 'cpu' after a GPU failure is the usual reason for falling behind. */
+  backend: 'gpu' | 'cpu'
 }
+
+/** A recording that stopped because its audio couldn't be written (a full disk, usually). */
+export type RecorderFailure = { pageId: string; track: 'mic' | 'system'; message: string }
 
 export type MeetingStatus = {
   pageId: string
+  /** Which job this is about: settling who spoke, or writing the summary. */
+  task: 'speakers' | 'notes'
   state: 'downloading' | 'diarizing' | 'transcribing' | 'summarizing' | 'done' | 'error'
   /** 0–1 within the current state. */
   progress: number
@@ -159,6 +183,53 @@ export type TranscriptWord = {
   end: number
 }
 
+/** How many sessions a stricter "Keep audio" would take the audio from now, and its size. */
+export type RetentionPreview = { sessions: number; bytes: number }
+
+/** A local summary server Settings found on this computer (`detectServers`). */
+export type NotesServer = { kind: 'ollama' | 'lm-studio'; baseUrl: string }
+
+/** The models a summary server offers; `ollama` servers on this computer keep text on it. */
+export type ServerModels = { models: string[]; kind: 'ollama' | 'other' }
+
+/** A Settings "Test" of the summary engine: how long one tiny request took, or why it failed. */
+export type NotesTestResult = { ok: true; ms: number; onDevice: boolean } | { ok: false; error: string }
+
+/** A permission the OS asks the user for. */
+export type PermissionKind = 'microphone' | 'screen'
+/** As `systemPreferences.getMediaAccessStatus` reports it; 'granted' where the OS doesn't ask. */
+export type PermissionState = 'not-determined' | 'granted' | 'denied' | 'restricted' | 'unknown'
+export type PermissionStatus = Record<PermissionKind, PermissionState>
+
+/** Lyra's own folders Settings → About can open. */
+export type RevealTarget = 'logs' | 'models'
+
+/** A folder Lyra keeps files in, its path with the home folder as `~`, and the room it takes. */
+export type DiagnosticsPlace = {
+  id: 'models' | 'audio' | 'index' | 'logs'
+  label: string
+  path: string
+  bytes: number
+  /** False when the folder had more files than were counted: `bytes` is then a floor. */
+  complete: boolean
+}
+
+/** Settings → About. No note content, names, keys, addresses or queries. */
+export type Diagnostics = {
+  version: string
+  os: string
+  arch: string
+  electron: string
+  chrome: string
+  node: string
+  /** `backend` is null until Whisper has run since launch. */
+  whisper: { model: string; backend: 'gpu' | 'cpu' | null }
+  notesEngine: string
+  places: DiagnosticsPlace[]
+  /** All of the above as plain text, for "Copy diagnostics". */
+  text: string
+}
+
 export type UpdateStatus =
   | { state: 'idle' }
   | { state: 'available'; version: string }
@@ -199,15 +270,28 @@ export type VoicePagesApi = {
   closeSession: (id: string) => void
   onSessionUpdate: (callback: (change: SessionUpdate) => void) => () => void
   getSettings: () => Promise<Settings>
+  /**
+   * Main window only. Applies the fields that pass their checks (a bad value keeps the current
+   * one); an unknown field rejects. `notesDir` is refused: the folder changes with `pickFolder`.
+   */
   updateSettings: (patch: Partial<Settings>) => Promise<Settings>
   onSettingsChanged: (callback: (settings: Settings) => void) => () => void
-  /** Opens a folder picker; resolves to the chosen absolute path or null. */
-  pickFolder: () => Promise<string | null>
-  /** Moves notes from the old folder into the current one. */
-  moveNotes: (fromDir: string) => Promise<MoveNotesResult>
+  /**
+   * Main window only. Opens the native folder picker and switches to the folder the user picks.
+   * Resolves to the new settings (unchanged if they picked the current folder), or null when
+   * they cancel; rejects while recording.
+   */
+  pickFolder: () => Promise<Settings | null>
+  /** Main window only. Moves the notes from the folder used before the last `pickFolder`. */
+  moveNotes: () => Promise<MoveNotesResult>
+  /** Main window only. Opens the notes folder in the file manager. */
   revealNotesFolder: () => Promise<void>
   /** CPU and memory Lyra's processes used over the last 30 minutes, sampled in main. */
   getAppUsage: () => Promise<AppUsage>
+  /** Main window only. Saves the "Don't ask" app list to a file the user picks. */
+  exportIgnoredApps: () => Promise<ExportIgnoredResult>
+  /** Main window only. Adds the apps in a file the user picks to the "Don't ask" list. */
+  importIgnoredApps: () => Promise<ImportIgnoredResult>
   /** Main window: commands from the tray, global hotkey, or overlay. */
   onSessionCommand: (callback: (command: SessionCommand) => void) => () => void
   /** Main window: report recorder state changes. */
@@ -239,6 +323,8 @@ export type VoicePagesApi = {
   stopRecording: () => Promise<MeetingRecording | null>
   /** Whether the recording in progress has speech waiting to be transcribed. */
   onTranscriptProgress: (callback: (progress: TranscriptProgress) => void) => () => void
+  /** The recording stopped in main because its audio couldn't be written. */
+  onRecorderFailed: (callback: (failure: RecorderFailure) => void) => () => void
   /** Mixed 16 kHz mono PCM for a stretch of a session's audio (Listen); empty if none is kept. */
   sessionAudio: (pageId: string, start: number, end: number) => Promise<Int16Array>
   listPeople: () => Promise<Person[]>
@@ -270,10 +356,38 @@ export type VoicePagesApi = {
   onMeetingStatus: (callback: (status: MeetingStatus) => void) => () => void
   /** (Re)writes the notes section at the top of a meeting note with the chosen engine. */
   generateNotes: (pageId: string) => Promise<void>
-  /** Where a provider's API key comes from, or null when there is none. */
+  /** Whether the summary has been changed since Lyra wrote it (so a rewrite would lose edits). */
+  summaryEdited: (pageId: string) => Promise<boolean>
+  /** Stops a summary being written; resolves to whether one was running. */
+  cancelNotes: (pageId: string) => Promise<boolean>
+  /** Main window only. Where a provider's API key comes from, or null when there is none. */
   keySource: (provider: ProviderId) => Promise<KeySource | null>
-  /** Stores a provider's key encrypted with the OS keychain; null removes it. */
+  /**
+   * Main window only. Stores a provider's key encrypted with the OS keychain; null removes it.
+   * Rejects where there is no real keychain (Linux without one), naming the variable to use.
+   */
   setKey: (provider: ProviderId, key: string | null) => Promise<void>
+  /**
+   * Main window only. How much audio `days` would delete right now (a stricter "Keep audio"
+   * deletes on save, so Settings confirms first). Deletes nothing.
+   */
+  previewRetention: (days: number | null) => Promise<RetentionPreview>
+  /** Main window only. Looks for Ollama and LM Studio on this computer; only on a user's click. */
+  detectServers: () => Promise<NotesServer[]>
+  /** Main window only. Asks the server at `baseUrl` for its models; only on a user's click. */
+  listServerModels: (baseUrl: string) => Promise<ServerModels>
+  /** Main window only. Runs one tiny fixed request through the saved summary engine. */
+  testNotesWriter: () => Promise<NotesTestResult>
+  /** Main window only. Versions, folders and their sizes, for Settings → About. */
+  getDiagnostics: () => Promise<Diagnostics>
+  /** Main window only. Opens the logs or models folder in the file manager. */
+  revealFolder: (target: RevealTarget) => Promise<void>
+  /** Main window only. Stops a model download in progress; resolves to whether one was. */
+  cancelModelDownload: (name: string) => Promise<boolean>
+  /** Whether the OS lets Lyra use the microphone and capture the screen. */
+  permissionStatus: () => Promise<PermissionStatus>
+  /** Main window only. Opens the system settings page for a permission; false if there is none. */
+  openPermissionSettings: (kind: PermissionKind) => Promise<boolean>
   /** Puts plain text on the system clipboard. */
   copyText: (text: string) => void
   platform: string

@@ -10,13 +10,18 @@ recording and compare against what was said.
 
 ## Test audio
 
-- Generate it: `powershell -NoProfile -File scripts/make-demo-audio.ps1` writes `test-audio/`:
-  `meeting.wav` (16 kHz mono 16-bit, David and Zira alternating, ~46 s) plus `line0.wav`…`line7.wav`
-  (one clip per line, even = David, odd = Zira). Regenerate if the folder is missing.
-- The script's `$script` array is the ground truth for the transcript and for who spoke each line.
-  Edit it to cover a new case (names, numbers, longer turns), then regenerate.
-- Only two SAPI voices exist on Windows, so this tests two speakers. It can't stress overlapping or
-  noisy speech. Say so in the report; for those, ask the user for a real recording.
+- Generate it (in `apps/lyra`, on Windows or macOS): `node scripts/make-demo-audio.cjs` writes
+  `test-audio/`: `meeting.wav` (16 kHz mono 16-bit, two voices alternating: David and Zira on
+  Windows, Daniel and Samantha on macOS; ~35-46 s depending on the voices) plus
+  `line0.wav`…`line7.wav` (one clip per line, even = first voice, odd = second). Regenerate if
+  the folder is missing. `scripts/make-demo-audio.ps1` is the older Windows-only version of the
+  same script.
+- The script's `SCRIPT` array is the ground truth for the transcript and for who spoke each line.
+  Edit it to cover a new case (names, numbers, longer turns), keep the `.ps1` copy in step, then
+  regenerate.
+- Only two voices are used, so this tests two speakers. It can't stress overlapping or noisy
+  speech. Say so in the report; for those, use `pnpm eval:sessions` or ask the user for a real
+  recording.
 - Never commit real user audio. `test-audio/` is synthetic, but keep it untracked unless asked.
 
 ## Speaker evals
@@ -48,6 +53,9 @@ run from before the change (`eval-data/results/<run>/results.json`):
   changing it) and prints each pipeline's lines by speaker; its `raw/live.json` `trace` shows each
   live decision (scores against every voice, join/new/reuse, merges). Hand-label a few minutes into
   a reference file to score it with `--reference`. Real audio never goes into the repo.
+- `--quick` scores a fixed subset (one of each kind of trouble) in minutes: use it while iterating,
+  then a full run for the before/after tables. Single-session WER moves by several points when
+  chunk boundaries shift, so judge changes by totals, not one session.
 - Read cpWER (words given to the wrong speaker count as errors) and the speakers found/actual
   column first. Real recordings stay out of `eval-data/` commits and out of the repo.
 
@@ -55,7 +63,7 @@ run from before the change (`eval-data/results/<run>/results.json`):
 
 1. Pick the narrowest run that exercises the change:
    - Meeting pipeline (diarization, Whisper, relabeling):
-     `pnpm smoke:meeting test-audio\meeting.wav`. Add `--notes local` to include notes and set
+     `pnpm smoke:meeting test-audio/meeting.wav`. Add `--notes local` to include notes and set
      `LYRA_MODELS_DIR=<dir>` to reuse downloaded models (the first run downloads them; say so before
      starting if the models aren't present).
    - Diarization only: `node scripts/diarize-spike.cjs --models <dir> --lines test-audio`

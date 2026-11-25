@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import type { MicPrompt, SessionState } from '../../../shared/types'
+import type { HotkeyStatus, MicPrompt, SessionState } from '../../../shared/types'
 import { formatDuration } from '../lib/format'
+import { displayAccelerator } from './HotkeyInput'
 import { GripIcon, StopIcon } from './Icons'
 
 /** Same as the dock's waveform in the main window. */
@@ -20,13 +21,47 @@ function useNow(running: boolean): number {
   return now
 }
 
+/** The session shortcut as the platform writes it, or null when none is registered. */
+function useSessionHotkey(): string | null {
+  const [statuses, setStatuses] = useState<HotkeyStatus[]>([])
+  useEffect(() => {
+    const stop = window.api.onHotkeyStatus(setStatuses)
+    window.api.getHotkeyStatus().then(setStatuses, () => {
+      // No shortcut line then; the buttons still work.
+    })
+    return stop
+  }, [])
+  // The session shortcut is the only global one (HotkeyAction).
+  const [session] = statuses
+  return session?.registered ? displayAccelerator(session.accelerator) : null
+}
+
 function PromptCard({ prompt }: { prompt: MicPrompt }) {
+  // The card never takes focus (it mustn't pull it from the call), so the global shortcut is the
+  // keyboard's way in.
+  const hotkey = useSessionHotkey()
   const who = prompt.app ? <strong>{prompt.app}</strong> : 'Another app'
+  const meeting = prompt.kind === 'meeting'
   return (
-    <div className="overlay-prompt" role="alertdialog" aria-label="Start a Lyra session?">
-      <p>
-        {who} is using your microphone. Record it in Lyra?
-      </p>
+    <div
+      className="overlay-prompt"
+      role="alertdialog"
+      aria-label={meeting ? 'Record this meeting?' : 'Start a Lyra session?'}
+    >
+      {meeting ? (
+        <p>
+          A call started in {who}. Record it in Lyra, with the call’s audio?
+        </p>
+      ) : (
+        <p>
+          {who} is using your microphone. Record it in Lyra?
+        </p>
+      )}
+      {hotkey ? (
+        <p className="overlay-prompt-key">
+          Or press <kbd>{hotkey}</kbd> to start a session.
+        </p>
+      ) : null}
       <div className="overlay-prompt-actions">
         <button
           type="button"
@@ -35,7 +70,7 @@ function PromptCard({ prompt }: { prompt: MicPrompt }) {
             window.api.answerMicPrompt('start')
           }}
         >
-          Start session
+          {meeting ? 'Record' : 'Start session'}
         </button>
         <button
           type="button"
@@ -44,7 +79,7 @@ function PromptCard({ prompt }: { prompt: MicPrompt }) {
             window.api.answerMicPrompt('dismiss')
           }}
         >
-          Not now
+          {meeting ? 'Dismiss' : 'Not now'}
         </button>
         {prompt.app ? (
           <button
@@ -71,16 +106,27 @@ export function Overlay() {
 
 /** The floating recording pill shown while Lyra's main window is out of view. */
 function RecordingPill() {
-  const [state, setState] = useState<SessionState | null>(null)
+  // `saved`: a recording just ended and the pill is staying a moment as the way back to Lyra.
+  const [{ state, saved }, setView] = useState<{ state: SessionState | null; saved: boolean }>({
+    state: null,
+    saved: false
+  })
   const [status, setStatus] = useState('')
   const bars = useRef<(HTMLSpanElement | null)[]>([])
   const stopButton = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     // Subscribe first, then fetch, so a change in between isn't lost.
-    const stop = window.api.onSessionState(setState)
+    const stop = window.api.onSessionState((next) => {
+      setView((current) => ({
+        state: next,
+        saved:
+          next.phase === 'idle' &&
+          (current.saved || current.state?.phase === 'listening' || current.state?.phase === 'finishing')
+      }))
+    })
     void window.api.getSessionState().then((initial) => {
-      setState((current) => current ?? initial)
+      setView((current) => (current.state ? current : { state: initial, saved: false }))
     })
     return stop
   }, [])
@@ -100,6 +146,7 @@ function RecordingPill() {
   }, [])
 
   const listening = state?.phase === 'listening'
+  const starting = state?.phase === 'starting'
   const now = useNow(listening)
   const elapsed = state?.startedAt ? Math.max(0, now - state.startedAt) : 0
 
@@ -110,9 +157,29 @@ function RecordingPill() {
         ? 'Saving…'
         : status || 'Listening'
 
+  if (saved) {
+    return (
+      <div className="overlay-pill">
+        <span className="overlay-grip" aria-hidden="true">
+          <GripIcon />
+        </span>
+        <button
+          type="button"
+          className="overlay-body overlay-saved"
+          onClick={() => {
+            window.api.showMainWindow()
+          }}
+        >
+          <span className="dock-status">Recording saved</span>
+          <span className="overlay-open">Open Lyra</span>
+        </button>
+      </div>
+    )
+  }
+
   // Laid out like the dock in the main window: stop on the left, then status, level and time.
   return (
-    <div className={`overlay-pill${listening ? ' is-listening' : ''}`} role="status">
+    <div className={`overlay-pill${listening ? ' is-listening' : ''}`}>
       <span className="overlay-grip" aria-hidden="true">
         <GripIcon />
       </span>
@@ -123,8 +190,9 @@ function RecordingPill() {
         onClick={() => {
           window.api.requestStop()
         }}
-        disabled={!listening}
-        aria-label="Stop recording"
+        // A stop while warming up cancels the start (the model may still be downloading).
+        disabled={!listening && !starting}
+        aria-label={starting ? 'Cancel starting the recording' : 'Stop recording'}
       >
         <StopIcon />
       </button>
@@ -134,9 +202,11 @@ function RecordingPill() {
         onClick={() => {
           window.api.showMainWindow()
         }}
-        aria-label="Open Lyra"
+        aria-label={`${label}. Open Lyra`}
       >
-        <span className="dock-status">{label}</span>
+        <span className="dock-status" aria-hidden="true">
+          {label}
+        </span>
         <span className="waveform" aria-hidden="true">
           {Array.from({ length: BAR_COUNT }, (_, i) => (
             <span
@@ -147,7 +217,10 @@ function RecordingPill() {
             />
           ))}
         </span>
-        <span className="dock-timer">{formatDuration(elapsed)}</span>
+        {/* Ticks twice a second; announcing it would drown everything else out. */}
+        <span className="dock-timer" aria-hidden="true">
+          {formatDuration(elapsed)}
+        </span>
       </button>
     </div>
   )

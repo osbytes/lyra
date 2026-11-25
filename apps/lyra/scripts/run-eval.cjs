@@ -10,6 +10,18 @@
 //   pnpm eval:ami --minutes 0                       # whole meetings (slow)
 //   node scripts/run-eval.cjs --score ref.json hyp.json   # score any two transcripts
 //   --enroll                  sessions: save the first person's voice (enroll.wav) before replaying
+//   --asr whisper|parakeet    live and stream: the speech model (whisper, the default, is the app's)
+//   --no-context              live and stream: Whisper without a track's earlier text as its prompt
+//   --quick                   a few minutes, not an hour: a fixed subset covering each kind of
+//                             trouble (speaker echo, quick turns, reverb, similar voices, music,
+//                             hybrid), two at a time. For direction while working; full runs for
+//                             the numbers in docs/EVALS.md
+//   --jobs <n>                items to run at once (default 1, or 2 with --quick); each loads
+//                             Whisper, about 1 GB of GPU memory
+//   --pipeline capture        live, but the mic track played as a fake microphone through the
+//                             window's real capture path (getUserMedia, the AudioContext), in real
+//                             time. Loopback can't be faked, so the system track is left out: use
+//                             it on room sessions (`--sessions room-2-desk,room-2-fan`)
 //   --pipeline live|stream|offline   live (default) replays the audio as a recording, as the app
 //                             runs it: chunks labeled by track, then relabeling once it stops; stream
 //                             is the track-labeled lines alone; offline is the diarize-then-transcribe
@@ -19,7 +31,7 @@
 // writes references, hypotheses and results.json under eval-data/results/<time>/. Data goes to
 // eval-data/ (gitignored); set LYRA_EVAL_DATA to keep it elsewhere. Set LYRA_MODELS_DIR to reuse
 // downloaded models, as for smoke:meeting.
-const { spawnSync } = require('node:child_process')
+const { spawn, spawnSync } = require('node:child_process')
 const { existsSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs')
 const { join, resolve } = require('node:path')
 const ami = require('./eval/ami.cjs')
@@ -35,9 +47,18 @@ function arg(name, fallback) {
 }
 
 const list = (value) => value.split(',').filter(Boolean)
+const quick = process.argv.includes('--quick')
+/** One of each kind of trouble the full suites cover, chosen to finish in minutes. */
+const QUICK = {
+  calls: ['call-speakers', 'call-quick-turns', 'call-similar-voices', 'room-far-field'],
+  sessions: ['room-2-desk', 'room-2-quick', 'room-2-music', 'hybrid-2+1', 'call-1+1-quick']
+}
+const jobs = Math.max(1, Number(arg('jobs', quick ? '2' : '1')) || 1)
 const pipeline = arg('pipeline', 'live')
 /** Sessions only: save the owner's enroll.wav as a voice first, as a user who set up People. */
 const enroll = process.argv.includes('--enroll')
+const asr = arg('asr', 'whisper')
+const noContext = process.argv.includes('--no-context')
 const pct = (value) => `${(value * 100).toFixed(1)}%`.padStart(7)
 
 function report(id, result) {
@@ -55,34 +76,40 @@ function scoreFiles(refPath, hypPath) {
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
 }
 
-/** Runs the real pipeline through the smoke:meeting entry point and returns its transcript. */
+/** Runs the real pipeline through the smoke:meeting entry point and resolves its transcript. */
 function runLyra(item, output) {
   const args = [
     join(__dirname, 'run-meeting-smoke.cjs'),
     item.wav,
-    ...(item.system ? [item.system] : []),
+    ...(item.system && pipeline !== 'capture' ? [item.system] : []),
     '--output',
     output,
     ...(pipeline === 'offline' ? ['--offline'] : []),
     ...(pipeline === 'stream' ? ['--no-relabel'] : []),
-    ...(enroll && item.enroll ? ['--enroll', item.enroll] : [])
+    ...(pipeline === 'capture' ? ['--capture'] : []),
+    ...(enroll && item.enroll ? ['--enroll', item.enroll] : []),
+    ...(asr !== 'whisper' ? ['--asr', asr] : []),
+    ...(noContext ? ['--no-context'] : [])
   ]
-  const result = spawnSync(process.execPath, args, {
-    cwd: root,
-    stdio: ['ignore', 'ignore', 'inherit']
+  // With several running at once their logs would only interleave, so they go nowhere.
+  const child = spawn(process.execPath, args, { cwd: root, stdio: ['ignore', 'ignore', jobs > 1 ? 'ignore' : 'inherit'] })
+  return new Promise((resolvePromise, reject) => {
+    child.on('error', reject)
+    child.on('exit', (status) => {
+      if (status !== 0 || !existsSync(output)) reject(new Error(`pipeline failed on ${item.wav} (exit ${status})`))
+      else resolvePromise(JSON.parse(readFileSync(output, 'utf8')))
+    })
   })
-  if (result.status !== 0 || !existsSync(output)) throw new Error(`pipeline failed on ${item.wav} (exit ${result.status})`)
-  return JSON.parse(readFileSync(output, 'utf8'))
 }
 
 /** The items to score for --dataset, each prepared lazily so one bad download doesn't stop the rest. */
 function plan(dataset, dataDir) {
   if (dataset === 'calls') {
-    const names = list(arg('scenarios', Object.keys(calls.SCENARIOS).join(',')))
+    const names = list(arg('scenarios', (quick ? QUICK.calls : Object.keys(calls.SCENARIOS)).join(',')))
     return { options: { scenarios: names }, items: names.map((name) => ({ name, prepare: async () => calls.prepare(dataDir, name) })) }
   }
   if (dataset === 'sessions') {
-    const names = list(arg('sessions', sessions.DEFAULT_SESSIONS.join(',')))
+    const names = list(arg('sessions', (quick ? QUICK.sessions : sessions.DEFAULT_SESSIONS).join(',')))
     const seeds = Number(arg('seeds', '1'))
     const ids = sessions.sessionIds(names, seeds)
     const corpus = process.env.LYRA_SESSIONS_CORPUS ?? 'librispeech'
@@ -113,8 +140,10 @@ async function main() {
   const dataDir = resolve(process.env.LYRA_EVAL_DATA ?? join(root, 'eval-data'))
   const { label, options, items } = plan(dataset, dataDir)
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-  if (!['live', 'stream', 'offline'].includes(pipeline)) throw new Error('--pipeline must be live, stream or offline')
-  const outDir = join(dataDir, 'results', `${label ?? dataset}-${pipeline}-${stamp}`)
+  if (!['live', 'stream', 'offline', 'capture'].includes(pipeline)) {
+    throw new Error('--pipeline must be live, stream, offline or capture')
+  }
+  const outDir = join(dataDir, 'results', `${label ?? dataset}${quick ? '-quick' : ''}-${pipeline}-${stamp}`)
   mkdirSync(outDir, { recursive: true })
 
   // One build up front; run-meeting-smoke.cjs launches the built app.
@@ -137,12 +166,12 @@ async function main() {
     return overall
   }
 
-  for (const { name, prepare } of items) {
+  const runOne = async ({ name, prepare }) => {
     try {
       const item = await prepare()
       writeFileSync(join(outDir, `${item.id}.ref.json`), JSON.stringify(item.reference, null, 2))
       process.stdout.write(`eval: ${item.id} (${(item.seconds / 60).toFixed(1)} min) running…\n`)
-      const hyp = runLyra(item, join(outDir, `${item.id}.hyp.json`))
+      const hyp = await runLyra(item, join(outDir, `${item.id}.hyp.json`))
       const result = score(item.reference, hyp)
       report(item.id, result)
       results.push({ id: item.id, audioSeconds: item.seconds, pipelineSeconds: hyp.seconds, ...result })
@@ -152,6 +181,13 @@ async function main() {
     }
     save()
   }
+  // Up to `jobs` replays at once; each takes the next item when it finishes.
+  const queue = [...items]
+  await Promise.all(
+    Array.from({ length: Math.min(jobs, queue.length) }, async () => {
+      for (let next = queue.shift(); next; next = queue.shift()) await runOne(next)
+    })
+  )
 
   const overall = save()
   if (results.length > 0) {

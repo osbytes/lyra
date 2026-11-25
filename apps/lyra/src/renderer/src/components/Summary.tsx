@@ -89,8 +89,6 @@ export function Summary({ value, onChange }: Props) {
         <Editor
           ref={field}
           value={value}
-          ghost=""
-          listening={false}
           label="Generated summary"
           onChange={onChange}
         />

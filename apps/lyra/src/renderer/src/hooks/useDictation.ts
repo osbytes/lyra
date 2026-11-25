@@ -1,11 +1,21 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { openMicrophone, openSystemAudio, startCapture } from '../audio/capture'
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
+import {
+  openMicrophone,
+  openSystemAudio,
+  startCapture,
+  type CaptureEvent,
+  type CaptureHandle
+} from '../audio/capture'
+import { nextStall, type StallState } from '../audio/recovery'
 import { SessionRecorder } from '../audio/sessionRecorder'
 import { rms } from '../../../shared/audio/vad'
 import type { TranscriptProgress } from '../../../shared/types'
 import { log } from '../lib/log'
 
 export type DictationPhase = 'idle' | 'starting' | 'listening' | 'finishing'
+
+/** How a `start` ended: recording, given up on by a stop, failed (see `error`), or not tried. */
+export type StartResult = 'started' | 'cancelled' | 'failed' | 'busy'
 
 /** Input levels, 0–1: the microphone, and the computer's audio when it's recorded. */
 export type Levels = { mic: number; system: number | null }
@@ -16,7 +26,18 @@ const HEARTBEAT_MS = 3000
 /** A mic this quiet for this long is muted or disconnected, not just a quiet room. */
 const SILENT_MIC_RMS = 0.0002
 const SILENT_MIC_MS = 8000
+/** How long "Reconnected to …" stays up. */
+const RESTORED_NOTICE_MS = 8000
+const NO_SYSTEM_AUDIO_NOTICE = 'Couldn’t capture computer audio. Recording your microphone only.'
+/** The dock offers the system settings page beside this one. macOS applies the change at launch. */
+export const SYSTEM_AUDIO_BLOCKED_NOTICE =
+  'macOS isn’t letting Lyra record computer audio, so this is your microphone only. Allow it, then restart Lyra.'
 const SILENT_MIC_NOTICE = 'Your microphone isn’t picking anything up. Check that it isn’t muted.'
+const NARROWBAND_NOTICE =
+  'Your microphone is a headset in call mode, which lowers the quality of your voice and the computer’s audio. A built-in or wired mic transcribes better.'
+const RECORDER_FAILED = 'Recording stopped: couldn’t write audio (is the disk full?)'
+const STALLED_NOTICE =
+  'Lyra isn’t receiving any audio, so nothing is being recorded. Try stopping and starting again, or choose another microphone.'
 
 type Options = {
   /** Microphone to open, read when recording starts; `null` = system default. */
@@ -26,11 +47,42 @@ type Options = {
 /** What to record: the session's mic, and the computer's audio when that setting is on. */
 export type RecordOptions = { pageId: string; systemAudio: boolean }
 
+/** One call to `start`; a stop while it's warming up sets `cancelled`. */
+type Attempt = {
+  pageId: string
+  cancelled: boolean
+  /** Settles once the attempt has let go of everything it opened. */
+  done: Promise<void>
+}
+
 type Session = {
+  /** The start that made this session: state is only reset by the stop of the newest one. */
+  owner: Attempt
   stop: () => Promise<void>
 }
 
 const level = (samples: Float32Array): number => Math.min(1, rms(samples) * 14)
+
+const errorText = (caught: unknown): string =>
+  caught instanceof Error ? caught.message : String(caught)
+
+function stopTracks(stream: MediaStream | null): void {
+  stream?.getTracks().forEach((track) => {
+    track.stop()
+  })
+}
+
+/**
+ * Records `work` as what a new start must wait for (a stop draining main's transcription, or a
+ * cancelled start letting go of the mic), until it settles.
+ */
+function settleBefore(ref: RefObject<Promise<void> | null>, work: Promise<void>): Promise<void> {
+  const tracked: Promise<void> = work.finally(() => {
+    if (ref.current === tracked) ref.current = null
+  })
+  ref.current = tracked
+  return tracked
+}
 
 /**
  * Records a session: microphone (and computer audio) → main, which writes the audio and
@@ -50,7 +102,11 @@ export function useDictation({ getDeviceId }: Options) {
   const session = useRef<Session | null>(null)
   /** The session being recorded, until its last chunks are transcribed after a stop. */
   const recordingPage = useRef<string | null>(null)
-  const starting = useRef<{ cancelled: boolean } | null>(null)
+  const starting = useRef<Attempt | null>(null)
+  /** The newest start; an older start or stop that finishes late leaves the state alone. */
+  const owner = useRef<Attempt | null>(null)
+  /** A stop or a cancelled start still finishing; the next start waits for it. */
+  const settling = useRef<Promise<void> | null>(null)
   const levelListeners = useRef(new Set<LevelListener>())
   const options = useRef({ getDeviceId })
   options.current = { getDeviceId }
@@ -70,11 +126,21 @@ export function useDictation({ getDeviceId }: Options) {
     []
   )
 
-  const start = useCallback(async (record: RecordOptions): Promise<void> => {
-    if (session.current || starting.current) return
-    // Stop can arrive while the model warms up; this lets it cancel the start.
-    const attempt = { cancelled: false }
+  const start = useCallback(async (record: RecordOptions): Promise<StartResult> => {
+    // Main records one session at a time: a start that lands while the last recording is still
+    // finishing waits for it rather than racing its cleanup.
+    while (settling.current) await settling.current
+    if (session.current || starting.current) return 'busy'
+    let settle = (): void => undefined
+    const attempt: Attempt = {
+      pageId: record.pageId,
+      cancelled: false,
+      done: new Promise<void>((resolve) => {
+        settle = resolve
+      })
+    }
     starting.current = attempt
+    owner.current = attempt
     // A function, so TypeScript doesn't assume the flag is unchanged across awaits.
     const cancelled = (): boolean => attempt.cancelled
     setError(null)
@@ -82,65 +148,105 @@ export function useDictation({ getDeviceId }: Options) {
     setProgress(null)
     setPageId(record.pageId)
     setPhase('starting')
-    const fail = (caught: unknown): void => {
-      log('dictation', 'error', String(caught))
-      setError(caught instanceof Error ? caught.message : 'Recording failed')
+
+    let mic: MediaStream | null = null
+    let system: MediaStream | null = null
+    let recorder: SessionRecorder | null = null
+    let capture: CaptureHandle | null = null
+    /** Lets go of whatever this attempt opened: the mic light goes off and main's recorder stops. */
+    const release = async (): Promise<void> => {
+      capture?.stop()
+      stopTracks(mic)
+      stopTracks(system)
+      if (recorder) {
+        await recorder.stop().catch((caught: unknown) => {
+          log('dictation', 'could not stop the recorder', errorText(caught))
+        })
+      }
+    }
+    const giveUp = async (): Promise<StartResult> => {
+      await release()
+      log('dictation', 'start cancelled')
+      return 'cancelled'
     }
 
     try {
       // Open the mic and load the model in parallel (the first chunk needs it within seconds),
       // but check for a cancel after each.
       const warm = window.api.warmUp()
-      const { stream, usedFallback } = await openMicrophone(options.current.getDeviceId())
-      const releaseMic = (): void => {
-        stream.getTracks().forEach((track) => {
-          track.stop()
-        })
-        log('dictation', 'start cancelled')
-      }
-      if (cancelled()) {
-        releaseMic()
-        void warm.catch(() => undefined)
-        return
-      }
+      // Awaited below; this keeps a start cancelled before then from an unhandled rejection.
+      warm.catch(() => undefined)
+      const opened = await openMicrophone(options.current.getDeviceId())
+      mic = opened.stream
+      if (cancelled()) return await giveUp()
       await warm
-      if (cancelled()) {
-        releaseMic()
-        return
-      }
-      if (usedFallback) setNotice('Your chosen microphone isn’t available. Using the default.')
+      if (cancelled()) return await giveUp()
+      if (opened.usedFallback) setNotice('Your chosen microphone isn’t available. Using the default.')
 
-      const system = record.systemAudio ? await openSystemAudio() : null
-      if (cancelled()) {
-        system?.getTracks().forEach((track) => {
-          track.stop()
-        })
-        releaseMic()
-        return
-      }
+      system = record.systemAudio ? await openSystemAudio() : null
+      if (cancelled()) return await giveUp()
       if (record.systemAudio && !system) {
-        setNotice('Couldn’t capture computer audio. Recording your microphone only.')
+        setNotice(NO_SYSTEM_AUDIO_NOTICE)
+        // Why, when the OS can say: a refused permission has a settings page to send them to.
+        window.api.permissionStatus().then(
+          (status) => {
+            if (status.screen === 'granted') return
+            setNotice((current) => (current === NO_SYSTEM_AUDIO_NOTICE ? SYSTEM_AUDIO_BLOCKED_NOTICE : current))
+          },
+          () => {
+            // The plain notice stands.
+          }
+        )
       }
-      const activeRecorder = await SessionRecorder.start(record.pageId, system !== null)
+      recorder = await SessionRecorder.start(record.pageId, system !== null)
+      if (cancelled()) return await giveUp()
+      const activeRecorder = recorder
 
       let frames = 0
       let peak = 0
       let systemPeak = 0
       let quietSince = Date.now()
       let warnedSilent = false
-      const capture = await startCapture(
-        stream,
+      let reconnecting = false
+      let restoredTimer: ReturnType<typeof setTimeout> | null = null
+      const onCaptureEvent = (event: CaptureEvent): void => {
+        switch (event.type) {
+          case 'mic-reconnecting': {
+            reconnecting = true
+            setNotice(`Lost ${event.micName}. Reconnecting…`)
+            break
+          }
+          case 'mic-restored': {
+            reconnecting = false
+            quietSince = Date.now()
+            setMicName(event.micName)
+            const text = `Reconnected to ${event.micName}.`
+            setNotice(text)
+            if (restoredTimer) clearTimeout(restoredTimer)
+            restoredTimer = setTimeout(() => {
+              setNotice((current) => (current === text ? null : current))
+            }, RESTORED_NOTICE_MS)
+            break
+          }
+        }
+      }
+      const reopenMic = async (): Promise<MediaStream> =>
+        (await openMicrophone(options.current.getDeviceId())).stream
+      capture = await startCapture(
+        mic,
         () => undefined,
         (reason) => {
           setError(reason)
           void stopRef.current()
         },
         {
-          ...(system ? { system } : {}),
-          onTracks: (mic: Float32Array, other: Float32Array | null) => {
-            activeRecorder.push(mic, other)
+          ...(system ? { system, reopenSystem: openSystemAudio } : {}),
+          reopenMic,
+          onEvent: onCaptureEvent,
+          onTracks: (micFrame: Float32Array, other: Float32Array | null) => {
+            activeRecorder.push(micFrame, other)
             frames++
-            const micRms = rms(mic)
+            const micRms = rms(micFrame)
             peak = Math.max(peak, micRms)
             if (other) systemPeak = Math.max(systemPeak, rms(other))
             const now = Date.now()
@@ -150,83 +256,150 @@ export function useDictation({ getDeviceId }: Options) {
                 warnedSilent = false
                 setNotice((current) => (current === SILENT_MIC_NOTICE ? null : current))
               }
+            } else if (reconnecting) {
+              // Silence while the mic is reopened is expected; the notice already says why.
+              quietSince = now
             } else if (!warnedSilent && now - quietSince > SILENT_MIC_MS) {
               warnedSilent = true
               setNotice(SILENT_MIC_NOTICE)
               log('dictation', 'mic silent')
             }
-            const levels: Levels = { mic: level(mic), system: other ? level(other) : null }
-            levelListeners.current.forEach((listener) => listener(levels))
+            const levels: Levels = { mic: level(micFrame), system: other ? level(other) : null }
+            levelListeners.current.forEach((listener) => {
+              listener(levels)
+            })
           }
         }
       )
+      if (cancelled()) return await giveUp()
+      const handle = capture
 
       // Expect ~31 frames a second; anything else means the microphone path is stalling.
       const expected = (HEARTBEAT_MS / 1000) * (16000 / 512)
+      let stall: StallState = { stalls: 0, warned: false }
       const heartbeat = setInterval(() => {
         const snapshot = {
           frames,
           peakRms: +peak.toFixed(4),
           systemPeakRms: +systemPeak.toFixed(4),
-          ...capture.state()
+          ...handle.state()
         }
         const stalled = frames < expected * 0.5
         log('dictation', stalled ? 'heartbeat (STALLED)' : 'heartbeat', snapshot)
         frames = peak = systemPeak = 0
+        const next = nextStall(stall, stalled)
+        stall = next.state
+        if (next.recover) handle.recover()
+        if (next.notice === 'show') {
+          setNotice(STALLED_NOTICE)
+          log('dictation', 'no audio arriving')
+        } else if (next.notice === 'clear') {
+          setNotice((current) => (current === STALLED_NOTICE ? null : current))
+        }
       }, HEARTBEAT_MS)
 
       recordingPage.current = record.pageId
       session.current = {
+        owner: attempt,
         stop: async () => {
           clearInterval(heartbeat)
-          capture.stop()
-          levelListeners.current.forEach((listener) => listener({ mic: 0, system: system ? 0 : null }))
+          if (restoredTimer) clearTimeout(restoredTimer)
+          handle.stop()
+          levelListeners.current.forEach((listener) => {
+            listener({ mic: 0, system: system ? 0 : null })
+          })
           // Main transcribes what's left before this resolves.
           await activeRecorder.stop()
         }
       }
-      setMicName(capture.micName)
+      setMicName(handle.micName)
+      if (handle.narrowband) setNotice((current) => current ?? NARROWBAND_NOTICE)
       setPhase('listening')
       log('dictation', 'listening')
-      // A stop that arrived while the audio graph was starting.
-      if (cancelled()) void stopRef.current()
+      return 'started'
     } catch (caught) {
-      log('dictation', 'failed to start', String(caught))
-      fail(caught)
-      setPageId(null)
-      setPhase('idle')
+      await release()
+      // A stop already reset the state; the error is just the cancelled work unwinding.
+      if (cancelled()) return 'cancelled'
+      log('dictation', 'failed to start', errorText(caught))
+      if (owner.current === attempt) {
+        setError(caught instanceof Error ? caught.message : 'Recording failed')
+        setPageId(null)
+        setPhase('idle')
+      }
+      return 'failed'
     } finally {
       if (starting.current === attempt) starting.current = null
+      settle()
     }
   }, [])
 
   const stop = useCallback(async (): Promise<void> => {
     const current = session.current
     if (!current) {
-      if (starting.current) {
-        // Still warming up: give up on this start now rather than after the model loads.
-        starting.current.cancelled = true
+      const attempt = starting.current
+      if (attempt) {
+        // Still warming up: give up on this start now rather than after the model loads. The
+        // next start waits until this one has closed the mic.
+        attempt.cancelled = true
         starting.current = null
         setPageId(null)
         setPhase('idle')
+        void settleBefore(settling, attempt.done)
       }
+      // A stop pressed again while the last one finishes resolves when that one does.
+      await settling.current
       return
     }
     session.current = null
     log('dictation', 'stopping')
     setPhase('finishing')
-    await current.stop()
-    recordingPage.current = null
-    setProgress(null)
-    setMicName('')
-    setPageId(null)
-    setPhase('idle')
-    log('dictation', 'stopped')
+    const finish = async (): Promise<void> => {
+      try {
+        await current.stop()
+      } catch (caught) {
+        log('dictation', 'stop failed', errorText(caught))
+        setError(`The recording stopped, but finishing its transcript failed: ${errorText(caught)}`)
+      } finally {
+        // A newer session (started once this one settled) owns the state from here.
+        if (owner.current === current.owner) {
+          recordingPage.current = null
+          setProgress(null)
+          setMicName('')
+          setPageId(null)
+          setPhase('idle')
+        }
+        log('dictation', 'stopped')
+      }
+    }
+    await settleBefore(settling, finish())
   }, [])
   const stopRef = useRef(stop)
   stopRef.current = stop
 
-  useEffect(() => () => void session.current?.stop(), [])
+  // Main stopped writing this recording's audio (a full disk, usually): stop capturing through
+  // the normal stop path, then say why, over whatever the stop itself reported.
+  useEffect(
+    () =>
+      window.api.onRecorderFailed((failure) => {
+        const page = recordingPage.current ?? starting.current?.pageId ?? null
+        if (failure.pageId !== page) return
+        log('dictation', 'recorder failed', { track: failure.track })
+        const failed = owner.current
+        void stopRef.current().finally(() => {
+          if (owner.current === failed) setError(RECORDER_FAILED)
+        })
+      }),
+    []
+  )
+
+  useEffect(
+    () => () => {
+      if (starting.current) starting.current.cancelled = true
+      void session.current?.stop()
+    },
+    []
+  )
 
   return {
     phase,

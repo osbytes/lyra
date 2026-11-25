@@ -14,7 +14,6 @@ import {
   removeLiveNotes,
   speakerToMergeInto,
   replaceTranscript,
-  SURE_MATCH,
   upsertSpeaker,
   type NewSegment,
   type SpeakerMatch
@@ -27,8 +26,7 @@ import {
   readManifestOf,
   readSession,
   sessionRawDir,
-  updateManifest,
-  type RawPass
+  updateManifest
 } from '../sessionStore'
 import { getSettings } from '../settings'
 import {
@@ -43,19 +41,23 @@ import {
   restorePerson,
   selfPerson,
   setSelf,
+  withdrawVoice,
   type VoiceMatch
 } from '../voices'
 import { transcribePcm } from '../whisper'
 import type { DiarizeResult, DiarizedSegment, SpeakerModels } from './protocol'
 import { notifyLabeled } from './events'
-import { sessionVoiceprints } from './voiceprints'
+import { sessionVoiceprints, type WrittenPass } from './voiceprints'
 import { diarize, embedVoice, ensureSpeakerModels } from './speakers'
+import { SPEAKER_EMBEDDING } from './speakerModel'
+import { couldBeOnePerson, differentVoices, micShareOf, pickSelfSpeaker } from './speakerRules'
 import {
   DIARIZE_THRESHOLD,
   LEARN_MARGIN,
   LEARN_MIN_SECONDS,
   MATCH_THRESHOLD,
   REINFORCE_THRESHOLD,
+  SAME_PERSON_MIN_SIMILARITY,
   SAME_PERSON_THRESHOLD,
   SELF_MIC_SHARE
 } from './thresholds'
@@ -136,23 +138,39 @@ export function mergeTinySpeakers(result: DiarizeResult): DiarizeResult {
  * Merges speakers that are clearly the same saved person. Clustering sometimes splits one voice
  * in two (they moved, or spoke up); a saved voice anchors both halves, so they become one
  * speaker, the one closer to the saved voice. Only for strong matches: a weak one could be
- * someone who merely sounds similar.
+ * someone who merely sounds similar. Never two speakers who talked over each other at length or
+ * sit on opposite sides of a call, which one person can't: those are two people who sound alike.
+ * And never two whose own voiceprints are far apart: then the saved person holds two voices.
  */
-export async function mergeSamePerson(result: DiarizeResult): Promise<DiarizeResult> {
+export async function mergeSamePerson(
+  result: DiarizeResult,
+  pageId: string,
+  hasSystemTrack: boolean
+): Promise<DiarizeResult> {
   const best = new Map<string, { speaker: number; score: number }>()
   const matched: { speaker: number; personId: string; score: number }[] = []
   for (const cluster of result.clusters) {
-    const top = (await scoreVoices(cluster.embedding))[0]
+    const top = (await scoreVoices(cluster.embedding, pageId))[0]
     if (!top || top.score < SAME_PERSON_THRESHOLD) continue
     matched.push({ speaker: cluster.speaker, personId: top.person.id, score: top.score })
     const current = best.get(top.person.id)
     if (!current || top.score > current.score) best.set(top.person.id, { speaker: cluster.speaker, score: top.score })
   }
+  const own = (speaker: number): DiarizedSegment[] => result.segments.filter((s) => s.speaker === speaker)
+  const voice = (speaker: number): readonly number[] =>
+    result.clusters.find((cluster) => cluster.speaker === speaker)?.embedding ?? []
   const into = new Map<number, number>()
+  let blocked = 0
   for (const { speaker, personId } of matched) {
     const keep = best.get(personId)
-    if (keep && keep.speaker !== speaker) into.set(speaker, keep.speaker)
+    if (!keep || keep.speaker === speaker) continue
+    const apart =
+      differentVoices(voice(speaker), voice(keep.speaker), SAME_PERSON_MIN_SIMILARITY) ||
+      !couldBeOnePerson(own(speaker), own(keep.speaker), hasSystemTrack)
+    if (!apart) into.set(speaker, keep.speaker)
+    else blocked++
   }
+  if (blocked) log('meeting', 'kept apart speakers matching one saved voice', { pageId, blocked })
   if (into.size === 0) return result
   log('meeting', 'merged speakers matching one saved voice', Object.fromEntries(into))
   return {
@@ -182,8 +200,27 @@ export function buildTurns(segments: readonly DiarizedSegment[]): Turn[] {
   return turns
 }
 
-/** Names each cluster: a saved voice, else "you" when it's mostly the mic track, else Speaker N. */
-export async function nameSpeakers(result: DiarizeResult, hasSystemTrack: boolean): Promise<NamedSpeaker[]> {
+/** A voice sample a pass would teach a saved person, once the pass is known to apply. */
+export type LearnedSample = { personId: string; embedding: number[]; sessionId: string }
+
+/** Teaches saved voices what a pass heard; call only after the pass was written to the session. */
+export async function learnSamples(samples: readonly LearnedSample[]): Promise<void> {
+  for (const { personId, embedding, sessionId } of samples) {
+    await addSample(personId, embedding, { source: 'auto', sessionId, model: SPEAKER_EMBEDDING.model })
+  }
+}
+
+/**
+ * Names each cluster: a saved voice, else "you" when it's mostly the mic track, else Speaker N.
+ * Also returns the samples confident matches would teach their saved voices; the caller applies
+ * them with `learnSamples` once the names are in the session, so a pass that is thrown away
+ * (the session changed meanwhile) teaches nothing.
+ */
+export async function nameSpeakers(
+  result: DiarizeResult,
+  context: { pageId: string; hasSystemTrack: boolean }
+): Promise<{ speakers: NamedSpeaker[]; learn: LearnedSample[] }> {
+  const { pageId, hasSystemTrack } = context
   const me = await selfPerson()
   const order = [...new Set([...result.segments].sort((a, b) => a.start - b.start).map((s) => s.speaker))]
 
@@ -193,7 +230,7 @@ export async function nameSpeakers(result: DiarizeResult, hasSystemTrack: boolea
     result.clusters.map(async (cluster) => ({
       speaker: cluster.speaker,
       embedding: cluster.embedding,
-      scores: await scoreVoices(cluster.embedding)
+      scores: await scoreVoices(cluster.embedding, pageId)
     }))
   )
   const assigned = new Map<number, VoiceMatch>()
@@ -211,8 +248,8 @@ export async function nameSpeakers(result: DiarizeResult, hasSystemTrack: boolea
     const best = scores[0]
     log('meeting', 'voice match', {
       speaker,
-      best: best ? { name: best.person.name, score: +best.score.toFixed(3) } : null,
-      assigned: assigned.get(speaker)?.person.name ?? null
+      best: best ? { person: best.person.id, score: +best.score.toFixed(3) } : null,
+      assigned: assigned.get(speaker)?.person.id ?? null
     })
   }
   // Confident matches teach the voiceprint, so it keeps up with mics and rooms. Only from a
@@ -220,6 +257,7 @@ export async function nameSpeakers(result: DiarizeResult, hasSystemTrack: boolea
   // would make the saved voice match the wrong person from then on.
   const talk = new Map<number, number>()
   for (const s of result.segments) talk.set(s.speaker, (talk.get(s.speaker) ?? 0) + s.end - s.start)
+  const learn: LearnedSample[] = []
   for (const { speaker, embedding } of scored) {
     const match = assigned.get(speaker)
     if (!match || match.score < REINFORCE_THRESHOLD || !embedding.length) continue
@@ -230,25 +268,31 @@ export async function nameSpeakers(result: DiarizeResult, hasSystemTrack: boolea
         .map((other) => other.scores.find((entry) => entry.person.id === match.person.id)?.score ?? -Infinity)
     )
     if ((talk.get(speaker) ?? 0) < LEARN_MIN_SECONDS || match.score - rival < LEARN_MARGIN) {
-      log('meeting', 'voice not learned', { speaker, name: match.person.name, seconds: +(talk.get(speaker) ?? 0).toFixed(1) })
+      log('meeting', 'voice not learned', { speaker, person: match.person.id, seconds: +(talk.get(speaker) ?? 0).toFixed(1) })
       continue
     }
-    await addSample(match.person.id, embedding)
+    learn.push({ personId: match.person.id, embedding, sessionId: pageId })
   }
 
   const selfName = me?.name ?? 'Me'
   // The mic-track hint can't override a voice match that already found "me".
-  let selfAssigned = me ? taken.has(me.id) : false
+  const selfSpeaker =
+    hasSystemTrack && !(me && taken.has(me.id))
+      ? pickSelfSpeaker(
+          order
+            .filter((speaker) => !assigned.has(speaker))
+            .map((speaker) => {
+              const own = result.segments.filter((segment) => segment.speaker === speaker)
+              return { speaker, seconds: talk.get(speaker) ?? 0, micShare: micShareOf(own) }
+            }),
+          SELF_MIC_SHARE
+        )
+      : null
   let unknown = 0
   const speakers: NamedSpeaker[] = []
   for (const speaker of order) {
     const cluster = result.clusters.find((entry) => entry.speaker === speaker)
     const match = assigned.get(speaker)
-    const own = result.segments.filter((segment) => segment.speaker === speaker)
-    const duration = own.reduce((sum, s) => sum + (s.end - s.start), 0)
-    const micShare = duration
-      ? own.reduce((sum, s) => sum + s.micShare * (s.end - s.start), 0) / duration
-      : 0
     const matches = (scored.find((entry) => entry.speaker === speaker)?.scores ?? [])
       .slice(0, MAX_MATCHES)
       .map((entry) => ({ personId: entry.person.id, score: +entry.score.toFixed(3) }))
@@ -260,8 +304,7 @@ export async function nameSpeakers(result: DiarizeResult, hasSystemTrack: boolea
       name = match.person.name
       personId = match.person.id
       confidence = +match.score.toFixed(3)
-    } else if (hasSystemTrack && micShare >= SELF_MIC_SHARE && !selfAssigned) {
-      selfAssigned = true
+    } else if (speaker === selfSpeaker) {
       name = selfName
       personId = me?.id ?? null
     } else {
@@ -278,7 +321,7 @@ export async function nameSpeakers(result: DiarizeResult, hasSystemTrack: boolea
       embedding: cluster?.embedding ?? []
     })
   }
-  return speakers
+  return { speakers, learn }
 }
 
 type Line = { turn: Turn; words: TranscriptWord[]; text: string }
@@ -358,7 +401,7 @@ export async function nextPassId(pageId: string): Promise<string> {
 export async function processMeeting(recording: MeetingRecording): Promise<void> {
   const { pageId } = recording
   const status = (state: MeetingStatus['state'], progress: number, message?: string): void => {
-    broadcast({ pageId, state, progress, ...(message ? { message } : {}) })
+    broadcast({ pageId, task: 'speakers', state, progress, ...(message ? { message } : {}) })
   }
   log('meeting', 'processing', { pageId, seconds: +recording.seconds.toFixed(1) })
 
@@ -372,7 +415,9 @@ export async function processMeeting(recording: MeetingRecording): Promise<void>
     micPath: recording.micPath,
     systemPath: recording.systemPath,
     models,
-    threshold: DIARIZE_THRESHOLD
+    threshold: DIARIZE_THRESHOLD,
+    // Diarization comes first here, so there are no words yet.
+    words: null
   })
   log('meeting', 'diarized', {
     pageId,
@@ -381,7 +426,7 @@ export async function processMeeting(recording: MeetingRecording): Promise<void>
     rtf: +((Date.now() - started) / 1000 / Math.max(1, result.seconds)).toFixed(3)
   })
 
-  const merged = await mergeSamePerson(mergeTinySpeakers(result))
+  const merged = await mergeSamePerson(mergeTinySpeakers(result), pageId, recording.systemPath !== null)
   // One voice: a dictation, not a conversation. It stays as notes; no transcript, no notes.
   if (merged.clusters.length < 2 && !(await readSession(pageId)).transcript.length) {
     if (getSettings().audioRetentionDays === 0) await deleteSessionAudio(pageId)
@@ -389,7 +434,7 @@ export async function processMeeting(recording: MeetingRecording): Promise<void>
     log('meeting', 'one voice; kept as notes', { pageId })
     return
   }
-  const speakers = await nameSpeakers(merged, recording.systemPath !== null)
+  const { speakers, learn } = await nameSpeakers(merged, { pageId, hasSystemTrack: recording.systemPath !== null })
   const turns = buildTurns(merged.segments)
   status('transcribing', 0)
   const lines = await transcribeTurns(recording, turns, (done) => {
@@ -407,7 +452,7 @@ export async function processMeeting(recording: MeetingRecording): Promise<void>
     confidence: confidence[index] ?? null,
     text: line.text
   }))
-  const pass: RawPass = {
+  const pass: WrittenPass = {
     id: passId,
     kind: 'diarized',
     model: `sherpa-onnx diarization + ${WHISPER_MODEL}`,
@@ -424,7 +469,8 @@ export async function processMeeting(recording: MeetingRecording): Promise<void>
     clusters: speakers.map((speaker) => ({
       id: speaker.id,
       embedding: speaker.embedding,
-      matches: speaker.matches
+      matches: speaker.matches,
+      model: SPEAKER_EMBEDDING.model
     }))
   }
   await mkdir(sessionRawDir(pageId), { recursive: true })
@@ -437,8 +483,9 @@ export async function processMeeting(recording: MeetingRecording): Promise<void>
           upsertSpeaker(doc, speaker.id, {
             name: speaker.name,
             personId: speaker.personId,
-            // A strong voice match needs no confirming; anything else is Lyra's guess.
-            confirmed: (speaker.confidence ?? 0) >= SURE_MATCH,
+            // Only the user confirms. A strong match still shows as sure (`SURE_MATCH`), but
+            // stays Lyra's guess, so a later pass can still correct it.
+            confirmed: false,
             confidence: speaker.confidence,
             matches: speaker.matches
           }, ORIGIN_PIPELINE)
@@ -448,6 +495,7 @@ export async function processMeeting(recording: MeetingRecording): Promise<void>
         removeLiveNotes(doc, ORIGIN_PIPELINE)
       }, ORIGIN_PIPELINE)
     })
+    await learnSamples(learn)
   }
   await updateManifest(pageId, (manifest) => ({
     ...manifest,
@@ -460,9 +508,9 @@ export async function processMeeting(recording: MeetingRecording): Promise<void>
   notifyLabeled(pageId)
 }
 
-/** The voiceprint of a speaker from the latest pass that has one (live or labeled). */
-async function speakerEmbedding(pageId: string, id: string): Promise<number[]> {
-  return (await sessionVoiceprints(pageId)).get(id) ?? []
+/** The voiceprint of a speaker from the latest pass in which they own lines (`ownedVoiceprints`). */
+async function speakerEmbedding(pageId: string, id: string): Promise<{ vector: number[]; model: string } | null> {
+  return (await sessionVoiceprints(pageId)).get(id) ?? null
 }
 
 /**
@@ -476,7 +524,9 @@ export async function resolveSpeaker(
 ): Promise<SpeakerIdentity> {
   const speaker = (await readSession(pageId)).speakers.find((entry) => entry.id === id)
   if (!speaker) throw new Error('This session has no such speaker')
-  const embedding = await speakerEmbedding(pageId, id)
+  const print = await speakerEmbedding(pageId, id)
+  // The user said who this is: a sample they vouch for, from this session.
+  const origin = { source: 'user', sessionId: pageId, model: print?.model ?? SPEAKER_EMBEDDING.model } as const
 
   let name: string
   let personId: string | null
@@ -485,8 +535,9 @@ export async function resolveSpeaker(
     if (!person) throw new Error('That person no longer exists')
     name = person.name
     personId = person.id
+    if (print) await withdrawVoice(pageId, print.vector, person.id, REINFORCE_THRESHOLD)
     // Teach the voiceprint this sample, so the person is recognized next time.
-    if (embedding.length) await addSample(person.id, embedding)
+    if (print) await addSample(person.id, print.vector, origin)
   } else {
     name = assignment.name.trim()
     if (!name) throw new Error('A name is required')
@@ -495,11 +546,14 @@ export async function resolveSpeaker(
       (person) => person.name.trim().toLowerCase() === name.toLowerCase()
     )
     personId = known?.id ?? null
+    // Naming this speaker again takes back what the earlier name taught: otherwise the person
+    // it was first given to keeps this voice, and ends up holding two.
+    if (print) await withdrawVoice(pageId, print.vector, personId, REINFORCE_THRESHOLD)
     if (known) {
       name = known.name
-      if (embedding.length) await addSample(known.id, embedding)
-    } else if (assignment.remember && embedding.length) {
-      personId = (await addPerson(name, embedding, false)).id
+      if (print) await addSample(known.id, print.vector, origin)
+    } else if (assignment.remember && print) {
+      personId = (await addPerson(name, print.vector, false, origin)).id
     }
   }
   return { name, personId }

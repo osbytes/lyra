@@ -27,6 +27,8 @@ import {
 } from '../../../shared/sessionDoc'
 import type { TranscriptEdit } from '../../../shared/transcriptOverlay'
 import { log } from '../lib/log'
+import { notify } from '../lib/toast'
+import { latest } from './latest'
 
 /** What the editor shows of the open session. */
 export type OpenPage = {
@@ -78,6 +80,9 @@ export function usePages() {
   const replica = useRef<Replica | null>(null)
   /** Updates main hasn't confirmed yet; `flush` waits for all of them. */
   const pending = useRef(new Set<Promise<void>>())
+  const [opens] = useState(latest)
+  /** The session the newest `attach` is opening. */
+  const wanted = useRef<string | null>(null)
 
   const show = (page: OpenPage | null): void => {
     currentRef.current = page
@@ -105,13 +110,32 @@ export function usePages() {
 
   const attach = useCallback(
     async (id: string) => {
+      // Opening sessions quickly (clicks, search, a create) overlaps these awaits; only the
+      // newest open may become the replica, or the view and `edit` could point at different docs.
+      const token = opens.begin()
+      wanted.current = id
       await detach()
+      if (!opens.isCurrent(token)) return
       const state = await window.api.openSession(id)
+      if (!opens.isCurrent(token)) {
+        // Main keeps one subscription per window and session, so this one is only let go of when
+        // the open that won isn't for the same session.
+        if (wanted.current !== id && replica.current?.id !== id) window.api.closeSession(id)
+        return
+      }
       const doc = new Y.Doc()
       Y.applyUpdate(doc, state, ORIGIN_REMOTE)
       const title = docTitle(doc)
-      const render = (): void => {
+      const transcriptType = docTranscript(doc)
+      let transcript: TranscriptSegment[] | null = null
+      let warnedUnsaved = false
+      const render = (transcriptChanged: boolean): void => {
+        // A replaced replica's late updates must never draw over the session now open.
+        if (replica.current?.doc !== doc) return
         const snapshot = snapshotOf(doc)
+        // Typing in the notes leaves the transcript as it was: keep the same array so the
+        // transcript's memoized work sees nothing new.
+        if (transcriptChanged || !transcript) transcript = snapshot.transcript
         show({
           id,
           title: snapshot.title,
@@ -120,21 +144,49 @@ export function usePages() {
           tags: snapshot.tags,
           transcriberAt: transcriberCursor(doc),
           liveMode: liveModeOf(doc),
-          transcript: snapshot.transcript,
+          transcript,
           speakers: snapshot.speakers
         })
       }
 
-      const onUpdate = (update: Uint8Array, origin: unknown): void => {
-        render()
+      const send = (update: Uint8Array): Promise<void> => {
+        const sent = window.api.updateSession(id, update)
+        // `flush` waits on these and must not throw; the caller handles the failure.
+        const settled = sent.then(
+          () => undefined,
+          () => undefined
+        )
+        pending.current.add(settled)
+        void settled.finally(() => {
+          pending.current.delete(settled)
+        })
+        return sent
+      }
+      /**
+       * A change main didn't take leaves this replica ahead of the file. Sending the whole
+       * document once more catches main up after a passing failure (Yjs merges it idempotently);
+       * if that fails too, the user has to know their edits aren't being saved.
+       */
+      const resync = (error: unknown): void => {
+        log('pages', 'could not save change', String(error))
+        // Closed meanwhile: main's copy is what the next open shows.
+        if (replica.current?.doc !== doc) return
+        send(Y.encodeStateAsUpdate(doc)).catch((again: unknown) => {
+          log('pages', 'could not resync session', String(again))
+          if (warnedUnsaved) return
+          warnedUnsaved = true
+          notify('Lyra couldn’t save your latest changes to this session. Copy anything important, then reopen it.')
+        })
+      }
+      const onUpdate = (
+        update: Uint8Array,
+        origin: unknown,
+        _doc: Y.Doc,
+        transaction: Y.Transaction | undefined
+      ): void => {
+        render(!transaction || transaction.changedParentTypes.has(transcriptType))
         if (origin === ORIGIN_REMOTE) return
-        const sent = window.api.updateSession(id, update).catch((error: unknown) => {
-          log('pages', 'could not save change', String(error))
-        })
-        pending.current.add(sent)
-        void sent.finally(() => {
-          pending.current.delete(sent)
-        })
+        send(update).catch(resync)
       }
       doc.on('update', onUpdate)
       const stopRemote = window.api.onSessionUpdate((change) => {
@@ -165,9 +217,9 @@ export function usePages() {
           doc.destroy()
         }
       }
-      render()
+      render(true)
     },
-    [detach]
+    [opens, detach]
   )
 
   const edit = useCallback((changes: Edit) => {
@@ -261,9 +313,11 @@ export function usePages() {
   const open = useCallback((id: string) => attach(id), [attach])
 
   const close = useCallback(async () => {
+    opens.cancel()
+    wanted.current = null
     await detach()
     show(null)
-  }, [detach])
+  }, [opens, detach])
 
   const create = useCallback(
     async (options?: { startedAt?: string }) => {
@@ -306,9 +360,10 @@ export function usePages() {
       if (first && !replica.current) await attach(first.id)
     })
     return () => {
+      opens.cancel()
       void detach()
     }
-  }, [refreshList, attach, detach])
+  }, [opens, refreshList, attach, detach])
 
   // Notes added or removed outside Lyra, or a title or preview changed: refresh the list. The
   // open session's content itself syncs through its document.
