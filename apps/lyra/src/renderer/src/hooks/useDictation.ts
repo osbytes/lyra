@@ -17,6 +17,8 @@ const HEARTBEAT_MS = 3000
 const SILENT_MIC_RMS = 0.0002
 const SILENT_MIC_MS = 8000
 const SILENT_MIC_NOTICE = 'Your microphone isn’t picking anything up. Check that it isn’t muted.'
+const NARROWBAND_NOTICE =
+  'Your microphone is a headset in call mode, which lowers the quality of your voice and the computer’s audio. A built-in or wired mic transcribes better.'
 
 type Options = {
   /** Microphone to open, read when recording starts; `null` = system default. */
@@ -136,7 +138,7 @@ export function useDictation({ getDeviceId }: Options) {
           void stopRef.current()
         },
         {
-          ...(system ? { system } : {}),
+          ...(system ? { system, reopenSystem: openSystemAudio } : {}),
           onTracks: (mic: Float32Array, other: Float32Array | null) => {
             activeRecorder.push(mic, other)
             frames++
@@ -186,6 +188,7 @@ export function useDictation({ getDeviceId }: Options) {
         }
       }
       setMicName(capture.micName)
+      if (capture.narrowband) setNotice((current) => current ?? NARROWBAND_NOTICE)
       setPhase('listening')
       log('dictation', 'listening')
       // A stop that arrived while the audio graph was starting.

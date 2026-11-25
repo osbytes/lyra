@@ -1,5 +1,7 @@
+import { EchoCanceller } from '../shared/audio/aec'
 import { EchoGate, PauseChunker, type CutChunk } from '../shared/audio/chunker'
-import { SAMPLE_RATE } from '../shared/audio/vad'
+import { LevelNormalizer } from '../shared/audio/level'
+import { rms, SAMPLE_RATE, type SpeechClassifier } from '../shared/audio/vad'
 import type { AudioTrack, TranscriptWord } from '../shared/types'
 import { log } from './log'
 
@@ -25,6 +27,8 @@ const CONTEXT_CHARS = 300
 const MIN_OWN_SECONDS = 0.4
 /** How long the mic's own-speech frames are remembered, enough for any chunk. */
 const OWN_MEMORY_SECONDS = 60
+/** A levelled mic frame this loud, let through by the echo gate, is the user's own speech. */
+const OWN_RMS = 0.006
 
 export type Transcribe = (pcm: Float32Array, prompt: string) => Promise<TranscriptWord[]>
 
@@ -34,6 +38,15 @@ export type TranscribedChunk = {
   start: number
   end: number
   words: TranscriptWord[]
+}
+
+export type TranscriberOptions = {
+  /** Text before this recording (the session's title and transcript so far). */
+  context?: string
+  /** A speech classifier per track (Silero); null falls back to the energy detector. */
+  classifier?: () => SpeechClassifier | null
+  /** Give Whisper a track's earlier text as its prompt (on unless an eval turns it off). */
+  carryContext?: boolean
 }
 
 export type TranscriberProgress = {
@@ -46,6 +59,11 @@ type Pending = { track: AudioTrack; start: number; result: TranscribedChunk | nu
 type Lane = {
   track: AudioTrack
   chunker: PauseChunker
+  /**
+   * Levels what the voice detector judges. Whisper gets the audio unlevelled: it normalizes its
+   * own input, and levelled audio cost it accuracy in the evals (gain steps between frames).
+   */
+  level: LevelNormalizer
   /** Samples received but not yet fed to the chunker (waiting for the other track to catch up). */
   buffered: Float32Array[]
   bufferedLength: number
@@ -71,6 +89,10 @@ function take(lane: Lane, count: number): Float32Array {
   return out
 }
 
+function levelled(lane: Lane, frame: Float32Array): Float32Array {
+  return lane.level.apply(frame, rms(frame))
+}
+
 function lastWords(text: string): string {
   const trimmed = text.replace(/\s+/g, ' ').trim()
   if (trimmed.length <= CONTEXT_CHARS) return trimmed
@@ -80,6 +102,8 @@ function lastWords(text: string): string {
 
 export class ChunkedTranscriber {
   private readonly lanes = new Map<AudioTrack, Lane>()
+  private readonly carryContext: boolean
+  private readonly canceller: EchoCanceller | null
   private readonly gate: EchoGate | null
   private readonly pending: Pending[] = []
   /** Session-timeline samples where a mic frame of the user's own speech starts (calls only). */
@@ -95,15 +119,17 @@ export class ChunkedTranscriber {
     private readonly transcribe: Transcribe,
     private readonly onChunk: (chunk: TranscribedChunk) => void,
     private readonly onProgress: (progress: TranscriberProgress) => void = () => undefined,
-    /** Text before this recording (the session's title and transcript so far). */
-    context = ''
+    options: TranscriberOptions = {}
   ) {
+    const { context = '', classifier = () => null } = options
+    this.carryContext = options.carryContext ?? true
     for (const track of tracks) {
       const lane: Lane = {
         track,
         chunker: new PauseChunker((chunk) => {
           this.cut(lane, chunk)
-        }),
+        }, classifier()),
+        level: new LevelNormalizer(),
         buffered: [],
         bufferedLength: 0,
         at: start,
@@ -111,7 +137,9 @@ export class ChunkedTranscriber {
       }
       this.lanes.set(track, lane)
     }
-    this.gate = this.lanes.has('system') ? new EchoGate() : null
+    const call = this.lanes.has('system')
+    this.canceller = call ? new EchoCanceller() : null
+    this.gate = call ? new EchoGate() : null
   }
 
   /** Captured samples of one track, appended to what that track has had so far. */
@@ -137,8 +165,24 @@ export class ChunkedTranscriber {
     return { queued: this.pending.filter((entry) => !entry.result).length }
   }
 
-  stats(): Record<string, number> {
-    return { ...this.gate?.stats(), echoChunks: this.dropped, queued: this.pending.length }
+  stats(): Record<string, number | boolean | null> {
+    const levels = Object.fromEntries(
+      [...this.lanes.values()].flatMap((lane) => {
+        const { gainDb, speechDb } = lane.level.stats()
+        return [
+          [`${lane.track}GainDb`, gainDb],
+          [`${lane.track}SpeechDb`, speechDb]
+        ]
+      })
+    )
+    const aec = this.canceller?.stats()
+    return {
+      ...this.gate?.stats(),
+      ...(aec ? { aecErleDb: aec.erleDb, aecAdapted: aec.adapted, aecResets: aec.resets, aecCopies: aec.copies } : {}),
+      ...levels,
+      echoChunks: this.dropped,
+      queued: this.pending.length
+    }
   }
 
   /**
@@ -156,14 +200,14 @@ export class ChunkedTranscriber {
         const systemAt = system.at
         const far = take(system, FRAME)
         const near = take(mic, FRAME)
-        system.chunker.push(far, systemAt)
-        if (this.gate) {
-          const kept = this.gate.apply(near, far)
-          if (this.gate.own) this.rememberOwn(micAt)
-          mic.chunker.push(kept, micAt)
-        } else {
-          mic.chunker.push(near, micAt)
-        }
+        system.chunker.push(far, systemAt, levelled(system, far))
+        // Raw tracks in, so the canceller's model of the room is linear: echo removed, then what
+        // the canceller missed gated, then levelled.
+        const cleaned = this.canceller ? this.canceller.process(near, far) : near
+        const kept = this.gate ? this.gate.apply(cleaned, far) : cleaned
+        const level = levelled(mic, kept)
+        if (this.gate?.passed && rms(level) >= OWN_RMS) this.rememberOwn(micAt)
+        mic.chunker.push(kept, micAt, level)
       }
       return
     }
@@ -171,7 +215,8 @@ export class ChunkedTranscriber {
       const frames = all ? Math.ceil(lane.bufferedLength / FRAME) : Math.floor(lane.bufferedLength / FRAME)
       for (let i = 0; i < frames; i++) {
         const at = lane.at
-        lane.chunker.push(take(lane, FRAME), at)
+        const frame = take(lane, FRAME)
+        lane.chunker.push(frame, at, levelled(lane, frame))
       }
     }
   }
@@ -199,7 +244,7 @@ export class ChunkedTranscriber {
     this.onProgress(this.progress())
     this.work = this.work.then(async () => {
       try {
-        const words = await this.transcribe(chunk.pcm, lastWords(lane.context))
+        const words = await this.transcribe(chunk.pcm, this.carryContext ? lastWords(lane.context) : '')
         const base = entry.start
         const limit = base + chunk.pcm.length / SAMPLE_RATE
         const placed = words.map((word) => ({

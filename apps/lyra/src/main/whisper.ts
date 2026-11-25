@@ -2,8 +2,12 @@ import { BrowserWindow } from 'electron'
 import { createRequire } from 'node:module'
 import { arch, platform } from 'node:os'
 import { join } from 'node:path'
+import { z } from 'zod'
 import type { TranscriptWord, WhisperStatus } from '../shared/types'
+import hallucinationList from './data/hallucinations.json'
 import { log } from './log'
+import { getSettings } from './settings'
+import { ensureSpeechVad } from './speechVad'
 import { ensureModelFile, hasModelFile, modelsDir, type ModelFile } from './models'
 
 /**
@@ -102,13 +106,14 @@ export async function ensureModel(): Promise<void> {
     }
   }
   await ensureModelFile(VAD_MODEL)
+  // Where chunks start and end; recording falls back to the energy detector without it.
+  await ensureSpeechVad()
   modelReady = true
 }
 
 /** A sentence this many times, making up this share of a chunk, is Whisper looping. */
 const LOOP_REPEATS = 3
 const LOOP_SHARE = 0.6
-const HALLUCINATIONS = new Set(['you', 'thank you', 'thanks for watching', 'bye', '.', '...'])
 
 function seconds(stamp: unknown): number {
   const match = /^(\d+):(\d+):(\d+)[,.](\d+)$/.exec(String(stamp))
@@ -156,9 +161,19 @@ function wordsFromTokens(result: { transcription?: unknown }): TranscriptWord[] 
     .filter((word) => word.text.trim())
 }
 
+/** Letters and digits in any script, lowercased, single-spaced: "I'm" and "i m" compare equal. */
 function normalize(text: string): string {
-  return text.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim()
+  return text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
 }
+
+const HallucinationList = z.object({ phrases: z.array(z.string()) })
+
+/**
+ * What Whisper writes when it hears no speech ("Thanks for watching", "Subtitles by the Amara.org
+ * community", and the same in other languages), from published lists pulled in by
+ * `scripts/update-word-lists.cjs`. Only a whole chunk that is one of these is dropped.
+ */
+const HALLUCINATIONS = new Set(HallucinationList.parse(hallucinationList).phrases.map(normalize).filter(Boolean))
 
 /**
  * Whisper looping on a sound it can't make out: mostly one sentence over and over ("I'm very
@@ -167,7 +182,7 @@ function normalize(text: string): string {
  */
 function isLoop(raw: string): boolean {
   const sentences = raw
-    .split(/(?<=[.!?])\s+/)
+    .split(/(?<=[.!?。！？।؟])\s*/u)
     .map(normalize)
     .filter(Boolean)
   if (sentences.length < LOOP_REPEATS) return false
@@ -185,8 +200,20 @@ function isHallucination(words: TranscriptWord[], prompt: string): boolean {
   return text.length > 12 && normalize(prompt).includes(text)
 }
 
+/**
+ * whisper.cpp's Silero pass, set rather than left to its defaults. Those pad speech by only 30 ms,
+ * far less than the chunker keeps around it (300 ms pre-roll and tail), so word edges could be
+ * cut. The chunker has already found speech, so this pass only removes what clearly isn't: a
+ * lower bar than the default 0.5, and 200 ms of padding on each side.
+ */
+const VAD_OPTIONS = {
+  vad_threshold: 0.35,
+  vad_min_speech_duration_ms: 150,
+  vad_min_silence_duration_ms: 300,
+  vad_speech_pad_ms: 200
+}
+
 const BASE_OPTIONS = {
-  language: 'en',
   translate: false,
   no_timestamps: false,
   // One row per token, so the renderer gets word-level timestamps.
@@ -209,8 +236,11 @@ async function runWhisper(pcm: Float32Array, prompt: string): Promise<Transcript
   const options = {
     ...BASE_OPTIONS,
     model: modelPath(),
+    // Read per chunk, so a change in Settings applies to the next one.
+    language: getSettings().transcriptionLanguage,
     vad: true,
     vad_model: join(modelsDir(), VAD_MODEL.name),
+    ...VAD_OPTIONS,
     pcmf32: pcm,
     prompt
   }
@@ -258,15 +288,15 @@ export async function transcribePcm(pcm: Float32Array, prompt = ''): Promise<Tra
       startedAt = Date.now()
       return runWhisper(pcm, prompt)
     })
-    const text = words.map((word) => word.text).join('').trim()
     const dropped = isHallucination(words, prompt)
+    // Counts only: transcripts never go in the log (AGENTS.md).
     log('whisper', dropped ? 'dropped as hallucination' : 'transcribed', {
       audioSec: +(pcm.length / 16000).toFixed(2),
       queuedMs: startedAt - queuedAt,
       runMs: Date.now() - startedAt,
       gpu: useGpu,
       promptChars: prompt.length,
-      text
+      words: words.length
     })
     return dropped ? [] : words
   } catch (error) {

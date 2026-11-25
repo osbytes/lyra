@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { ModelId, ProviderId } from './ai'
+import { TranscriptionLanguage } from './languages'
 
 /** Both formats are always readable; this one is used for new notes. */
 export const NoteFormat = z.enum(['txt', 'md'])
@@ -37,6 +38,8 @@ export const SettingsSchema = z.object({
    */
   audioRetentionDays: z.int().min(0).max(3650).nullable(),
   captureSystemAudio: z.boolean(),
+  /** What Whisper transcribes: a language code, or `auto` to detect it per chunk. */
+  transcriptionLanguage: TranscriptionLanguage,
   /** Summaries and titles: off, a model on this computer, or a cloud model the user chose. */
   notesEngine: z.enum(['off', 'local', 'cloud']),
   cloudProvider: ProviderId,

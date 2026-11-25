@@ -1,10 +1,12 @@
 /**
- * Energy-based voice activity detection with an adaptive noise floor.
+ * Voice activity detection: speech (plus a short pre-roll so first syllables aren't clipped) is
+ * forwarded, silence is not, and a long pause ends the thought. Sentence boundaries are left to
+ * Whisper, which is far better at them than any pause heuristic.
  *
- * Its only job is gating: speech (plus a short pre-roll so first syllables
- * aren't clipped) is forwarded to the transcriber, silence is not. Sentence
- * boundaries are left to Whisper, which is far better at them than any pause
- * heuristic.
+ * Which frames are speech comes from a `SpeechClassifier` when one is given (Silero, in main:
+ * `src/main/speechVad.ts`), since a model tells a voice from music, a fan or a keyboard and an
+ * energy threshold can't. Without one (tests, or the model failed to load) an energy detector with
+ * an adaptive noise floor decides.
  */
 
 export const SAMPLE_RATE = 16000
@@ -31,6 +33,11 @@ const MAX_HOLD_RMS = 0.012
  * never drags the floor up to the level of the voice.
  */
 const FLOOR_WINDOW = Math.round((3 * SAMPLE_RATE) / 512)
+
+/** Says whether a frame is speech. Stateful: it must see every frame, in order. */
+export type SpeechClassifier = {
+  isSpeech: (frame: Float32Array) => boolean
+}
 
 export type VoiceEvents = {
   /** Speech started; `frames` is the pre-roll, already including the onset. */
@@ -62,14 +69,24 @@ export class VoiceDetector {
   private preRoll: Float32Array[] = []
   private preRollLength = 0
 
-  constructor(private readonly events: VoiceEvents) {}
+  constructor(
+    private readonly events: VoiceEvents,
+    private readonly classifier: SpeechClassifier | null = null
+  ) {}
 
-  /** Feeds one frame of 16 kHz audio and returns its RMS level. */
-  push(frame: Float32Array): number {
-    const energy = rms(frame)
+  /**
+   * Feeds one frame of 16 kHz audio and returns the RMS level it was judged by. `analysis` is the
+   * same audio levelled for judging; `frame` is what's kept and handed on.
+   */
+  push(frame: Float32Array, analysis: Float32Array = frame): number {
+    const energy = rms(analysis)
     this.trackFloor(energy)
-    if (this.speaking) this.whileSpeaking(frame, energy)
-    else this.whileWaiting(frame, energy)
+    const speech = this.classifier?.isSpeech(analysis) ?? null
+    // Silero keeps hearing speech through reverberation and breaths, which held chunks open far
+    // past the pause; once speaking, a frame also has to be above the hold level to count.
+    const held = energy >= this.holdThreshold()
+    if (this.speaking) this.whileSpeaking(frame, speech === null ? held : speech && held)
+    else this.whileWaiting(frame, speech ?? energy >= this.onsetThreshold())
     return energy
   }
 
@@ -108,7 +125,7 @@ export class VoiceDetector {
     this.onset = 0
   }
 
-  private whileWaiting(frame: Float32Array, energy: number): void {
+  private whileWaiting(frame: Float32Array, voiced: boolean): void {
     this.preRoll.push(frame)
     this.preRollLength += frame.length
     let oldest = this.preRoll[0]
@@ -118,7 +135,7 @@ export class VoiceDetector {
       oldest = this.preRoll[0]
     }
 
-    if (energy >= this.onsetThreshold()) {
+    if (voiced) {
       this.onset += frame.length
       if (this.onset >= ONSET) {
         this.speaking = true
@@ -134,9 +151,8 @@ export class VoiceDetector {
     this.onset = 0
   }
 
-  private whileSpeaking(frame: Float32Array, energy: number): void {
+  private whileSpeaking(frame: Float32Array, voiced: boolean): void {
     this.events.onFrame(frame)
-    const voiced = energy >= this.holdThreshold()
     this.silence = voiced ? 0 : this.silence + frame.length
     if (this.silence >= END_PAUSE) {
       this.speaking = false

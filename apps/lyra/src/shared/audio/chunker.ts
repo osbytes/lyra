@@ -1,4 +1,4 @@
-import { rms, SAMPLE_RATE, VoiceDetector } from './vad'
+import { rms, SAMPLE_RATE, VoiceDetector, type SpeechClassifier } from './vad'
 
 /**
  * Cuts one track of a recording into chunks for whole-chunk transcription, the way WhisperX's
@@ -60,26 +60,38 @@ export class PauseChunker {
   private open: Open | null = null
   private next = 0
   private heard: Heard = { started: null, speaking: false, ended: false }
-  private readonly voice = new VoiceDetector({
-    onStart: (frames) => {
-      this.heard.started = frames
-      this.heard.speaking = true
-    },
-    onFrame: () => {
-      this.heard.speaking = true
-    },
-    onEnd: () => {
-      this.heard.ended = true
-    }
-  })
+  private readonly voice: VoiceDetector
 
-  constructor(private readonly onChunk: (chunk: CutChunk) => void) {}
+  constructor(
+    private readonly onChunk: (chunk: CutChunk) => void,
+    /** Decides which frames are speech (Silero in main); without one, the energy detector does. */
+    classifier: SpeechClassifier | null = null
+  ) {
+    this.voice = new VoiceDetector(
+      {
+        onStart: (frames) => {
+          this.heard.started = frames
+          this.heard.speaking = true
+        },
+        onFrame: () => {
+          this.heard.speaking = true
+        },
+        onEnd: () => {
+          this.heard.ended = true
+        }
+      },
+      classifier
+    )
+  }
 
-  /** One frame of 16 kHz audio starting at sample `at` of the session timeline. */
-  push(frame: Float32Array, at: number): void {
+  /**
+   * One frame of 16 kHz audio starting at sample `at` of the session timeline. Speech is judged on
+   * `analysis` (the frame levelled); the chunk keeps `frame` as it was.
+   */
+  push(frame: Float32Array, at: number, analysis: Float32Array = frame): void {
     const heard: Heard = { started: null, speaking: false, ended: false }
     this.heard = heard
-    const level = this.voice.push(frame)
+    const level = this.voice.push(frame, analysis)
     this.next = at + frame.length
 
     const { started } = heard
@@ -198,16 +210,16 @@ const COUPLING_PERCENTILE = 0.3
  */
 const OPEN_FRAMES = 3
 const HOLD_FRAMES = 6
-/** A frame this loud on the mic, not gated, is the user's own speech. */
-const OWN_RMS = 0.006
+/** The coupling is re-measured this often (frames): sorting its history every frame is waste. */
+const COUPLING_EVERY = 16
 
 /**
- * Keeps the far end of a call out of the mic track. On speakers the remote voice plays into the
- * room and the mic hears it almost as loud as the system track, so it would be transcribed twice
- * and given to the user. The gate silences mic frames that are no louder than the echo expected
- * from what the system track just played. How much the speakers leak (the coupling) is measured
- * as the call goes, from the quieter mic frames while the far end talks: near zero on
- * headphones, so the user is never gated, and near one on laptop speakers.
+ * Keeps what's left of the far end out of the mic track, after `EchoCanceller` has removed what
+ * it can. On speakers the remote voice plays into the room, so it would be transcribed twice and
+ * given to the user. The gate silences mic frames that are no louder than the echo expected from
+ * what the system track just played. How much still leaks (the coupling) is measured as the call
+ * goes, from the quieter mic frames while the far end talks: near zero on headphones, and once the
+ * canceller has converged, so the user is rarely gated when talking over the far end.
  */
 export class EchoGate {
   private readonly far: number[] = []
@@ -218,8 +230,9 @@ export class EchoGate {
   private frames = 0
   private above = 0
   private hold = 0
-  /** Whether the latest frame was the user's own speech (loud enough, and not the echo). */
-  own = false
+  private sinceLearned = 0
+  /** Whether the latest frame was let through (the far end silent, or the mic above its echo). */
+  passed = true
 
   /** The mic frame, or silence where it only holds the far end's echo. */
   apply(mic: Float32Array, system: Float32Array): Float32Array {
@@ -233,7 +246,7 @@ export class EchoGate {
     if (far < FAR_ACTIVE) {
       this.above = 0
       this.hold = 0
-      this.own = near >= OWN_RMS
+      this.passed = true
       return mic
     }
     // Peaks over the same window, so the echo's delay and the gaps between syllables don't
@@ -243,10 +256,10 @@ export class EchoGate {
     if (this.above >= OPEN_FRAMES) this.hold = HOLD_FRAMES
     else if (this.hold > 0) this.hold--
     if (this.hold > 0) {
-      this.own = near >= OWN_RMS
+      this.passed = true
       return mic
     }
-    this.own = false
+    this.passed = false
     this.gated++
     return new Float32Array(mic.length)
   }
@@ -259,6 +272,8 @@ export class EchoGate {
     this.ratios.push(ratio)
     if (this.ratios.length > COUPLING_HISTORY) this.ratios.shift()
     if (this.ratios.length < COUPLING_MIN_SAMPLES) return
+    if (++this.sinceLearned < COUPLING_EVERY) return
+    this.sinceLearned = 0
     const sorted = [...this.ratios].sort((a, b) => a - b)
     this.coupling = sorted[Math.floor(sorted.length * COUPLING_PERCENTILE)] ?? this.coupling
   }

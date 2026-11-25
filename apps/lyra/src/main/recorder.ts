@@ -10,7 +10,8 @@ import { notifyLabeled } from './meeting/events'
 import { resolveInNotes } from './pages'
 import { sessionAudioDir, sessionRawDir, updateManifest, type RawPass, type TrackInfo } from './sessionStore'
 import { TakeWriter } from './takeWriter'
-import { ChunkedTranscriber, type TranscribedChunk } from './transcriber'
+import { ChunkedTranscriber, type TranscribedChunk, type Transcribe } from './transcriber'
+import { createSpeechClassifier, ensureSpeechVad } from './speechVad'
 import { MODEL_LABEL, transcribePcm } from './whisper'
 
 /**
@@ -41,6 +42,10 @@ type Recording = {
 }
 
 let active: Recording | null = null
+/** How recordings are transcribed: the app's way, unless an eval asks for another (replay). */
+export type TranscribeExperiment = { transcribe: Transcribe; carryContext: boolean }
+const APP_TRANSCRIBE: TranscribeExperiment = { transcribe: transcribePcm, carryContext: true }
+let experiment = APP_TRANSCRIBE
 /** Off in test runs: identifying speakers needs the downloaded models. */
 let identifySpeakers = true
 /** Off in test runs too, which have no Whisper model; the audio is still recorded. */
@@ -115,6 +120,8 @@ async function start(pageId: string, withSystem: boolean): Promise<number> {
   const earlier = (await readLiveSegments(pageId)).flatMap((segment) =>
     segment.track === 'mix' ? [] : [{ track: segment.track, start: segment.start, end: segment.end }]
   )
+  // Normally loaded by the window's warm-up already; replays and evals start here.
+  if (transcribeAudio) await ensureSpeechVad()
   const writer = new TakeWriter(pageId, tracks.has('system'), earlier)
   const context = await writer.begin()
   const live: LiveSegment[] = []
@@ -128,7 +135,7 @@ async function start(pageId: string, withSystem: boolean): Promise<number> {
     transcriber: new ChunkedTranscriber(
       [...tracks.keys()],
       micBytes / 2,
-      transcribeAudio ? transcribePcm : () => Promise.resolve([]),
+      transcribeAudio ? experiment.transcribe : () => Promise.resolve([]),
       (chunk) => {
         live.push(segmentOf(chunk))
         writer.write(chunk)
@@ -136,7 +143,11 @@ async function start(pageId: string, withSystem: boolean): Promise<number> {
       (progress) => {
         reportProgress(recording, progress)
       },
-      context
+      {
+        context,
+        classifier: transcribeAudio ? createSpeechClassifier : () => null,
+        carryContext: experiment.carryContext
+      }
     )
   }
   active = recording
@@ -324,9 +335,10 @@ export function onRecordingFinished(listener: (recording: MeetingRecording) => v
  * through exactly what a live recording runs (`meeting/replay.ts`).
  */
 export const recorderFixture = {
-  start: (pageId: string, withSystem: boolean): Promise<number> => {
+  start: (pageId: string, withSystem: boolean, transcribe: TranscribeExperiment = APP_TRANSCRIBE): Promise<number> => {
     identifySpeakers = true
     transcribeAudio = true
+    experiment = transcribe
     return start(pageId, withSystem)
   },
   append,
