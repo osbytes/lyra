@@ -2,7 +2,7 @@
 //   pnpm smoke:meeting path/to/meeting.wav [path/to/system.wav] [options]
 // The optional second file is the system-audio track (the other side of a call). Options:
 //   --offline             diarize then transcribe, instead of replaying as a live recording
-//   --no-relabel          keep the live pass's speakers (no relabel after stop)
+//   --no-relabel          keep the speakers as labeled while recording (no relabel after stop)
 //   --notes local|claude  also write meeting notes (local downloads a ~2 GB model)
 //   --output <file.json>  write the labeled segments for the eval scorers
 //   --enroll <file.wav>   first save this as the laptop owner's voice, as People would

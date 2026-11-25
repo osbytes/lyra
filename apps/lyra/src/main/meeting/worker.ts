@@ -12,6 +12,8 @@ import type {
   DiarizeRequest,
   DiarizeResult,
   DiarizedSegment,
+  RollRequest,
+  RollResult,
   SpeakerModels,
   WorkerRequest,
   WorkerResponse
@@ -20,10 +22,12 @@ import {
   clusterLongWindows,
   foldShortSpeakers,
   labelTimeline,
+  minSpeakerSeconds,
   speechWindows,
   unit,
   type Span
 } from './clustering'
+import { advance, emptyRolling, rollingResult, type RollingState } from './rollingDiarizer'
 import { energy, mixTracks, readWav, SAMPLE_RATE } from './wav'
 
 /** Audio per speaker used for their voiceprint: enough to be stable, cheap to compute. */
@@ -33,15 +37,6 @@ const THREADS = 2
 const WINDOW_SECONDS = 3
 /** Windows shorter than this don't shape the clusters; they take the nearest speaker after. */
 const MIN_WINDOW_SECONDS = 1
-/**
- * A "speaker" with fewer seconds of windows than this is folded into the closest one: a few
- * windows of their own are usually one person's cough, laugh or a stretch of crosstalk. Windows
- * half-overlap, so this counts about twice their speech. 15 s in a session of minutes (the eval
- * sweep's best), scaled down for short recordings so a second voice in a one-minute note counts.
- */
-function minSpeakerSeconds(windowSeconds: number): number {
-  return Math.min(15, Math.max(5, windowSeconds * 0.08))
-}
 /**
  * A speaker under that bar who has this many transcribed words to themselves is kept: a cough
  * or laugh has none, and a person who said one sentence is still a person.
@@ -100,24 +95,90 @@ function clusterEmbeddings(
   })
 }
 
+/**
+ * sherpa-onnx finds the speech and where voices change; its own clustering of short pieces
+ * can't tell people at one desk mic apart, so its labels are dropped and ours are used.
+ */
+function segmenter(models: SpeakerModels): OfflineSpeakerDiarization {
+  return new OfflineSpeakerDiarization({
+    segmentation: { pyannote: { model: models.segmentation }, numThreads: THREADS },
+    embedding: { model: models.embedding, numThreads: THREADS },
+    clustering: { numClusters: -1, threshold: SEGMENTATION_THRESHOLD },
+    minDurationOn: 0.3,
+    minDurationOff: 0.5
+  })
+}
+
+function speechPieces(diarizer: OfflineSpeakerDiarization, audio: Float32Array): Span[] {
+  return diarizer
+    .process(audio)
+    .map(({ start, end }) => ({ start, end }))
+    .sort((a, b) => a.start - b.start)
+}
+
+/** The recording being diarized as it grows: what `rollingDiarizer.ts` has settled of it. */
+let rolling: { key: string; diarizer: OfflineSpeakerDiarization; state: RollingState } | null = null
+
+/**
+ * Who spoke when in a recording still being made, from the audio since the last round and what
+ * earlier rounds kept. A session's audio only ever grows while it is recorded, so what was
+ * settled stays true; another recording starts over. One round at a time (the caller waits).
+ */
+async function roll(request: RollRequest): Promise<RollResult> {
+  const started = Date.now()
+  const current =
+    rolling?.key === request.key
+      ? rolling
+      : { key: request.key, diarizer: segmenter(request.models), state: emptyRolling() }
+  rolling = current
+  const from = current.state.doneTo
+  let mic = await readWav(request.micPath, from, Infinity, true)
+  let system = request.systemPath ? await readWav(request.systemPath, from, Infinity, true) : null
+  // The two files are written a batch at a time, so one can be a moment ahead of the other.
+  if (system) {
+    const samples = Math.min(mic.length, system.length)
+    mic = mic.subarray(0, samples)
+    system = system.subarray(0, samples)
+  }
+  const { diarizer } = current
+  const { state, tail } = advance(
+    current.state,
+    { mic, system },
+    {
+      sampleRate: SAMPLE_RATE,
+      windowSeconds: WINDOW_SECONDS,
+      minWindowSeconds: MIN_WINDOW_SECONDS,
+      // Under a second there is nothing to find, and the model isn't made for it.
+      segment: (audio) => (audio.length < SAMPLE_RATE ? [] : speechPieces(diarizer, audio)),
+      embed: (samples) => embed(request.models, samples)
+    }
+  )
+  const embedded = state.windows.length - current.state.windows.length + tail.windows.length
+  current.state = state
+  const result = rollingResult(state, tail, {
+    threshold: request.threshold,
+    minWindowSeconds: MIN_WINDOW_SECONDS,
+    minOwnWords: MIN_OWN_WORDS,
+    hasSystem: system !== null,
+    words: request.words
+  })
+  return {
+    ...result,
+    stats: {
+      from: +from.toFixed(1),
+      windows: state.windows.length + tail.windows.length,
+      embedded,
+      ms: Date.now() - started
+    }
+  }
+}
+
 async function diarize(request: DiarizeRequest): Promise<DiarizeResult> {
   const mic = await readWav(request.micPath)
   const system = request.systemPath ? await readWav(request.systemPath) : null
   const audio = mixTracks(mic, system)
 
-  // sherpa-onnx finds the speech and where voices change; its own clustering of short pieces
-  // can't tell people at one desk mic apart, so its labels are dropped and ours are used.
-  const diarizer = new OfflineSpeakerDiarization({
-    segmentation: { pyannote: { model: request.models.segmentation }, numThreads: THREADS },
-    embedding: { model: request.models.embedding, numThreads: THREADS },
-    clustering: { numClusters: -1, threshold: SEGMENTATION_THRESHOLD },
-    minDurationOn: 0.3,
-    minDurationOff: 0.5
-  })
-  const pieces: Span[] = diarizer
-    .process(audio)
-    .map(({ start, end }) => ({ start, end }))
-    .sort((a, b) => a.start - b.start)
+  const pieces = speechPieces(segmenter(request.models), audio)
   const windows = speechWindows(pieces, WINDOW_SECONDS)
   const prints = windows.map(({ start, end }) =>
     unit(
@@ -166,7 +227,9 @@ async function handle(request: WorkerRequest): Promise<WorkerResponse> {
     const result =
       request.type === 'diarize'
         ? await diarize(request)
-        : embed(request.models, request.samples)
+        : request.type === 'roll'
+          ? await roll(request)
+          : embed(request.models, request.samples)
     return { id: request.id, ok: true, result }
   } catch (error) {
     return { id: request.id, ok: false, error: error instanceof Error ? error.message : String(error) }

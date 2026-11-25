@@ -23,9 +23,10 @@
 //                             time. Loopback can't be faked, so the system track is left out: use
 //                             it on room sessions (`--sessions room-2-desk,room-2-fan`)
 //   --pipeline live|stream|offline   live (default) replays the audio as a recording, as the app
-//                             runs it: chunks labeled by track, then relabeling once it stops; stream
-//                             is the track-labeled lines alone; offline is the diarize-then-transcribe
-//                             pipeline
+//                             runs it: speakers settled every half minute while it records, then
+//                             relabeling once it stops; stream is the lines as they stood at the
+//                             stop (the newest not labeled yet); offline is the
+//                             diarize-then-transcribe pipeline
 //
 // Prints WER, cpWER (words given to the wrong speaker count as errors) and DER per item, and
 // writes references, hypotheses and results.json under eval-data/results/<time>/. Data goes to

@@ -218,7 +218,8 @@ export async function learnSamples(samples: readonly LearnedSample[]): Promise<v
  */
 export async function nameSpeakers(
   result: DiarizeResult,
-  context: { pageId: string; hasSystemTrack: boolean }
+  /** `quiet`: no log line per speaker (a pass that runs again every half minute). */
+  context: { pageId: string; hasSystemTrack: boolean; quiet?: boolean }
 ): Promise<{ speakers: NamedSpeaker[]; learn: LearnedSample[] }> {
   const { pageId, hasSystemTrack } = context
   const me = await selfPerson()
@@ -244,7 +245,7 @@ export async function nameSpeakers(
     assigned.set(speaker, match)
     taken.add(match.person.id)
   }
-  for (const { speaker, scores } of scored) {
+  for (const { speaker, scores } of context.quiet ? [] : scored) {
     const best = scores[0]
     log('meeting', 'voice match', {
       speaker,

@@ -74,6 +74,7 @@ import { registerKeyIpc } from './secrets'
 import { createServices, type Services } from './services'
 import { releaseNotesModel, stopNotesWorker } from './meeting/notesLocal'
 import { stopSpeakerWorker } from './meeting/speakers'
+import { startLiveLabels } from './meeting/liveLabels'
 import { relabelSession } from './meeting/relabel'
 import {
   finishRecordingForQuit,
@@ -559,7 +560,8 @@ void app.whenReady().then(() => {
   // A capture replay records through the window, so it needs the real recorder.
   const recordsForReal = !isTestRun || (task.kind === 'meeting' && task.capture)
   registerRecorderIpc({ identifySpeakers: recordsForReal, transcribe: recordsForReal })
-  // Evals pass --no-relabel to score the track-labeled lines on their own.
+  startLiveLabels()
+  // Evals pass --no-relabel to score the lines as they stood when the recording stopped.
   if (task?.kind !== 'meeting' || task.relabel) {
     onRecordingFinished((recording) => {
       if (identifiesSpeakers()) void relabelSession(recording.pageId)

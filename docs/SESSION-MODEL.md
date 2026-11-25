@@ -269,7 +269,7 @@ from the plan above:
   starts.
 - **One kind of session.** There is no dictation/meeting switch: every session records the
   mic, plus the computer's audio when that setting is on.
-- **Transcribed a chunk at a time, labeled by track, settled when the recording stops.**
+- **Transcribed a chunk at a time, labeled from the voices as it goes, settled when the recording stops.**
   Main transcribes the audio as it arrives (`src/main/transcriber.ts`), each track on its own.
   A track is cut into chunks at pauses, up to Whisper's 30 s window, as WhisperX's "cut and
   merge" does (`src/shared/audio/chunker.ts`); context carries across chunks as Whisper's prompt,
@@ -277,9 +277,12 @@ from the plan above:
   is final when it lands, so the window never shows text that might change; until then it shows
   that it's transcribing and how far behind it is. On a call (a system track as well as the mic)
   the remote voice that plays from the speakers into the mic is gated out of the mic track
-  (`EchoGate`), and each line is labeled by its track: the person at this computer, or "Remote"
-  (`src/main/takeWriter.ts`). Without a system track lines have no speaker until the recording
-  stops, and one voice reads as plain paragraphs. Once a recording stops, `meeting/relabel.ts`
+  (`EchoGate`). A line is written with no speaker (`src/main/takeWriter.ts`): the track says where
+  a sound came from, not who made it (two people share a desk mic, several are on one call), so
+  the tracks only keep to separate lines. Every half minute `meeting/liveLabels.ts` diarizes the
+  recording so far, the way a finished one is but keeping each round's windows and voiceprints so
+  a round costs only the new audio (`meeting/rollingDiarizer.ts`), and gives the lines up to
+  there their speakers; what was said since waits for the next round. Once a recording stops, `meeting/relabel.ts`
   diarizes the whole session's audio and moves each word to the speaker diarized at its time (as
   WhisperX assigns words), keeping mic words with speakers heard on the mic and system words with
   the far end, rebuilding lines by turn. The words stay exactly as transcribed; edited lines keep
