@@ -1,3 +1,5 @@
+import type { ProcessUsage } from '../shared/types'
+
 /**
  * Turns Electron's per-process metrics into one compact log entry. Kept apart from the Electron
  * code that samples them so it's unit-tested.
@@ -13,7 +15,29 @@ export type ProcessSample = {
   memory: { workingSetSize: number }
 }
 
-export type ProcessUsage = { cpu: number; mb: number }
+export type { ProcessUsage }
+
+/** The fields of a graphics adapter in Electron's basic GPU info this needs. */
+export type GpuDevice = { active?: boolean | undefined; vendorId: number; deviceId: number }
+
+const GPU_VENDORS: Readonly<Record<number, string>> = {
+  0x1002: 'AMD',
+  0x106b: 'Apple',
+  0x10de: 'NVIDIA',
+  0x8086: 'Intel'
+}
+
+/**
+ * The adapter in use, as its maker and PCI device id (the system gives ids, not names): the
+ * active one, else the first. Null with none, or one with no ids (Apple silicon reports zeros,
+ * and its CPU's name already says which GPU it is).
+ */
+export function gpuLabel(devices: readonly GpuDevice[]): string | null {
+  const device = devices.find((entry) => entry.active === true) ?? devices[0]
+  if (!device || (device.vendorId === 0 && device.deviceId === 0)) return null
+  const hex = (value: number): string => `0x${value.toString(16).padStart(4, '0')}`
+  return `${GPU_VENDORS[device.vendorId] ?? `vendor ${hex(device.vendorId)}`} ${hex(device.deviceId)}`
+}
 
 /** Lyra's own processes by a short stable name, for a log line someone can read. */
 function label(sample: ProcessSample): string {
