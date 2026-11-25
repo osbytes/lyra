@@ -9,7 +9,8 @@ import {
 } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 import type { WhisperStatus } from '../../../shared/types'
-import type { DictationPhase, Levels } from '../hooks/useDictation'
+import { SYSTEM_AUDIO_BLOCKED_NOTICE, type DictationPhase, type Levels } from '../hooks/useDictation'
+import { notify } from '../lib/toast'
 import { useMicrophones } from '../hooks/useMicrophones'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { formatDuration, shortcutLabel } from '../lib/format'
@@ -397,6 +398,24 @@ export function DictationDock(props: Props) {
       ) : notice ? (
         <p className="dock-notice" role="status">
           {notice}
+          {notice === SYSTEM_AUDIO_BLOCKED_NOTICE ? (
+            <button
+              type="button"
+              className="btn dock-notice-action"
+              onClick={() => {
+                window.api.openPermissionSettings('screen').then(
+                  (opened) => {
+                    if (!opened) notify('Open your system settings to change this.')
+                  },
+                  () => {
+                    notify('Couldn’t open system settings.')
+                  }
+                )
+              }}
+            >
+              Open Settings
+            </button>
+          ) : null}
         </p>
       ) : null}
 

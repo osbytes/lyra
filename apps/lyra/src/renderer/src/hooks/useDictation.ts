@@ -28,6 +28,10 @@ const SILENT_MIC_RMS = 0.0002
 const SILENT_MIC_MS = 8000
 /** How long "Reconnected to …" stays up. */
 const RESTORED_NOTICE_MS = 8000
+const NO_SYSTEM_AUDIO_NOTICE = 'Couldn’t capture computer audio. Recording your microphone only.'
+/** The dock offers the system settings page beside this one. macOS applies the change at launch. */
+export const SYSTEM_AUDIO_BLOCKED_NOTICE =
+  'macOS isn’t letting Lyra record computer audio, so this is your microphone only. Allow it, then restart Lyra.'
 const SILENT_MIC_NOTICE = 'Your microphone isn’t picking anything up. Check that it isn’t muted.'
 const NARROWBAND_NOTICE =
   'Your microphone is a headset in call mode, which lowers the quality of your voice and the computer’s audio. A built-in or wired mic transcribes better.'
@@ -182,7 +186,17 @@ export function useDictation({ getDeviceId }: Options) {
       system = record.systemAudio ? await openSystemAudio() : null
       if (cancelled()) return await giveUp()
       if (record.systemAudio && !system) {
-        setNotice('Couldn’t capture computer audio. Recording your microphone only.')
+        setNotice(NO_SYSTEM_AUDIO_NOTICE)
+        // Why, when the OS can say: a refused permission has a settings page to send them to.
+        window.api.permissionStatus().then(
+          (status) => {
+            if (status.screen === 'granted') return
+            setNotice((current) => (current === NO_SYSTEM_AUDIO_NOTICE ? SYSTEM_AUDIO_BLOCKED_NOTICE : current))
+          },
+          () => {
+            // The plain notice stands.
+          }
+        )
       }
       recorder = await SessionRecorder.start(record.pageId, system !== null)
       if (cancelled()) return await giveUp()

@@ -1044,6 +1044,10 @@ code {
   animation: rise 160ms ease-out;
 }
 
+.dock-notice-action {
+  margin-left: 10px;
+}
+
 .dock-error {
   border-color: transparent;
   background: var(--record-soft);
