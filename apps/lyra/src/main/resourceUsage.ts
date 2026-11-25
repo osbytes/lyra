@@ -1,4 +1,4 @@
-import type { ProcessUsage } from '../shared/types'
+import type { ProcessLoad } from '../shared/types'
 
 /**
  * Turns Electron's per-process metrics into one compact log entry. Kept apart from the Electron
@@ -15,7 +15,7 @@ export type ProcessSample = {
   memory: { workingSetSize: number }
 }
 
-export type { ProcessUsage }
+export type { ProcessLoad }
 
 /** The fields of a graphics adapter in Electron's basic GPU info this needs. */
 export type GpuDevice = { active?: boolean | undefined; vendorId: number; deviceId: number }
@@ -54,8 +54,8 @@ function label(sample: ProcessSample): string {
  * CPU (percent of one core, so 250 is two and a half cores) and memory (MB) per kind of process,
  * with the windows added together, plus the total. Whisper runs in main and on the GPU process.
  */
-export function summarizeProcesses(samples: readonly ProcessSample[]): Record<string, ProcessUsage> {
-  const usage = new Map<string, ProcessUsage>()
+export function summarizeProcesses(samples: readonly ProcessSample[]): Record<string, ProcessLoad> {
+  const usage = new Map<string, ProcessLoad>()
   const add = (key: string, sample: ProcessSample): void => {
     const current = usage.get(key) ?? { cpu: 0, mb: 0 }
     current.cpu += sample.cpu.percentCPUUsage

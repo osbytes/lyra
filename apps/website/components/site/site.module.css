@@ -131,24 +131,59 @@
   color: var(--ink);
 }
 
-/* Hero */
+/* Hero: a night sky across the full width, the copy on the left and the constellation Lyra on
+   the right. The sky is dark in either theme, so it carries the dark tokens. */
+
+.hero {
+  --card: rgba(255, 255, 255, 0.04);
+  --ink: #ececf1;
+  --ink-2: #b6b6c3;
+  --muted: #a3a3b2;
+  --faint: #6e6e7c;
+  --line: rgba(255, 255, 255, 0.14);
+  --accent: #6158f0;
+  --accent-hover: #7069f5;
+  --accent-ink: #b4b0ff;
+
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background:
+    radial-gradient(38% 50% at 72% 30%, rgba(97, 88, 240, 0.26), transparent 70%),
+    radial-gradient(30% 40% at 58% 82%, rgba(100, 200, 225, 0.08), transparent 70%),
+    radial-gradient(34% 44% at 12% 18%, rgba(190, 150, 250, 0.08), transparent 70%),
+    radial-gradient(140% 100% at 60% 30%, #12121d, #07070c);
+  color: var(--ink);
+  color-scheme: dark;
+}
+
+.sky {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  width: 100%;
+  height: 100%;
+}
 
 .hero .inner {
   display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
-  gap: 28px 64px;
-  align-items: end;
-  padding-block: 48px 52px;
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+  gap: 40px 48px;
+  align-items: center;
+  min-height: min(820px, calc(100svh - 76px));
+  padding-block: 56px 72px;
 }
 
-.hero .eyebrow {
-  grid-column: 1 / -1;
+.heroCopy {
+  display: grid;
+  gap: 28px;
+  min-width: 0;
 }
 
 .h1 {
   margin: 0;
   font-family: var(--f-display);
-  font-size: clamp(58px, 10.5vw, 136px);
+  font-size: clamp(58px, 8.4vw, 116px);
   font-weight: 600;
   line-height: 0.9;
   letter-spacing: -0.04em;
@@ -174,7 +209,7 @@
 
 .lede {
   max-width: 32em;
-  margin: 0 0 26px;
+  margin: 36px 0 26px;
   color: var(--ink-2);
   font-size: 18px;
   line-height: 1.6;
@@ -184,16 +219,6 @@
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
-}
-
-.heroNote {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin: 20px 0 0;
-  color: var(--muted);
-  font-size: 14px;
 }
 
 /* Demo band, over ruled paper */
@@ -214,6 +239,20 @@
 
 .demo .inner {
   position: relative;
+}
+
+.shot {
+  display: block;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--card);
+  box-shadow: var(--shadow-win);
+}
+
+.shotImg {
+  width: 100%;
+  height: auto;
 }
 
 .demoCap {

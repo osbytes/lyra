@@ -1301,6 +1301,19 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
     const result: unknown = await win.webContents.executeJavaScript(`
       (async () => {
         const fail = (message) => { throw new Error(message) }
+        // The sampler keeps a reading every intervalMs from launch; wait for the first one.
+        let usage = await window.api.getAppUsage()
+        for (let tries = 0; !usage.samples.length && tries < 40; tries++) {
+          await new Promise((resolve) => setTimeout(resolve, 250))
+          usage = await window.api.getAppUsage()
+        }
+        const reading = usage.samples.at(-1)
+        if (!reading) fail('getAppUsage kept no sample within ' + usage.intervalMs * 2 + 'ms')
+        if (!(reading.memoryBytes > 0) || !(usage.totalMemoryBytes >= reading.memoryBytes)) fail('getAppUsage reported no memory')
+        if (!reading.processes.some((entry) => entry.kind === 'main') || !reading.processes.some((entry) => entry.kind === 'windows')) {
+          fail('getAppUsage is missing the main process or the window: ' + JSON.stringify(reading.processes.map((entry) => entry.kind)))
+        }
+        if (!(reading.cpuPercent >= 0 && reading.cpuPercent <= 100)) fail('getAppUsage CPU out of range: ' + reading.cpuPercent)
         // The list's file dialogs can't run headless; the main-side work is checked directly.
         if (typeof window.api.exportIgnoredApps !== 'function' || typeof window.api.importIgnoredApps !== 'function') {
           fail('ignored-app import/export missing from the bridge')

@@ -1,5 +1,5 @@
 import { DemoProvider } from '@/components/demo/DemoProvider'
-import { Calls, Demo, Download, Files, Footer, Header, Hero, Privacy, Shortcuts } from '@/components/site/Sections'
+import { AppShot, Calls, Download, Files, Footer, Header, Hero, Privacy, Shortcuts } from '@/components/site/Sections'
 import { getLatestRelease } from '@/lib/releases'
 
 // Re-rendered at most hourly, so download links follow new releases.
@@ -14,8 +14,8 @@ export default async function Home() {
       <Header />
       <main id="top">
         <Hero release={release} />
+        <AppShot />
         <DemoProvider now={renderedAt}>
-          <Demo />
           <Shortcuts />
           <Calls />
           <Files />
