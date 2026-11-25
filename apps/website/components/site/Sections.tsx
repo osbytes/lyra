@@ -1,11 +1,12 @@
-import Image from 'next/image'
+import Image, { getImageProps } from 'next/image'
 import type { ReactNode } from 'react'
-import { AppWindow } from '@/components/demo/AppWindow'
 import { FilesBrowser } from '@/components/demo/FilesBrowser'
 import { MeetingCard } from '@/components/demo/MeetingCard'
 import { cx } from '@/lib/cx'
 import { REPO_URL, type Release } from '@/lib/releases'
 import { DownloadCards, HeroDownload } from './DownloadLinks'
+import { HeroGraph } from './HeroGraph'
+import { HeroSky } from './HeroSky'
 import { Keys } from './Keys'
 import { MicIcon, SpeakerIcon } from './SiteIcons'
 import styles from './site.module.css'
@@ -55,46 +56,59 @@ export function Header() {
 export function Hero({ release }: { release: Release }) {
   return (
     <section className={styles.hero}>
+      <HeroSky />
       <div className={styles.inner}>
-        <p className={styles.eyebrow}>Voice notebook for macOS, Windows and Linux</p>
-        <h1 className={styles.h1}>
-          Talk onto{' '}
-          <em>
-            pages
-            <svg className={styles.smile} viewBox="0 0 100 20" preserveAspectRatio="none" aria-hidden="true">
-              <path d="M2 4 Q50 22 98 4" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
-            </svg>
-          </em>
-          .
-        </h1>
-        <div>
-          <p className={styles.lede}>
-            Lyra writes down what you say while you say it, entirely on your computer. Keep typing while it listens, fix
-            any line, and come back later. Every session is a plain text file in a folder you choose.
-          </p>
-          <div className={styles.ctas}>
-            <HeroDownload release={release} />
-            <a className={cx(styles.btn, styles.btnGhost)} href={REPO_URL}>
-              Source on GitHub
-            </a>
+        <div className={styles.heroCopy}>
+          <p className={styles.eyebrow}>Voice notebook for macOS, Windows and Linux</p>
+          <h1 className={styles.h1}>
+            Talk onto{' '}
+            <em>
+              pages
+              <svg className={styles.smile} viewBox="0 0 100 20" preserveAspectRatio="none" aria-hidden="true">
+                <path d="M2 4 Q50 22 98 4" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+              </svg>
+            </em>
+            .
+          </h1>
+          <div>
+            <p className={styles.lede}>
+              Lyra writes down what you say while you say it, entirely on your computer. Keep typing while it listens,
+              fix any line, and come back later. Every session is a plain text file in a folder you choose.
+            </p>
+            <div className={styles.ctas}>
+              <HeroDownload release={release} />
+              <a className={cx(styles.btn, styles.btnGhost)} href={REPO_URL}>
+                Source on GitHub
+              </a>
+            </div>
           </div>
-          <p className={styles.heroNote}>
-            Press <Keys combo="Mod+Shift+Space" className={styles.keys} /> on this page to start a session.
-          </p>
         </div>
+        <HeroGraph />
       </div>
     </section>
   )
 }
 
-export function Demo() {
+const SHOT = { width: 2560, height: 1600, sizes: '(max-width: 1200px) 100vw, 1160px' } as const
+
+/** The app itself, in a meeting: the light or dark capture, following the visitor's theme. */
+export function AppShot() {
+  const alt =
+    'Lyra showing a design review: the sessions list, a generated summary with action items, and a transcript with each line labeled by speaker'
+  const { props: dark } = getImageProps({ ...SHOT, alt, src: '/screenshots/app-meeting-dark.webp' })
+  const {
+    props: { srcSet: light, ...img }
+  } = getImageProps({ ...SHOT, alt, src: '/screenshots/app-meeting-light.webp', loading: 'eager' })
   return (
-    <section className={styles.demo} aria-label="Live demo">
+    <section className={styles.demo} aria-label="Lyra in a meeting">
       <div className={styles.inner}>
-        <AppWindow />
+        <picture className={styles.shot}>
+          <source media="(prefers-color-scheme: dark)" srcSet={dark.srcSet} sizes={SHOT.sizes} />
+          <source media="(prefers-color-scheme: light)" srcSet={light} sizes={SHOT.sizes} />
+          <img {...img} className={styles.shotImg} />
+        </picture>
         <p className={styles.demoCap}>
-          A working demo with a scripted voice. Press the microphone, then keep typing anywhere on the page while Lyra
-          writes at its own cursor.
+          A meeting in Lyra: who said what, a summary with action items, and every line kept as it was heard.
         </p>
       </div>
     </section>
