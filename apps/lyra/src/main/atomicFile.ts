@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { closeSync, fsyncSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs'
 import { open, rename, unlink } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
+import { setTimeout as sleep } from 'node:timers/promises'
 
 /**
  * Durable file replacement: write a temp file beside the target, fsync it, then rename it over
@@ -22,6 +23,47 @@ export function asideStamp(date: Date = new Date()): string {
   return date.toISOString().replace(/[:.]/g, '-')
 }
 
+/**
+ * Windows refuses to rename over a file that anything has open at that instant: antivirus, a sync
+ * client, the search indexer, or another write of the same file landing just before. It clears
+ * in milliseconds, so the rename gets a few tries there. Elsewhere these codes mean a real
+ * permission problem and are reported at once.
+ */
+const RENAME_TRIES = 8
+const RENAME_FIRST_GAP_MS = 5
+
+function isSharingViolation(error: unknown): boolean {
+  if (process.platform !== 'win32') return false
+  const code = error instanceof Error && 'code' in error ? error.code : null
+  return code === 'EPERM' || code === 'EBUSY' || code === 'EACCES'
+}
+
+async function renameOver(temp: string, path: string): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await rename(temp, path)
+      return
+    } catch (error) {
+      if (attempt >= RENAME_TRIES || !isSharingViolation(error)) throw error
+      await sleep(RENAME_FIRST_GAP_MS * 2 ** (attempt - 1))
+    }
+  }
+}
+
+function renameOverSync(temp: string, path: string): void {
+  // Blocks the thread, which is the point of a sync write; a few short waits, well under a second.
+  const pause = new Int32Array(new SharedArrayBuffer(4))
+  for (let attempt = 1; ; attempt++) {
+    try {
+      renameSync(temp, path)
+      return
+    } catch (error) {
+      if (attempt >= RENAME_TRIES || !isSharingViolation(error)) throw error
+      Atomics.wait(pause, 0, 0, RENAME_FIRST_GAP_MS * 2 ** (attempt - 1))
+    }
+  }
+}
+
 export async function writeFileAtomic(path: string, data: string | Uint8Array): Promise<void> {
   const temp = tempPathFor(path)
   try {
@@ -32,7 +74,7 @@ export async function writeFileAtomic(path: string, data: string | Uint8Array): 
     } finally {
       await handle.close()
     }
-    await rename(temp, path)
+    await renameOver(temp, path)
   } catch (error) {
     await unlink(temp).catch(() => undefined)
     throw error
@@ -53,7 +95,7 @@ export function writeFileAtomicSync(path: string, data: string | Uint8Array): vo
     } finally {
       closeSync(fd)
     }
-    renameSync(temp, path)
+    renameOverSync(temp, path)
   } catch (error) {
     try {
       unlinkSync(temp)

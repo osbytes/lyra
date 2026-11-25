@@ -979,8 +979,10 @@ async function checkSessionRecovery(): Promise<void> {
     const id = `recovery-${name}-smoke.txt`
     ids.push(id)
     await mkdir(join(sessions, id), { recursive: true })
-    await copyFile(join(notesDir(), source.id), join(notesDir(), id))
     for (const file of ['doc.yjs', 'session.json']) await copyFile(join(sessions, source.id, file), join(sessions, id, file))
+    // The note last: the folder watcher lists a note as soon as it appears, and one without its
+    // session folder yet would be taken for a plain note and given a new document.
+    await copyFile(join(notesDir(), source.id), join(notesDir(), id))
     return id
   }
   const fileIn = (id: string, file: string): string => join(sessions, id, file)

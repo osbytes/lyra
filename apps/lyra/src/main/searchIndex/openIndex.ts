@@ -1,5 +1,5 @@
 import { createClient, LibsqlError, type Client } from '@libsql/client'
-import { existsSync, mkdirSync, readdirSync, renameSync, unlinkSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { pathToFileURL } from 'node:url'
@@ -25,6 +25,40 @@ function isTransient(error: unknown): boolean {
 /** A file that can't be renamed yet (Windows holds it a moment after close) gets a few tries. */
 const MOVE_TRIES = 5
 const MOVE_GAP_MS = 200
+
+/** Every SQLite file starts with these 16 bytes. */
+const SQLITE_HEADER = 'SQLite format 3\0'
+
+/**
+ * Whether the file could be a database at all, read without libSQL: once libSQL has opened a
+ * file, Windows won't let it be renamed for a while even after it is closed, so the obvious
+ * damage (a file that is something else) is caught before any handle exists. A missing or empty
+ * file is a database that hasn't been written yet.
+ */
+function hasDatabaseHeader(path: string): boolean {
+  let fd: number
+  try {
+    fd = openSync(path, 'r')
+  } catch {
+    return true
+  }
+  try {
+    const head = Buffer.alloc(SQLITE_HEADER.length)
+    const read = readSync(fd, head, 0, head.length, 0)
+    return read === 0 || (read === head.length && head.toString('latin1') === SQLITE_HEADER)
+  } catch {
+    return true
+  } finally {
+    closeSync(fd)
+  }
+}
+
+/**
+ * Left beside a damaged database that couldn't be moved aside because this process still holds
+ * it: the next process to open the index (the worker is restarted after a failure) moves it
+ * aside first, before anything has it open.
+ */
+const rebuildMarker = (path: string): string => `${path}.rebuild`
 
 export type OpenedIndex = { client: Client; fresh: boolean; recovered: boolean }
 
@@ -76,12 +110,25 @@ export async function openIndex(
   onDamaged: (error: unknown) => void = () => undefined
 ): Promise<OpenedIndex> {
   mkdirSync(dirname(path), { recursive: true })
+  const marker = rebuildMarker(path)
+  if (existsSync(marker) || !hasDatabaseHeader(path)) {
+    if (!existsSync(marker)) onDamaged(new Error('not a database file'))
+    await quarantine(path)
+    rmSync(marker, { force: true })
+    return { ...(await openChecked(path, notesDir)), fresh: true, recovered: true }
+  }
   try {
     return { ...(await openChecked(path, notesDir)), recovered: false }
   } catch (error) {
     if (isTransient(error)) throw error
     onDamaged(error)
   }
-  await quarantine(path)
+  try {
+    await quarantine(path)
+  } catch (error) {
+    // Still held by this process (Windows): leave word for the next one and fail this open.
+    writeFileSync(marker, '')
+    throw new Error('The index is damaged and will be rebuilt when it is next opened', { cause: error })
+  }
   return { ...(await openChecked(path, notesDir)), fresh: true, recovered: true }
 }

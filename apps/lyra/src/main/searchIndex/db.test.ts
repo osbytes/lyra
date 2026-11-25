@@ -25,7 +25,11 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const client of clients) client.close()
-  rmSync(dir, { recursive: true, force: true })
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  } catch {
+    // Windows keeps a closed database file locked for a while; the temp folder is left behind.
+  }
 })
 
 async function opened(notesDir = '/notes'): Promise<Awaited<ReturnType<typeof openIndex>>> {
@@ -88,7 +92,26 @@ describe('openIndex', () => {
     expect(readFileSync(join(dir, aside[0] ?? ''), 'utf8')).toContain('not a database')
   })
 
-  it('rebuilds a database that opens but fails quick_check', async () => {
+  // On Windows a database this process has had open can't be renamed, even once closed: there
+  // the damaged file is marked and moved aside by the next process to open the index.
+  const sameProcess = it.skipIf(process.platform === 'win32')
+
+  sameProcess('moves a marked database aside before opening it', async () => {
+    const path = join(dir, 'lyra.db')
+    const seed = createClient({ url: pathToFileURL(path).href })
+    await seed.execute('CREATE TABLE leftover (x)')
+    seed.close()
+    // What a process that couldn't move its own damaged file leaves behind.
+    writeFileSync(`${path}.rebuild`, '')
+    const again = await opened()
+    expect(again).toMatchObject({ fresh: true, recovered: true })
+    expect(readdirSync(dir).filter((file) => file.startsWith('lyra.db.corrupt-'))).toHaveLength(1)
+    expect(readdirSync(dir)).not.toContain('lyra.db.rebuild')
+    const tables = await again.client.execute(`SELECT name FROM sqlite_master WHERE name = 'leftover'`)
+    expect(tables.rows).toHaveLength(0)
+  })
+
+  sameProcess('rebuilds a database that opens but fails quick_check', async () => {
     const path = join(dir, 'lyra.db')
     const first = await opened()
     const filler = 'x'.repeat(2000)
@@ -109,7 +132,7 @@ describe('openIndex', () => {
     expect(await db.quickCheck(second.client)).toBeNull()
   })
 
-  it('opens a healthy database as it is, and keeps only the newest damaged copy', async () => {
+  sameProcess('opens a healthy database as it is, and keeps only the newest damaged copy', async () => {
     writeFileSync(join(dir, 'lyra.db'), 'garbage '.repeat(600))
     ;(await opened()).client.close()
     clients = []
