@@ -5,6 +5,8 @@ import type { DictationPhase } from './useDictation'
 export type CommandAction =
   /** `queued`: the last recording is still finishing; the new one starts once it has. */
   | { do: 'start'; meeting: boolean; queued: boolean }
+  /** Record into the session that is open, as the dock's button does. */
+  | { do: 'continue' }
   | { do: 'stop' }
   | { do: 'ignore'; notice: string | null }
 
@@ -16,8 +18,16 @@ export const STILL_FINISHING_NOTICE =
  * tray) is a clear request for a new session, so it waits its turn; a `toggle` is usually a
  * second press of the hotkey that just stopped, so it's ignored with a notice rather than
  * surprising the user with a new recording later.
+ *
+ * `lookingAtSession`: Lyra's window has focus with a session open. A `toggle` then continues
+ * that session, since that is what the user is looking at; from anywhere else (another app, the
+ * tray) it starts a new one.
  */
-export function sessionCommandAction(command: SessionCommand, phase: DictationPhase): CommandAction {
+export function sessionCommandAction(
+  command: SessionCommand,
+  phase: DictationPhase,
+  lookingAtSession = false
+): CommandAction {
   const recording = phase === 'listening' || phase === 'starting'
   switch (command.type) {
     case 'stop':
@@ -29,6 +39,7 @@ export function sessionCommandAction(command: SessionCommand, phase: DictationPh
     case 'toggle':
       if (recording) return { do: 'stop' }
       if (phase === 'finishing') return { do: 'ignore', notice: STILL_FINISHING_NOTICE }
+      if (lookingAtSession) return { do: 'continue' }
       return { do: 'start', meeting: false, queued: false }
   }
 }

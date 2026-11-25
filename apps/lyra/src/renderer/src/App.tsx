@@ -260,10 +260,15 @@ export default function App(): React.JSX.Element {
   useEffect(
     () =>
       window.api.onSessionCommand((command) => {
-        const action = sessionCommandAction(command, phaseRef.current)
+        const open = currentRef.current
+        const action = sessionCommandAction(command, phaseRef.current, document.hasFocus() && open !== null)
         switch (action.do) {
           case 'start':
             void startSession(action.meeting)
+            break
+          case 'continue':
+            if (open) void record(open.id)
+            else void startSession()
             break
           case 'stop':
             void stop()
@@ -273,7 +278,7 @@ export default function App(): React.JSX.Element {
             break
         }
       }),
-    [stop, startSession]
+    [stop, startSession, record, currentRef]
   )
 
   /**

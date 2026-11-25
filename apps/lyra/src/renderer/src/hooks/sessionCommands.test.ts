@@ -44,4 +44,22 @@ describe('sessionCommandAction', () => {
     expect(sessionCommandAction({ type: 'toggle' }, 'listening')).toEqual({ do: 'stop' })
     expect(sessionCommandAction({ type: 'stop' }, 'idle')).toEqual({ do: 'stop' })
   })
+
+  it('continues the open session on a toggle while Lyra is in front', () => {
+    expect(sessionCommandAction({ type: 'toggle' }, 'idle', true)).toEqual({ do: 'continue' })
+    // Still a stop while recording, and still held back while the last one finishes.
+    expect(sessionCommandAction({ type: 'toggle' }, 'listening', true)).toEqual({ do: 'stop' })
+    expect(sessionCommandAction({ type: 'toggle' }, 'finishing', true)).toEqual({
+      do: 'ignore',
+      notice: STILL_FINISHING_NOTICE
+    })
+  })
+
+  it('starts a new session for a meeting whatever is open', () => {
+    expect(sessionCommandAction({ type: 'start', meeting: true }, 'idle', true)).toEqual({
+      do: 'start',
+      meeting: true,
+      queued: false
+    })
+  })
 })
