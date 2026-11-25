@@ -58,6 +58,7 @@ import { registerMicPrompt, stopMicPrompt } from './micprompt'
 import { exportIgnoredApps, importIgnoredApps } from './ignoredAppsFile'
 import { registerOverlay, watchMainWindow } from './overlay'
 import { registerPowerHandling, watchSessionEnd } from './power'
+import { startResourceLog } from './resources'
 import {
   getMainWindow,
   isFromMainWindow,
@@ -576,6 +577,7 @@ void app.whenReady().then(() => {
     }
   })
   saveForPower = registerPowerHandling(saveWork)
+  startResourceLog()
   // While recording, Whisper gets the machine: the embedding backlog waits and the notes model
   // (a few GB) lets go of its memory.
   let wasRecording = false
