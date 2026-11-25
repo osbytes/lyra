@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { mkdir, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { defaultLanguage } from '../shared/languages'
 import { PANEL_WIDTHS, parseSettings, type Settings } from '../shared/settings'
 import { config } from './config'
 import { log } from './log'
@@ -18,6 +19,7 @@ export function defaultSettings(): Settings {
     // Long enough to replay or re-transcribe recent sessions, short enough not to pile up.
     audioRetentionDays: 30,
     captureSystemAudio: true,
+    transcriptionLanguage: defaultLanguage(app.getPreferredSystemLanguages()),
     notesEngine: 'off',
     cloudProvider: 'anthropic',
     cloudModel: null,

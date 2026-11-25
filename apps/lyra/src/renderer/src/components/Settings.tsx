@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { PROVIDERS, ProviderId, type KeySource } from '../../../shared/ai'
+import { WHISPER_LANGUAGES } from '../../../shared/languages'
 import type { Settings as SettingsValue } from '../../../shared/types'
 import {
   keyChanged,
@@ -57,6 +58,7 @@ const CHANGE_LABELS: Partial<Record<keyof SettingsValue, string>> = {
   hotkey: 'Changed the session shortcut',
   launchAtLogin: 'Changed open at login',
   captureSystemAudio: 'Changed computer audio capture',
+  transcriptionLanguage: 'Changed the transcription language',
   audioRetentionDays: 'Changed how long audio is kept',
   notesEngine: 'Changed session summaries',
   cloudProvider: 'Changed the summary provider',
@@ -231,9 +233,29 @@ function parseRetention(value: string): number | null {
   return Number.isInteger(days) && days >= 0 ? days : 30
 }
 
+/** Whisper's languages, named in the user's own language where the platform knows the name. */
+function languageChoices(): { value: string; label: string }[] {
+  const names = new Intl.DisplayNames(navigator.languages, { type: 'language', fallback: 'none' })
+  const choices = WHISPER_LANGUAGES.map(({ code, name }) => ({ value: code, label: names.of(code) ?? name }))
+  choices.sort((a, b) => a.label.localeCompare(b.label))
+  return [{ value: 'auto', label: 'Detect automatically' }, ...choices]
+}
+
 function RecordingSection({ settings, update }: SectionProps) {
+  const [languages] = useState(languageChoices)
   return (
     <Section title="Recording">
+      <Row
+        label="Language"
+        hint="What you speak in sessions. Detecting it works on each short stretch of speech, so a set language is more reliable."
+      >
+        <Select
+          label="Language"
+          value={settings.transcriptionLanguage}
+          options={languages}
+          onChange={(transcriptionLanguage) => void update({ transcriptionLanguage })}
+        />
+      </Row>
       <Row
         label="Capture computer audio"
         hint="Records the other side of calls (Zoom, Meet, Teams). On macOS this needs Screen Recording permission."

@@ -864,6 +864,12 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
         const badUrl = await window.api.updateSettings({ cloudBaseUrl: 'ftp://nope' })
         if (badUrl.cloudBaseUrl !== 'http://localhost:11434/v1') fail('a non-http server address was saved')
         await window.api.updateSettings({ cloudProvider: 'anthropic', cloudModel: null, cloudBaseUrl: null })
+        const language = (await window.api.getSettings()).transcriptionLanguage
+        const badLanguage = await window.api.updateSettings({ transcriptionLanguage: 'klingon' })
+        if (badLanguage.transcriptionLanguage !== language) fail('an unknown language was saved')
+        const german = await window.api.updateSettings({ transcriptionLanguage: 'de' })
+        if (german.transcriptionLanguage !== 'de') fail('the transcription language was not saved')
+        await window.api.updateSettings({ transcriptionLanguage: language })
 
         const missingPerson = await window.api.restorePerson('no-such-person').then(() => true, () => false)
         if (missingPerson) fail('restorePerson accepted an unknown id')

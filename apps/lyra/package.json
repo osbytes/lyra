@@ -31,6 +31,7 @@
     "prepare:llama": "node scripts/prepare-llama.cjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
+    "word-lists": "node scripts/update-word-lists.cjs",
     "config:docs": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/config-docs.mjs",
     "config:check": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/config-docs.mjs --check",
     "check": "pnpm typecheck && pnpm lint && pnpm config:check"
