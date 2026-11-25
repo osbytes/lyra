@@ -1944,9 +1944,11 @@ code {
   list-style: none;
 }
 
-.settings-chips.is-block {
+/* Chips that belong to the row above (its padding gives the gap): no rule of their own. */
+.settings-card > .settings-chips.is-block {
   justify-content: flex-start;
-  padding: 0 16px 12px;
+  padding: 0 16px 16px;
+  border-top: 0;
 }
 
 .settings-chips li {
