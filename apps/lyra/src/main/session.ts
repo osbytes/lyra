@@ -1,4 +1,4 @@
-import { ipcMain, type BrowserWindow } from 'electron'
+import { ipcMain, type BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
 import type { OverlayFrame, SessionCommand, SessionPhase, SessionState } from '../shared/types'
 import { log } from './log'
 
@@ -24,6 +24,15 @@ export function setMainWindow(win: BrowserWindow): void {
 
 export function getMainWindow(): BrowserWindow | null {
   return mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
+}
+
+/**
+ * Whether an IPC message came from the main window. The overlay loads the same preload, so
+ * channels that change settings, keys or files check this instead of trusting any window.
+ */
+export function isFromMainWindow(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
+  const win = getMainWindow()
+  return win !== null && event.sender === win.webContents
 }
 
 export function showMainWindow(): void {
@@ -65,6 +74,22 @@ export function toggleSession(): void {
   sendSessionCommand({ type: 'toggle' })
 }
 
+function publish(next: SessionState): void {
+  const changed = next.phase !== state.phase
+  state = next
+  if (changed) log('session', `phase ${next.phase}`)
+  for (const listener of listeners) listener(state)
+}
+
+/**
+ * Back to idle when the main window's renderer is gone: it can no longer report, and the tray,
+ * the overlay and the sleep blocker would otherwise think it is still recording.
+ */
+export function resetSessionState(): void {
+  if (state.phase === 'idle') return
+  publish({ phase: 'idle', startedAt: null, micName: '' })
+}
+
 function parseState(value: unknown): SessionState | null {
   if (!value || typeof value !== 'object') return null
   const raw = value as Record<string, unknown>
@@ -88,11 +113,7 @@ export function registerSessionIpc(): void {
   ipcMain.on('session:report', (event, value: unknown) => {
     if (event.sender !== getMainWindow()?.webContents) return
     const next = parseState(value)
-    if (!next) return
-    const changed = next.phase !== state.phase
-    state = next
-    if (changed) log('session', `phase ${next.phase}`)
-    for (const listener of listeners) listener(state)
+    if (next) publish(next)
   })
   ipcMain.on('overlay:frame', (event, value: unknown) => {
     if (event.sender !== getMainWindow()?.webContents) return

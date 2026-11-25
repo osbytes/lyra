@@ -12,6 +12,8 @@ let checkTimer: ReturnType<typeof setInterval> | null = null
 let userInitiated = false
 /** Off for task runs (smoke tests, screenshots); set by registerUpdater. */
 let allowed = true
+/** Tells the app it is really quitting, so closing the window doesn't just hide it. */
+let beforeInstall = (): void => undefined
 
 function updaterEnabled(): boolean {
   return allowed && app.isPackaged
@@ -60,7 +62,7 @@ export async function startUpdate(): Promise<void> {
     return
   }
   if (current.state === 'ready') {
-    autoUpdater.quitAndInstall()
+    install()
     return
   }
   try {
@@ -76,11 +78,21 @@ export async function installUpdate(): Promise<void> {
     await openReleases()
     return
   }
+  install()
+}
+
+/**
+ * quitAndInstall closes the windows before it quits; without the quitting flag set first, the
+ * main window's close handler hides it instead and the install never happens (macOS).
+ */
+function install(): void {
+  beforeInstall()
   autoUpdater.quitAndInstall()
 }
 
-export function registerUpdater({ enabled }: { enabled: boolean }): void {
-  allowed = enabled
+export function registerUpdater(options: { enabled: boolean; beforeInstall: () => void }): void {
+  allowed = options.enabled
+  beforeInstall = options.beforeInstall
   ipcMain.handle('updater:start', () => startUpdate())
   ipcMain.handle('updater:install', () => installUpdate())
   ipcMain.handle('updater:get', () => current)

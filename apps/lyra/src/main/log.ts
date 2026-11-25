@@ -70,10 +70,22 @@ function json(value: unknown): string {
   }
 }
 
+/**
+ * False once the terminal is gone (the window that ran `pnpm dev` closed, or Ctrl+C took it
+ * first). Writing to it then fails with EIO or EPIPE; without a listener that failure is an
+ * uncaught exception, whose handler logs, which writes to the dead terminal again, forever.
+ */
+let terminal = true
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on('error', () => {
+    terminal = false
+  })
+}
+
 export function log(scope: string, message: string, data?: unknown): void {
   const time = new Date().toISOString()
   const head = `{"time":${json(time)},"scope":${json(scope)},"message":${json(message)}`
   const detail = data === undefined ? '' : json(serializable(data))
-  console.log(`${time} [${scope}] ${message}${detail ? ` ${detail}` : ''}`)
+  if (terminal) console.log(`${time} [${scope}] ${message}${detail ? ` ${detail}` : ''}`)
   openSink()?.stream.write(`${head}${detail ? `,"data":${detail}` : ''}}\n`)
 }

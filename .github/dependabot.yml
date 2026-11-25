@@ -21,6 +21,20 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
 
+  # the node-llama-cpp tree packaged beside the app (apps/lyra/scripts/prepare-llama.cjs), pinned
+  # by its own npm lockfile outside the pnpm workspace; security updates only, like the workspace
+  - package-ecosystem: npm
+    directory: /apps/lyra/scripts/llama
+    cooldown:
+      default-days: 7
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    groups:
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
+
   # actions are pinned by commit SHA with a version comment; one grouped PR a month keeps them current
   - package-ecosystem: github-actions
     directory: /

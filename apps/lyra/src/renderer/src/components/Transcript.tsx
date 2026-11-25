@@ -1,13 +1,15 @@
 import {
+  memo,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent
 } from 'react'
-import type { MeetingStatus, Person, Settings } from '../../../shared/types'
+import type { Person, Settings } from '../../../shared/types'
 import {
   LOW_CONFIDENCE,
   SURE_MATCH,
@@ -16,13 +18,19 @@ import {
 } from '../../../shared/sessionDoc'
 import type { TranscriptEdit } from '../../../shared/transcriptOverlay'
 import type { NewSpeaker } from '../hooks/usePages'
+import { useDialogFocus } from '../hooks/useDialogFocus'
+import { useMeetingStatus } from '../hooks/useMeetingStatus'
+import { rovingIndex } from '../lib/focus'
+import { clockLabel as clock } from '../lib/format'
 import { log } from '../lib/log'
+import { statusBusy, statusLabel, unusedSpeakerName } from '../lib/status'
 import { notify } from '../lib/toast'
 import { useContextMenu } from './ContextMenu'
 import { speakerTone } from '../lib/speakerTone'
-import { Floating, ScrollArea, Switch } from './Controls'
+import { Floating, ScrollArea, Segmented, Switch } from './Controls'
 import { CloseIcon, PlayIcon, PlusIcon, StopIcon } from './Icons'
 import { usePeople } from './People'
+import { SummaryButton } from './SummaryButton'
 import {
   CorrectField,
   editAt,
@@ -100,15 +108,6 @@ function PendingLine({ pending }: { pending: Pending }) {
 
 // --- Small helpers ------------------------------------------------------------------
 
-function clock(seconds: number): string {
-  const total = Math.max(0, Math.floor(seconds))
-  const m = Math.floor(total / 60)
-  const s = String(total % 60).padStart(2, '0')
-  return total >= 3600
-    ? `${String(Math.floor(m / 60))}:${String(m % 60).padStart(2, '0')}:${s}`
-    : `${String(m)}:${s}`
-}
-
 type SpeakerState = 'sure' | 'likely' | 'unknown'
 
 function stateOf(speaker: SpeakerEntry | undefined): SpeakerState {
@@ -142,6 +141,8 @@ function Signal({ confidence }: { confidence: number | null }) {
  */
 type Playing = { key: string; context: AudioContext; source: AudioBufferSourceNode }
 let playing: Playing | null = null
+/** Bumped by every stop and every new Listen, so a clip still loading knows it was superseded. */
+let playbackRequest = 0
 const playbackListeners = new Set<(key: string | null) => void>()
 
 function setPlaying(next: Playing | null): void {
@@ -150,6 +151,7 @@ function setPlaying(next: Playing | null): void {
 }
 
 function stopPlayback(): void {
+  playbackRequest++
   const current = playing
   if (!current) return
   setPlaying(null)
@@ -162,10 +164,17 @@ function stopPlayback(): void {
   void current.context.close()
 }
 
-/** Plays a stretch of the session's audio, stopping anything already playing. */
+const AUDIO_GONE = 'This session’s audio is no longer kept.'
+
+/**
+ * Plays a stretch of the session's audio, stopping anything already playing. False when the
+ * audio isn't kept any more; a request overtaken by a newer click (or Stop) just does nothing.
+ */
 async function listen(key: string, pageId: string, start: number, end: number): Promise<boolean> {
   stopPlayback()
+  const request = playbackRequest
   const pcm = await window.api.sessionAudio(pageId, start, end)
+  if (request !== playbackRequest) return true
   if (!pcm.length) return false
   const context = new AudioContext({ sampleRate: 16000 })
   const buffer = context.createBuffer(1, pcm.length, 16000)
@@ -182,6 +191,19 @@ async function listen(key: string, pageId: string, start: number, end: number): 
   source.start()
   setPlaying(entry)
   return true
+}
+
+/** Listen for a transcript line, with the picker's error as a toast when there's no audio. */
+function listenToLine(pageId: string, line: TranscriptSegment): void {
+  listen(line.id, pageId, line.start, line.end).then(
+    (ok) => {
+      if (!ok) notify(AUDIO_GONE)
+    },
+    (error: unknown) => {
+      log('transcript', 'could not play a line', String(error))
+      notify('Couldn’t play this line.')
+    }
+  )
 }
 
 /** Which clip is playing (by key), kept in sync across every Listen button. */
@@ -257,6 +279,8 @@ function SpeakerPicker({
   const [remember, setRemember] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const input = useRef<HTMLInputElement>(null)
+  const dialog = useRef<HTMLElement>(null)
+  useDialogFocus(dialog, true)
   const state = stateOf(speaker)
   const own = lines.filter((line) => line.cluster === speaker.id)
   const line = picker.line ? lines.find((entry) => entry.id === picker.line) : undefined
@@ -264,10 +288,6 @@ function SpeakerPicker({
   const matched = speaker.personId
     ? people.find((person) => person.id === speaker.personId)
     : undefined
-
-  useEffect(() => {
-    input.current?.focus()
-  }, [])
 
   const options = useMemo((): Option[] => {
     const needle = query.trim().toLowerCase()
@@ -321,11 +341,14 @@ function SpeakerPicker({
   }
 
   const onKeyDown = (event: ReactKeyboardEvent): void => {
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    if (event.defaultPrevented) return
+    // The list keys belong to the name field; elsewhere (a button, the scope) they do their own job.
+    const inField = event.target === input.current
+    if (inField && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
       event.preventDefault()
       const step = event.key === 'ArrowDown' ? 1 : options.length - 1
       setHighlight((value) => (value + step) % options.length)
-    } else if (event.key === 'Enter') {
+    } else if (inField && event.key === 'Enter') {
       event.preventDefault()
       void run(options[highlight])
     } else if (event.key === 'Escape') {
@@ -349,8 +372,10 @@ function SpeakerPicker({
   return (
     <div className="picker-layer" onMouseDown={onClose}>
       <ScrollArea
+        ref={dialog}
         className="picker"
         role="dialog"
+        aria-modal="true"
         aria-label={title}
         style={{ top: Math.max(8, top), left: Math.max(8, left) }}
         onMouseDown={(event) => {
@@ -377,9 +402,13 @@ function SpeakerPicker({
                   stopPlayback()
                   return
                 }
-                void listen('picker', pageId, sample.start, Math.min(sample.end, sample.start + 8)).then(
+                listen('picker', pageId, sample.start, Math.min(sample.end, sample.start + 8)).then(
                   (ok) => {
-                    if (!ok) setError('This session’s audio is no longer kept.')
+                    if (!ok) setError(AUDIO_GONE)
+                  },
+                  (caught: unknown) => {
+                    log('transcript', 'could not play a sample', String(caught))
+                    setError('Couldn’t play this sample.')
                   }
                 )
               }}
@@ -394,24 +423,16 @@ function SpeakerPicker({
         </div>
 
         {line && own.length > 1 ? (
-          <div className="segmented picker-scope" role="radiogroup" aria-label="Change">
-            <button
-              type="button"
-              role="radio"
-              aria-checked={scope === 'line'}
-              onClick={() => setScope('line')}
-            >
-              Just this line
-            </button>
-            <button
-              type="button"
-              role="radio"
-              aria-checked={scope === 'all'}
-              onClick={() => setScope('all')}
-            >
-              All {own.length} lines
-            </button>
-          </div>
+          <Segmented
+            className="picker-scope"
+            label="Change"
+            value={scope}
+            options={[
+              { value: 'line', label: 'Just this line' },
+              { value: 'all', label: `All ${String(own.length)} lines` }
+            ]}
+            onChange={setScope}
+          />
         ) : null}
 
         {scope === 'all' && odd.length > 0 && odd.length < own.length ? (
@@ -448,6 +469,7 @@ function SpeakerPicker({
         <label className="picker-search">
           <input
             ref={input}
+            data-autofocus
             type="text"
             value={query}
             placeholder={state === 'likely' ? 'Or pick someone else…' : 'Type a name…'}
@@ -553,21 +575,27 @@ function SplitDialog({
       )
   )
   const valid = picked.size > 0 && picked.size < own.length
+  const dialog = useRef<HTMLElement>(null)
+  useDialogFocus(dialog, true)
   const top = Math.min(anchor.bottom + 8, window.innerHeight - 440)
   const left = Math.min(anchor.left, window.innerWidth - 536)
 
   return (
     <div className="picker-layer" onMouseDown={onCancel}>
       <ScrollArea
+        ref={dialog}
         className="picker split"
         role="dialog"
+        aria-modal="true"
         aria-label={`Split ${speaker.name}`}
         style={{ top: Math.max(8, top), left: Math.max(8, left) }}
         onMouseDown={(event) => {
           event.stopPropagation()
         }}
         onKeyDown={(event) => {
-          if (event.key === 'Escape') onCancel()
+          if (event.key !== 'Escape') return
+          event.preventDefault()
+          onCancel()
         }}
       >
         <strong>Split {speaker.name} into two speakers</strong>
@@ -623,46 +651,130 @@ function SplitDialog({
   )
 }
 
-// --- Status --------------------------------------------------------------------------------
+// --- One line ------------------------------------------------------------------------------
 
-function statusLabel(status: MeetingStatus): string {
-  const pct = `${String(Math.round(status.progress * 100))}%`
-  switch (status.state) {
-    case 'downloading':
-      return `Downloading ${status.message ?? 'speaker models'}… ${pct}`
-    case 'diarizing':
-      return 'Finding who spoke when…'
-    case 'transcribing':
-      return `Transcribing each speaker… ${pct}`
-    case 'summarizing':
-      return 'Writing the summary…'
-    case 'error':
-      return `Couldn’t label speakers: ${status.message ?? 'unknown error'}`
-    case 'done':
-      return 'Speakers labeled'
-  }
+/** What a line does through its parent; one stable object, so lines can skip re-rendering. */
+type LineHandlers = {
+  openPicker: (speaker: string, line: string, target: Element) => void
+  listen: (line: TranscriptSegment) => void
+  save: (id: string, text: string) => void
+  doneRewriting: (id: string) => void
+  focused: (id: string) => void
 }
 
-/** Latest processing status for `pageId`, cleared a moment after it finishes. */
-export function useMeetingStatus(pageId: string | undefined): MeetingStatus | null {
-  const [status, setStatus] = useState<MeetingStatus | null>(null)
-  useEffect(() => {
-    setStatus(null)
-    return window.api.onMeetingStatus((next) => {
-      if (next.pageId === pageId) setStatus(next)
-    })
-  }, [pageId])
-  useEffect(() => {
-    if (status?.state !== 'done') return
-    const timer = setTimeout(() => {
-      setStatus(null)
-    }, 2500)
-    return () => {
-      clearTimeout(timer)
-    }
-  }, [status])
-  return status
+type LineProps = {
+  line: TranscriptSegment
+  speaker: SpeakerEntry | undefined
+  continues: boolean
+  picked: boolean
+  playing: boolean
+  rewriting: boolean
+  /** The list's one tab stop (roving focus). */
+  tabbable: boolean
+  /** Id of the text telling screen readers which keys work on a line. */
+  hint: string
+  handlers: LineHandlers
 }
+
+/**
+ * A transcript line. Memoized: typing in the notes re-renders the page, and a long meeting has
+ * thousands of lines that haven't changed.
+ */
+const TranscriptLine = memo(function TranscriptLine({
+  line,
+  speaker,
+  continues,
+  picked,
+  playing,
+  rewriting,
+  tabbable,
+  hint,
+  handlers
+}: LineProps) {
+  const id = useId()
+  const level = tier(line.confidence)
+  const state = stateOf(speaker)
+  return (
+    <div
+      className={[
+        'line',
+        continues ? 'continues' : '',
+        level === 1 ? 'low' : '',
+        picked ? 'picked' : '',
+        playing ? 'playing' : ''
+      ].join(' ')}
+      data-row={line.id}
+      role="group"
+      aria-labelledby={`${id}-label ${id}-text`}
+      aria-describedby={hint}
+      tabIndex={tabbable ? 0 : -1}
+      onFocus={() => handlers.focused(line.id)}
+    >
+      <div className="gutter">
+        {line.cluster ? (
+          <button
+            type="button"
+            className={`who ${state}`}
+            {...tip('Change who said this')}
+            onClick={(event) => {
+              if (line.cluster) handlers.openPicker(line.cluster, line.id, event.currentTarget)
+            }}
+          >
+            {speaker?.name ?? 'Speaker'}
+            {state === 'likely' ? '?' : ''}
+          </button>
+        ) : (
+          <span className="who unknown">Live</span>
+        )}
+        <span className="line-meta">
+          <button
+            type="button"
+            className="line-play"
+            aria-pressed={playing}
+            aria-label={playing ? 'Stop playback' : `Listen from ${clock(line.start)}`}
+            {...tip(playing ? 'Stop' : 'Listen')}
+            onClick={() => {
+              if (playing) stopPlayback()
+              else handlers.listen(line)
+            }}
+          >
+            {playing ? <StopIcon /> : <PlayIcon />}
+            {clock(line.start)}
+          </button>
+          {line.cluster ? <Signal confidence={line.confidence} /> : null}
+          {level < 3 && line.confidence !== null ? (
+            <span className={level === 1 ? 'line-pct low' : 'line-pct'}>
+              {percent(line.confidence)}
+            </span>
+          ) : null}
+        </span>
+      </div>
+      <div className="line-body">
+        {/* Not drawn: names the focused line for screen readers (time and speaker, then words). */}
+        <span id={`${id}-label`} hidden>
+          {`${clock(line.start)}, ${speaker?.name ?? 'Live'}:`}
+        </span>
+        {rewriting ? (
+          <LineRewrite
+            line={line}
+            onSave={(text) => handlers.save(line.id, text)}
+            onDone={() => handlers.doneRewriting(line.id)}
+          />
+        ) : (
+          <LineText line={line} id={`${id}-text`} />
+        )}
+      </div>
+    </div>
+  )
+})
+
+/** The row element for a line id inside `root`. */
+function rowOf(root: HTMLElement | null, id: string): HTMLElement | null {
+  return root?.querySelector<HTMLElement>(`[data-row="${CSS.escape(id)}"]`) ?? null
+}
+
+/** How long after a keyboard-opened line menu the native contextmenu event is ignored. */
+const KEYBOARD_MENU_MS = 600
 
 // --- Transcript ----------------------------------------------------------------------------
 
@@ -690,19 +802,24 @@ export function Transcript({
   const [picker, setPicker] = useState<Picker | null>(null)
   const [split, setSplit] = useState<{ speaker: string; anchor: DOMRect } | null>(null)
   const byId = useMemo(() => new Map(speakers.map((speaker) => [speaker.id, speaker])), [speakers])
-  const busy = !!status && status.state !== 'done' && status.state !== 'error'
-  const labeled = transcript.some((line) => line.cluster !== null)
-  const present = speakers.filter((speaker) =>
-    transcript.some((line) => line.cluster === speaker.id)
-  )
-  const pending = present.filter((speaker) => stateOf(speaker) !== 'sure')
-  const unsure = transcript.filter((line) => tier(line.confidence) === 1)
+  const labeled = useMemo(() => transcript.some((line) => line.cluster !== null), [transcript])
+  const present = useMemo(() => {
+    const heard = new Set<string>()
+    for (const line of transcript) if (line.cluster !== null) heard.add(line.cluster)
+    return speakers.filter((speaker) => heard.has(speaker.id))
+  }, [speakers, transcript])
+  const pending = useMemo(() => present.filter((speaker) => stateOf(speaker) !== 'sure'), [present])
+  const unsure = useMemo(() => transcript.filter((line) => tier(line.confidence) === 1), [transcript])
 
   const linesRef = useRef<HTMLDivElement>(null)
   const [selection, setSelection] = useState<LineSelection | null>(null)
   const [menu, setMenu] = useState<MenuRequest | null>(null)
   const [correcting, setCorrecting] = useState<LineSelection | null>(null)
   const [rewriting, setRewriting] = useState<string | null>(null)
+  // The line that holds the list's one tab stop; the first line until the user moves.
+  const [active, setActive] = useState<string | null>(null)
+  const keyboardMenuAt = useRef(0)
+  const hintId = useId()
   const transcriptRef = useRef(transcript)
   transcriptRef.current = transcript
 
@@ -715,17 +832,32 @@ export function Transcript({
     return () => document.removeEventListener('selectionchange', onChange)
   }, [])
 
-  /** After an edit: drop the selection and keep focus here, so Ctrl+Z undoes it. */
-  const settle = useCallback(() => {
+  const focusLine = useCallback((id: string | undefined): void => {
+    if (!id) return
+    setActive(id)
+    rowOf(linesRef.current, id)?.focus()
+  }, [])
+
+  /**
+   * After an edit: drop the selection and keep focus here, so Ctrl+Z undoes it (on the line
+   * itself when we know it, so the arrow keys carry on from there).
+   */
+  const settle = useCallback((id?: string) => {
     window.getSelection()?.removeAllRanges()
     setSelection(null)
-    linesRef.current?.focus({ preventScroll: true })
+    const row = id ? rowOf(linesRef.current, id) : null
+    if (row && id) {
+      setActive(id)
+      row.focus({ preventScroll: true })
+    } else {
+      linesRef.current?.focus({ preventScroll: true })
+    }
   }, [])
 
   const actions: Actions = {
     setEdits: (id, next) => {
       onEditOverlay(id, next)
-      settle()
+      settle(id)
     },
     rewrite: (id) => {
       settle()
@@ -733,7 +865,7 @@ export function Transcript({
     },
     quote: (line, text) => {
       onQuote(line, text)
-      settle()
+      settle(line.id)
       notify('Added to your notes')
     },
     copy: (text) => {
@@ -742,7 +874,7 @@ export function Transcript({
       notify('Copied')
     },
     listen: (line) => {
-      void listen(line.id, pageId, line.start, line.end)
+      listenToLine(pageId, line)
     },
     speaker: (line, anchor) => {
       if (!line.cluster) return
@@ -751,27 +883,102 @@ export function Transcript({
     }
   }
 
-  const onContextMenu = (event: ReactMouseEvent): void => {
-    if (!(event.target instanceof Element)) return
-    const id = event.target.closest<HTMLElement>('[data-line]')?.dataset.line
-    if (!id || rewriting === id) return
-    event.preventDefault()
+  /** Opens a line's menu: at the pointer for a right-click, under the line's words for keys. */
+  const openLineMenu = (id: string, target: Element, point: { x: number; y: number } | null): void => {
     const picked = readSelection(linesRef.current, transcript)
     const inLine = picked?.line === id ? picked : null
+    const anchor = (rowOf(linesRef.current, id)?.querySelector('[data-line]') ?? target).getBoundingClientRect()
     setMenu({
       line: id,
       span: inLine?.span ?? null,
-      edit: inLine ? null : editAt(event.target),
+      edit: point ? (inLine ? null : editAt(target)) : null,
       rect: inLine?.rect ?? null,
-      x: event.clientX,
-      y: event.clientY
+      x: point?.x ?? anchor.left + 8,
+      y: point?.y ?? anchor.bottom
     })
   }
+
+  const onContextMenu = (event: ReactMouseEvent): void => {
+    if (!(event.target instanceof Element)) return
+    const id = event.target.closest<HTMLElement>('[data-row]')?.dataset.row
+    if (!id || rewriting === id) return
+    event.preventDefault()
+    // Already opened from the keydown (Shift+F10 or the menu key); this is the same press.
+    if (Date.now() - keyboardMenuAt.current < KEYBOARD_MENU_MS) return
+    // The context-menu key reports (0, 0) on some platforms; anchor to the line instead.
+    const fromKeys = event.clientX === 0 && event.clientY === 0
+    openLineMenu(id, event.target, fromKeys ? null : { x: event.clientX, y: event.clientY })
+  }
+
+  const onLinesKeyDown = (event: ReactKeyboardEvent): void => {
+    const target = event.target
+    if (!(target instanceof HTMLElement)) return
+    if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) return
+    const lines = transcriptRef.current
+    if (target === linesRef.current) {
+      // Focus was parked on the list after an edit: the arrow keys pick the lines up again.
+      if (rovingIndex(event.key, -1, lines.length) === null) return
+      event.preventDefault()
+      focusLine(lines.find((line) => line.id === active)?.id ?? lines[0]?.id)
+      return
+    }
+    const row = target.closest<HTMLElement>('[data-row]')
+    const id = row?.dataset.row
+    if (!row || !id || rewriting === id) return
+    if ((event.key === 'F10' && event.shiftKey) || event.key === 'ContextMenu') {
+      event.preventDefault()
+      keyboardMenuAt.current = Date.now()
+      openLineMenu(id, row, null)
+      return
+    }
+    if (target !== row) return
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      actions.rewrite(id)
+      return
+    }
+    const index = lines.findIndex((line) => line.id === id)
+    const next = rovingIndex(event.key, index, lines.length)
+    if (next === null) return
+    event.preventDefault()
+    focusLine(lines[next]?.id)
+  }
+
+  // Lines read the parent's current props through this, so their handlers never change.
+  const live = useRef({ pageId, onEditLine })
+  live.current = { pageId, onEditLine }
+  const handlers = useMemo(
+    (): LineHandlers => ({
+      openPicker: (speaker, line, target) => {
+        setSplit(null)
+        setPicker({ speaker, line, anchor: target.getBoundingClientRect() })
+      },
+      listen: (line) => {
+        listenToLine(live.current.pageId, line)
+      },
+      save: (id, text) => {
+        live.current.onEditLine(id, text)
+      },
+      doneRewriting: (id) => {
+        setRewriting(null)
+        setActive(id)
+        // After the textarea is gone, so focus lands on the line rather than nowhere.
+        requestAnimationFrame(() => {
+          const row = rowOf(linesRef.current, id) ?? linesRef.current
+          row?.focus({ preventScroll: true })
+        })
+      },
+      focused: setActive
+    }),
+    []
+  )
+
   const lineById = (id: string): TranscriptSegment | undefined =>
     transcript.find((entry) => entry.id === id)
   const selectedLine = selection ? lineById(selection.line) : undefined
   const menuLine = menu ? lineById(menu.line) : undefined
   const correctingLine = correcting ? lineById(correcting.line) : undefined
+  const tabStop = (active !== null && lineById(active) ? active : null) ?? transcript[0]?.id
 
   useEffect(() => {
     if (!pickerRequest) return
@@ -837,13 +1044,26 @@ export function Transcript({
           </button>
         ))}
         <span className="speakers-tools">
-          {status && status.state !== 'done' ? (
-            <span
-              className={status.state === 'error' ? 'meeting-status is-error' : 'meeting-status'}
-            >
-              {statusLabel(status)}
-            </span>
-          ) : null}
+          {/* Always present, so screen readers hear the status as it appears and changes. */}
+          <span className="meeting-status-live" aria-live="polite">
+            {status && status.state !== 'done' ? (
+              <span
+                className={
+                  status.state === 'error'
+                    ? 'meeting-status is-error'
+                    : statusBusy(status)
+                      ? 'meeting-status is-busy'
+                      : 'meeting-status'
+                }
+                {...(status.task === 'speakers' && statusBusy(status)
+                  ? tip('Speaker names and line breaks may still change until this finishes')
+                  : {})}
+              >
+                {statusBusy(status) ? <span className="meeting-status-spinner" aria-hidden="true" /> : null}
+                {statusLabel(status)}
+              </span>
+            ) : null}
+          </span>
           {pending.length ? (
             <button
               type="button"
@@ -870,100 +1090,35 @@ export function Transcript({
             </button>
           ) : null}
           {notesEngine !== 'off' && labeled ? (
-            <button
-              type="button"
-              className="btn ghost"
-              disabled={busy}
-              onClick={() => {
-                window.api.generateNotes(pageId).catch(() => {
-                  // Shown through the meeting status line.
-                })
-              }}
-            >
-              {hasSummary ? 'Rewrite summary' : 'Write summary'}
-            </button>
+            <SummaryButton pageId={pageId} hasSummary={hasSummary} className="btn ghost" />
           ) : null}
         </span>
       </div>
 
-      <div className="lines" ref={linesRef} tabIndex={-1} onContextMenu={onContextMenu}>
-        {transcript.map((line, index) => {
-          const speaker = line.cluster ? byId.get(line.cluster) : undefined
-          const continues = index > 0 && transcript[index - 1]?.cluster === line.cluster
-          const level = tier(line.confidence)
-          const state = stateOf(speaker)
-          return (
-            <div
-              key={line.id}
-              className={[
-                'line',
-                continues ? 'continues' : '',
-                level === 1 ? 'low' : '',
-                picker?.line === line.id ? 'picked' : '',
-                nowPlaying === line.id ? 'playing' : ''
-              ].join(' ')}
-            >
-              <div className="gutter">
-                {line.cluster ? (
-                  <button
-                    type="button"
-                    className={`who ${state}`}
-                    {...tip('Change who said this')}
-                    onClick={(event) => {
-                      if (line.cluster) openPicker(line.cluster, line.id, event.currentTarget)
-                    }}
-                  >
-                    {speaker?.name ?? 'Speaker'}
-                    {state === 'likely' ? '?' : ''}
-                  </button>
-                ) : (
-                  <span className="who unknown">Live</span>
-                )}
-                <span className="line-meta">
-                  <button
-                    type="button"
-                    className="line-play"
-                    aria-pressed={nowPlaying === line.id}
-                    aria-label={
-                      nowPlaying === line.id ? 'Stop playback' : `Listen from ${clock(line.start)}`
-                    }
-                    {...tip(nowPlaying === line.id ? 'Stop' : 'Listen')}
-                    onClick={() => {
-                      if (nowPlaying === line.id) stopPlayback()
-                      else void listen(line.id, pageId, line.start, line.end)
-                    }}
-                  >
-                    {nowPlaying === line.id ? <StopIcon /> : <PlayIcon />}
-                    {clock(line.start)}
-                  </button>
-                  {line.cluster ? <Signal confidence={line.confidence} /> : null}
-                  {level < 3 && line.confidence !== null ? (
-                    <span className={level === 1 ? 'line-pct low' : 'line-pct'}>
-                      {percent(line.confidence)}
-                    </span>
-                  ) : null}
-                </span>
-              </div>
-              <div className="line-body">
-                {rewriting === line.id ? (
-                  <LineRewrite
-                    line={line}
-                    onSave={(text) => onEditLine(line.id, text)}
-                    onDone={() => {
-                      setRewriting(null)
-                      linesRef.current?.focus({ preventScroll: true })
-                    }}
-                  />
-                ) : (
-                  <LineText
-                    line={line}
-                    label={`Line at ${clock(line.start)}, ${speaker?.name ?? 'speaker'}`}
-                  />
-                )}
-              </div>
-            </div>
-          )
-        })}
+      <div
+        className="lines"
+        ref={linesRef}
+        tabIndex={-1}
+        onContextMenu={onContextMenu}
+        onKeyDown={onLinesKeyDown}
+      >
+        {transcript.map((line, index) => (
+          <TranscriptLine
+            key={line.id}
+            line={line}
+            speaker={line.cluster ? byId.get(line.cluster) : undefined}
+            continues={index > 0 && transcript[index - 1]?.cluster === line.cluster}
+            picked={picker?.line === line.id}
+            playing={nowPlaying === line.id}
+            rewriting={rewriting === line.id}
+            tabbable={tabStop === line.id}
+            hint={hintId}
+            handlers={handlers}
+          />
+        ))}
+        <span id={hintId} hidden>
+          Arrow keys move between lines, Enter edits the line, Shift+F10 shows more actions.
+        </span>
         {transcribing !== null ? <PendingLine pending={transcribing} /> : null}
       </div>
 
@@ -998,7 +1153,7 @@ export function Transcript({
             onApply={(next) => onEditOverlay(correctingLine.id, next)}
             onDone={() => {
               setCorrecting(null)
-              settle()
+              settle(correctingLine.id)
             }}
           />
         </Floating>
@@ -1033,7 +1188,7 @@ export function Transcript({
             anchor={split.anchor}
             onCancel={() => setSplit(null)}
             onSplit={(ids) => {
-              const blank = `Speaker ${String(speakers.length + 1)}`
+              const blank = unusedSpeakerName(speakers.map((speaker) => speaker.name))
               const created = onAssign(ids, { name: blank, personId: null, confirmed: false })
               notify(
                 `Split ${splitSpeaker.name} · ${String(ids.length)} ${ids.length === 1 ? 'line' : 'lines'} moved to ${blank}`,
@@ -1045,7 +1200,6 @@ export function Transcript({
           />
         </Floating>
       ) : null}
-
     </section>
   )
 }

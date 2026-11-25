@@ -49,7 +49,8 @@ mac:
     - dmg
     - zip
 dmg:
-  artifactName: ${name}-${version}.${ext}
+  # The arch is in the name: Apple silicon and Intel builds are published side by side.
+  artifactName: ${name}-${version}-${arch}.${ext}
 linux:
   icon: build/icon.png
   target:
@@ -60,6 +61,23 @@ linux:
   synopsis: Local voice notebook
 appImage:
   artifactName: ${name}-${version}.${ext}
+# Flipped in the packaged binary only; `pnpm dev`, the smoke tests and evals run the stock
+# Electron from node_modules. Workers use utilityProcess.fork, which needs neither
+# ELECTRON_RUN_AS_NODE nor NODE_OPTIONS.
+electronFuses:
+  runAsNode: false
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  # Only where the app's entry is found (app.asar, not a loose app/ folder); the native addons
+  # in app.asar.unpacked and node-llama-cpp in resources/llama still load by path.
+  onlyLoadAppFromAsar: true
+  enableEmbeddedAsarIntegrityValidation: true
+  # Left on: the renderer is served from file://, and its `type="module"` scripts (crossorigin)
+  # load over file:// only with these privileges. Turn it off after moving to a custom protocol.
+  grantFileProtocolExtraPrivileges: true
+  # Flipping fuses breaks the binary's ad-hoc signature on Apple Silicon; builds without a
+  # signing identity would not launch. A real signature, when there is one, replaces it.
+  resetAdHocDarwinSignature: true
 publish:
   provider: github
   owner: osbytes

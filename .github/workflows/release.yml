@@ -1,5 +1,6 @@
-# Release: on a version tag (v1.2.3), build the installers on macOS, Windows and Linux, attest
-# them, and publish the GitHub release. The body is this version's CHANGELOG.md section. The
+# Release: on a version tag (v1.2.3), build the installers on macOS (Apple silicon and Intel),
+# Windows and Linux, launch each packaged app's own smoke test, attest them, and publish the GitHub
+# release. The body is this version's CHANGELOG.md section. The
 # latest*.yml files and blockmaps are what electron-updater reads from releases/latest.
 #
 # A manual run builds and attests the chosen branch without publishing, or, given a tag whose
@@ -95,18 +96,47 @@ jobs:
     strategy:
       # one platform failing leaves the others running, so a broken build shows every failure at once
       fail-fast: false
+      # Each Mac is built on its own architecture: native addons (whisper, sherpa-onnx, libsql,
+      # node-llama-cpp) come as per-platform packages that only install for the machine's own CPU.
+      # The dmg name carries the arch so the two don't collide; it is set here rather than only in
+      # electron-builder.yml so an older tag (built by a manual run) gets it too. pnpm quotes the
+      # extra arguments, so electron-builder sees ${arch} literally.
+      # `packaged` and `resources` are the unpacked app electron-builder leaves next to the installers.
       matrix:
         include:
-          - name: macOS
+          - name: macOS-arm64
             os: macos-latest
             script: build:mac
+            builder-args: --arm64 -c.dmg.artifactName=${name}-${version}-${arch}.${ext}
+            packaged: dist/mac-arm64/Lyra.app/Contents/MacOS/Lyra
+            resources: dist/mac-arm64/Lyra.app/Contents/Resources
+          - name: macOS-x64
+            os: macos-15-intel
+            script: build:mac
+            builder-args: --x64 -c.dmg.artifactName=${name}-${version}-${arch}.${ext}
+            packaged: dist/mac/Lyra.app/Contents/MacOS/Lyra
+            resources: dist/mac/Lyra.app/Contents/Resources
           - name: Windows
             os: windows-latest
             script: build:win
+            builder-args: ""
+            packaged: dist/win-unpacked/Lyra.exe
+            resources: dist/win-unpacked/resources
           - name: Linux
             os: ubuntu-22.04
             script: build:linux
+            builder-args: ""
+            packaged: dist/linux-unpacked/lyra
+            resources: dist/linux-unpacked/resources
     steps:
+      # The Windows image checks text files out as CRLF (core.autocrlf true). Tags from before
+      # .gitattributes pinned LF (v0.4.0 and older) would build from CRLF files, which broke
+      # config-docs.mjs and the v0.4.0 release; LF matches what every other OS builds from.
+      - name: Check files out with LF line endings
+        if: runner.os == 'Windows'
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.version.outputs.ref }}
@@ -127,7 +157,39 @@ jobs:
         working-directory: ${{ needs.version.outputs.app }}
         env:
           SCRIPT: ${{ matrix.script }}
-        run: pnpm run "$SCRIPT"
+          BUILDER_ARGS: ${{ matrix.builder-args }}
+        run: |
+          # shellcheck disable=SC2086 # split on purpose: each word is one electron-builder option
+          pnpm run "$SCRIPT" $BUILDER_ARGS
+      # The installers are made from this unpacked app, so its smoke task (`<app> smoke`, the same
+      # checks `pnpm smoke:ui` runs in development) catches a broken asar, a native addon or extra
+      # resource that didn't make it in, before anything is published. No models are downloaded.
+      - name: Smoke-test the packaged app
+        working-directory: ${{ needs.version.outputs.app }}
+        timeout-minutes: 10
+        env:
+          APP: ${{ matrix.packaged }}
+          RESOURCES: ${{ matrix.resources }}
+          # the same fake key run-ui-smoke.cjs sets: the smoke test proves it is never logged
+          ANTHROPIC_API_KEY: sk-ant-smoke-not-a-real-key
+          # packaged builds only run a task from the command line when this is set
+          LYRA_ALLOW_TASKS: "1"
+        run: |
+          if [ ! -d "$RESOURCES/llama/node_modules/node-llama-cpp" ]; then
+            echo "::error::node-llama-cpp is missing from $RESOURCES/llama (scripts/prepare-llama.cjs)"
+            exit 1
+          fi
+          if [ "$RUNNER_OS" = macOS ] && [ ! -x "$RESOURCES/micwatch" ]; then
+            echo "::error::the micwatch helper is missing from $RESOURCES (scripts/build-mac-helpers.cjs)"
+            exit 1
+          fi
+          if [ "$RUNNER_OS" = Linux ]; then xvfb-run -a "$APP" smoke; else "$APP" smoke; fi
+      # Both Mac builds write latest-mac.yml; the Intel one is renamed so the publish job can merge
+      # it into the Apple silicon one instead of one overwriting the other.
+      - name: Keep the Intel Mac update file apart
+        if: matrix.name == 'macOS-x64'
+        working-directory: ${{ needs.version.outputs.app }}
+        run: mv dist/latest-mac.yml dist/latest-mac-x64.yml
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.name }}-dist
@@ -157,6 +219,36 @@ jobs:
         with:
           path: out
           merge-multiple: true
+      # electron-updater reads one latest-mac.yml and picks the file for the Mac's CPU from its
+      # `files` (urls containing arm64 are for Apple silicon), so the Intel build's entries are
+      # appended to the Apple silicon file. The format is electron-builder's fixed layout.
+      - name: Merge the Mac update files
+        run: |
+          if [ ! -f out/latest-mac-x64.yml ]; then echo "no Intel Mac build"; exit 0; fi
+          node - out/latest-mac.yml out/latest-mac-x64.yml <<'EOF'
+          const { readFileSync, writeFileSync } = require('node:fs')
+          const [armPath, x64Path] = process.argv.slice(2)
+          const read = (path) => {
+            const lines = readFileSync(path, 'utf8').replaceAll('\r\n', '\n').split('\n')
+            const start = lines.indexOf('files:')
+            if (start < 0) throw new Error(`${path} has no files list`)
+            let end = start + 1
+            while (end < lines.length && lines[end].startsWith('  ')) end++
+            return { lines, start, end }
+          }
+          const arm = read(armPath)
+          const x64 = read(x64Path)
+          if (arm.lines[0] !== x64.lines[0]) throw new Error('the two Mac builds have different versions')
+          const intel = x64.lines.slice(x64.start + 1, x64.end)
+          if (intel.some((line) => line.includes('arm64'))) throw new Error('the Intel build named an arm64 file')
+          if (!arm.lines.slice(arm.start + 1, arm.end).some((line) => line.includes('arm64'))) {
+            throw new Error('the Apple silicon files are not named arm64; Intel Macs would be offered them')
+          }
+          const merged = [...arm.lines.slice(0, arm.end), ...intel, ...arm.lines.slice(arm.end)]
+          writeFileSync(armPath, merged.join('\n'))
+          EOF
+          rm out/latest-mac-x64.yml
+          cat out/latest-mac.yml
       - run: ls -la out
 
       # `gh attestation verify lyra-<v>-setup.exe --owner osbytes` proves an installer came from
@@ -170,8 +262,10 @@ jobs:
             out/*.AppImage
             out/*.deb
 
-      # SBOM of every dependency in pnpm-lock.yaml (SPDX JSON); it lands in out/, so the release
-      # step below attaches it with the installers
+      # SBOM of every dependency in pnpm-lock.yaml and in apps/lyra/scripts/llama/package-lock.json
+      # (the node-llama-cpp tree prepare-llama.cjs ships beside the app; syft finds every lockfile
+      # under the path) as SPDX JSON. It lands in out/, so the release step below attaches it with
+      # the installers
       - uses: anchore/sbom-action@dfcb83b97731532d72be422cbc51ee64adb6fd56 # v0.24.4
         with:
           path: .

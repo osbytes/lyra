@@ -1,3 +1,5 @@
+import { keyName, type NamedKey } from './keys'
+
 const WORDS_PER_MINUTE = 230
 
 export function wordCount(text: string): number {
@@ -60,3 +62,6 @@ export const isMac = window.api.platform === 'darwin'
 
 export const shortcutLabel = (key: string, shift = false): string =>
   isMac ? `${shift ? '⇧' : ''}⌘${key}` : `Ctrl+${shift ? 'Shift+' : ''}${key}`
+
+/** A key's name the way this platform writes it, e.g. for a tooltip (see `keyName`). */
+export const keyLabel = (key: NamedKey): string => keyName(key, isMac)

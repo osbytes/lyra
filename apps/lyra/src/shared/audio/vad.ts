@@ -40,10 +40,16 @@ export type SpeechClassifier = {
 }
 
 export type VoiceEvents = {
-  /** Speech started; `frames` is the pre-roll, already including the onset. */
-  onStart: (frames: Float32Array[]) => void
-  /** A frame of audio during speech (including short pauses). */
-  onFrame: (frame: Float32Array) => void
+  /**
+   * Speech started; `frames` is the pre-roll, already including the onset, which is its last
+   * `onset` samples (all of them heard as speech).
+   */
+  onStart: (frames: Float32Array[], onset: number) => void
+  /**
+   * A frame of audio during speech, including short pauses and the end pause itself: `voiced`
+   * says whether this frame was heard as speech or is part of a pause.
+   */
+  onFrame: (frame: Float32Array, voiced: boolean) => void
   /** A long pause, or capture stopped. */
   onEnd: () => void
 }
@@ -115,6 +121,11 @@ export class VoiceDetector {
     this.noiseFloor += (quietest - this.noiseFloor) * rate
   }
 
+  /** Samples held in the pre-roll: heard, but not handed on (yet) in any event. */
+  preRolled(): number {
+    return this.preRollLength
+  }
+
   flush(): void {
     if (this.speaking) {
       this.speaking = false
@@ -138,10 +149,11 @@ export class VoiceDetector {
     if (voiced) {
       this.onset += frame.length
       if (this.onset >= ONSET) {
+        const onset = this.onset
         this.speaking = true
         this.silence = 0
         this.onset = 0
-        this.events.onStart(this.preRoll)
+        this.events.onStart(this.preRoll, onset)
         this.preRoll = []
         this.preRollLength = 0
       }
@@ -152,7 +164,7 @@ export class VoiceDetector {
   }
 
   private whileSpeaking(frame: Float32Array, voiced: boolean): void {
-    this.events.onFrame(frame)
+    this.events.onFrame(frame, voiced)
     this.silence = voiced ? 0 : this.silence + frame.length
     if (this.silence >= END_PAUSE) {
       this.speaking = false

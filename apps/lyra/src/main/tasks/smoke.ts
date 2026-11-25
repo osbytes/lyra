@@ -1,7 +1,8 @@
 /** `lyra smoke`: main-process checks, then the IPC bridge exercised from the renderer. */
 import { app, clipboard, type BrowserWindow } from 'electron'
-import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises'
+import { z } from 'zod'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { appendFile, copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { notesDir } from '../pages'
@@ -15,6 +16,7 @@ import {
   getSessionPage as getPage,
   listSessions as listPages,
   editSession,
+  readManifestOf,
   openSessionFor,
   readSession,
   readSessionFromDisk,
@@ -41,6 +43,8 @@ import {
   joinSplitLines,
   initDoc,
   mergeSpeakers,
+  newSpeakerId,
+  removeSpeaker,
   renumberSpeakers,
   setSegmentEdits,
   setSegmentText,
@@ -57,10 +61,14 @@ import {
   type TranscriptEdit
 } from '../../shared/transcriptOverlay'
 import { getSettings, overrideSettings, updateSettings } from '../settings'
-import { assignSpeaker } from '../meeting/pipeline'
+import { assignSpeaker, sessionAudio } from '../meeting/pipeline'
+import { relabelSession } from '../meeting/relabel'
+import { applyLog } from '../sessionLog'
+import { MANIFEST_VERSION } from '../sessionManifest'
+import { wavHeader } from '../wavFile'
 import { defaultTitle, partOfDay } from '../sessionTitle'
 import { trackPath } from '../recorder'
-import { sweepAudio } from '../audioRetention'
+import { previewAudioSweep, sweepAudio } from '../audioRetention'
 import { flushLog, log, logPath } from '../log'
 import { parseConsentStore, parseHelperLine } from '../micwatch'
 import { classifyMicUser, meetingFromTitles } from '../meetingApps'
@@ -77,8 +85,29 @@ import { createFakeNotesWriter, createModelNotesWriter } from '../meeting/notesW
 import { chooseWriter } from '../meeting/writers'
 import { searchSessions } from '../search'
 import { chunksOf } from '../searchIndex/record'
-import { checkSearchIndex, drainEmbeddings, useTestEmbedder } from '../searchIndex/service'
-import { addPerson, deletePerson } from '../voices'
+import {
+  checkSearchIndex,
+  drainEmbeddings,
+  flushSearchIndex,
+  stopSearchIndex,
+  useTestEmbedder
+} from '../searchIndex/service'
+import { addPerson, deletePerson, listPeople, scoreVoices, withdrawVoice } from '../voices'
+
+/** A settings key from a newer Lyra, seeded into the profile; every save must keep it. */
+const FUTURE_SETTING = 'smokeFutureSetting'
+/** A voices.json cut off mid-write, seeded into the profile; it must be kept, not overwritten. */
+const TORN_VOICES = '{"version": 2, "people": [{"id": "torn'
+
+/**
+ * Files a newer Lyra or a crash would leave in the profile, written by `prepareTaskProfile`
+ * before anything reads settings or voices, for the checks that they survive.
+ */
+export function seedSmokeProfile(userData: string): void {
+  mkdirSync(userData, { recursive: true })
+  writeFileSync(join(userData, 'settings.json'), JSON.stringify({ [FUTURE_SETTING]: 'kept' }))
+  writeFileSync(join(userData, 'voices.json'), TORN_VOICES)
+}
 
 /** Text the smoke run writes into notes, and the key run-ui-smoke.cjs puts in the environment. */
 const NEVER_LOGGED = ['hello from smoke', 'Merged', 'sk-ant-smoke-not-a-real-key']
@@ -693,6 +722,14 @@ async function checkAudioRetention(): Promise<void> {
   const fortyDaysAgo = new Date(Date.now() - 40 * 86_400_000)
   await utimes(legacy, fortyDaysAgo, fortyDaysAgo)
 
+  const preview = await previewAudioSweep(30)
+  if (preview.sessions !== 2 || preview.bytes !== 2 || !existsSync(trackPath(old, 'mic')) || !existsSync(legacy)) {
+    fail(`preview: ${JSON.stringify(preview)} (or it deleted something)`)
+  }
+  if ((await previewAudioSweep(null)).sessions !== 0 || (await previewAudioSweep(0)).sessions !== 0) {
+    fail('forever or until-transcribed previewed deletions')
+  }
+
   overrideSettings({ audioRetentionDays: null })
   if ((await sweepAudio()) !== 0 || !existsSync(trackPath(old, 'mic'))) fail('forever deleted audio')
   overrideSettings({ audioRetentionDays: 30 })
@@ -920,6 +957,313 @@ async function checkTranscriptModel(): Promise<void> {
   await deletePage(id)
 }
 
+/**
+ * A session folder damaged on disk opens with what is readable, keeps the damaged file beside it,
+ * and goes on saving: an unreadable manifest, a torn log, an empty log, and a manifest from a
+ * newer Lyra. Each case is a copy of one good session under a new id, never loaded before.
+ */
+async function checkSessionRecovery(): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`session recovery: ${message}`)
+  }
+  const source = await createPage()
+  await editSession(source.id, (doc) => {
+    editDoc(doc, { title: 'Recovery source', notes: 'Recovery notes' }, 'main')
+    upsertSpeaker(doc, 'c0', { name: 'Ana', personId: null, confirmed: true, confidence: null, matches: [] }, 'main')
+    replaceTranscript(doc, [{ id: 'r0', rawId: null, start: 0, end: 2, cluster: 'c0', confidence: null, text: 'Recovered line.' }], 'main')
+  })
+  await flushAllSessions()
+  const sessions = join(notesDir(), '.sessions')
+  const ids: string[] = []
+  const clone = async (name: string): Promise<string> => {
+    const id = `recovery-${name}-smoke.txt`
+    ids.push(id)
+    await mkdir(join(sessions, id), { recursive: true })
+    for (const file of ['doc.yjs', 'session.json']) await copyFile(join(sessions, source.id, file), join(sessions, id, file))
+    // The note last: the folder watcher lists a note as soon as it appears, and one without its
+    // session folder yet would be taken for a plain note and given a new document.
+    await copyFile(join(notesDir(), source.id), join(notesDir(), id))
+    return id
+  }
+  const fileIn = (id: string, file: string): string => join(sessions, id, file)
+  const setAside = async (id: string, file: string): Promise<boolean> =>
+    (await readdir(join(sessions, id))).some((name) => name.startsWith(`${file}.corrupt-`))
+  const intact = async (id: string, step: string): Promise<void> => {
+    const snapshot = await readSession(id)
+    if (!snapshot.notes.includes('Recovery notes') || snapshot.transcript[0]?.text !== 'Recovered line.') {
+      fail(`${step}: the document came back wrong: ${JSON.stringify(snapshot.transcript)}`)
+    }
+  }
+
+  const manifest = await clone('manifest')
+  await writeFile(fileIn(manifest, 'session.json'), '{"version": 1, "tracks": [', 'utf8')
+  await intact(manifest, 'unreadable session.json')
+  if (!(await setAside(manifest, 'session.json'))) fail('the unreadable session.json was not kept aside')
+
+  const torn = await clone('torn')
+  // A frame header promising 64 bytes, then a crash after three of them.
+  await appendFile(fileIn(torn, 'doc.yjs'), Buffer.from([64, 0, 0, 0, 1, 2, 3]))
+  await intact(torn, 'torn doc.yjs')
+  if (!(await setAside(torn, 'doc.yjs'))) fail('the torn doc.yjs was not kept aside')
+  await editSession(torn, (doc) => {
+    editDoc(doc, { notes: 'Recovery notes, then more' }, 'main')
+  })
+  // Read from the log on disk: an edit appended after the torn bytes would be lost on reload.
+  const reloaded = await readSessionFromDisk(torn)
+  if (reloaded.notes !== 'Recovery notes, then more' || reloaded.transcript[0]?.text !== 'Recovered line.') {
+    fail(`an edit after a torn log did not survive a reload: ${JSON.stringify(reloaded.notes)}`)
+  }
+
+  const empty = await clone('empty')
+  await writeFile(fileIn(empty, 'doc.yjs'), '')
+  const rebuilt = await readSession(empty)
+  if (rebuilt.title !== 'Recovery source' || !rebuilt.notes.includes('Recovery notes')) {
+    fail(`an empty doc.yjs was not rebuilt from the export: ${JSON.stringify(rebuilt.title)}`)
+  }
+  if (!(await setAside(empty, 'doc.yjs')) || (await stat(fileIn(empty, 'doc.yjs'))).size === 0) {
+    fail('the empty doc.yjs was not set aside and rewritten')
+  }
+
+  const newer = await clone('newer')
+  const raw = z.record(z.string(), z.unknown()).parse(JSON.parse(await readFile(fileIn(newer, 'session.json'), 'utf8')))
+  await writeFile(fileIn(newer, 'session.json'), JSON.stringify({ ...raw, version: MANIFEST_VERSION + 1, smokeFuture: 'kept' }))
+  await intact(newer, 'newer session.json')
+  await editSession(newer, (doc) => {
+    editDoc(doc, { notes: 'Recovery notes, edited by an older Lyra' }, 'main')
+  })
+  await flushAllSessions()
+  const written = z
+    .object({ version: z.number(), smokeFuture: z.unknown() })
+    .safeParse(JSON.parse(await readFile(fileIn(newer, 'session.json'), 'utf8')))
+  if (!written.success || written.data.version !== MANIFEST_VERSION + 1 || written.data.smokeFuture !== 'kept') {
+    fail(`a newer manifest lost its version or fields: ${JSON.stringify(written.data)}`)
+  }
+  if (!(await readFile(join(notesDir(), newer), 'utf8')).includes('edited by an older Lyra')) fail('newer session did not export')
+
+  for (const id of [...ids, source.id]) await deletePage(id)
+}
+
+/** A removed speaker's id isn't handed out again, also once the document is read back from disk. */
+async function checkSpeakerIds(): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`speaker ids: ${message}`)
+  }
+  const page = await createPage()
+  const ids = await editSession(page.id, (doc) => {
+    const first = newSpeakerId(doc)
+    upsertSpeaker(doc, first, { name: 'Speaker 1' }, 'main')
+    const removed = newSpeakerId(doc)
+    upsertSpeaker(doc, removed, { name: 'Speaker 2' }, 'main')
+    removeSpeaker(doc, removed, 'main')
+    return { first, removed, next: newSpeakerId(doc) }
+  })
+  if (ids.next === ids.removed || ids.next === ids.first) fail(`reused an id: ${JSON.stringify(ids)}`)
+  const disk = new Y.Doc()
+  applyLog(disk, await readFile(join(notesDir(), '.sessions', page.id, 'doc.yjs')), 'smoke')
+  const fromDisk = newSpeakerId(disk)
+  disk.destroy()
+  if (fromDisk !== ids.next) fail(`after a reload the next id is ${fromDisk}, not ${ids.next}`)
+  await deletePage(page.id)
+}
+
+/**
+ * Saved voices: a voices.json that couldn't be read was copied aside before the first save
+ * replaced it, and a session's own automatic sample never scores that session's speakers.
+ */
+async function checkVoices(): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`voices: ${message}`)
+  }
+  const vector = [0.3, 0.1, 0.5, 0.2]
+  const session = 'voices-self-smoke.txt'
+  const person = await addPerson('Smoke Voice', vector, false, { source: 'auto', sessionId: session })
+  try {
+    const userData = app.getPath('userData')
+    const copies = (await readdir(userData)).filter((name) => /^voices\.corrupt-.+\.json$/.test(name))
+    const [copy] = copies
+    if (!copy) return fail('the torn voices.json seeded into the profile was not copied aside')
+    if ((await readFile(join(userData, copy), 'utf8')) !== TORN_VOICES) fail('the copy aside differs from the torn file')
+    const saved: unknown = JSON.parse(await readFile(join(userData, 'voices.json'), 'utf8'))
+    if (!JSON.stringify(saved).includes(person.id)) fail('voices.json was not written after starting over')
+    const scored = async (sessionId: string | null): Promise<boolean> =>
+      (await scoreVoices(vector, sessionId)).some((match) => match.person.id === person.id)
+    if (await scored(session)) fail('a session vouched for its own speaker')
+    if (!(await scored('voices-other-smoke.txt')) || !(await scored(null))) fail('the sample did not score other sessions')
+    // Naming a session's speaker again takes back what its first name taught: the person made
+    // by that first name goes, and one who knows the voice from another session stays.
+    const renamed = 'voices-renamed-smoke.txt'
+    const first = await addPerson('Smoke First Name', vector, false, { source: 'user', sessionId: renamed })
+    const elsewhere = await addPerson('Smoke Elsewhere', vector, false, { source: 'user', sessionId: 'voices-other-smoke.txt' })
+    try {
+      await withdrawVoice(renamed, vector, null, 0.75)
+      const ids = (await listPeople()).map((entry) => entry.id)
+      if (ids.includes(first.id)) fail('the person a renamed speaker first taught was kept')
+      if (!ids.includes(elsewhere.id) || !ids.includes(person.id)) fail('withdrawing a voice removed people it should not')
+    } finally {
+      await deletePerson(first.id)
+      await deletePerson(elsewhere.id)
+    }
+  } finally {
+    await deletePerson(person.id)
+  }
+}
+
+/** Keys a newer Lyra wrote to settings.json survive this one saving. */
+async function checkSettingsFile(): Promise<void> {
+  await updateSettings({ sidebar: getSettings().sidebar })
+  const raw: unknown = JSON.parse(await readFile(join(app.getPath('userData'), 'settings.json'), 'utf8'))
+  const parsed = z.object({ [FUTURE_SETTING]: z.literal('kept') }).safeParse(raw)
+  if (!parsed.success) {
+    throw new Error(`settings: a key from a newer Lyra was dropped on save (is the profile seeded by seedSmokeProfile?)`)
+  }
+}
+
+/**
+ * "Keep recordings until transcribed": a relabel that fails keeps the audio, the only copy; one
+ * that finishes deletes it. relabel reads raw/live.json itself, so a live.json that isn't JSON
+ * fails it before any speaker model is needed.
+ */
+async function checkRelabelKeepsAudio(): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`relabel retention: ${message}`)
+  }
+  const previous = getSettings().audioRetentionDays
+  overrideSettings({ audioRetentionDays: 0 })
+  const page = await createPage()
+  try {
+    await mkdir(sessionAudioDir(page.id), { recursive: true })
+    await writeFile(trackPath(page.id, 'mic'), Buffer.concat([wavHeader(32000), Buffer.alloc(32000)]))
+    await mkdir(sessionRawDir(page.id), { recursive: true })
+    await writeFile(join(sessionRawDir(page.id), 'live.json'), '{"segments": [', 'utf8')
+    await relabelSession(page.id)
+    if (!existsSync(trackPath(page.id, 'mic'))) fail('a failed relabel deleted the audio')
+    await rm(join(sessionRawDir(page.id), 'live.json'))
+    // No words to label: it finishes, and the audio has done its job.
+    await relabelSession(page.id)
+    if (existsSync(trackPath(page.id, 'mic'))) fail('a finished relabel kept audio set to go once transcribed')
+  } finally {
+    overrideSettings({ audioRetentionDays: previous })
+    await deletePage(page.id)
+  }
+}
+
+/** A WAV whose header was never finalised (a crash) still plays: its audio runs to the end. */
+async function checkUnfinishedWav(): Promise<void> {
+  const page = await createPage()
+  try {
+    const samples = Buffer.alloc(32000)
+    for (let i = 0; i < 16000; i++) samples.writeInt16LE(1000, i * 2)
+    await mkdir(sessionAudioDir(page.id), { recursive: true })
+    await writeFile(trackPath(page.id, 'mic'), Buffer.concat([wavHeader(0), samples]))
+    const heard = await sessionAudio(page.id, 0, 1)
+    if (heard.length !== 16000 || (heard[100] ?? 0) < 900) {
+      throw new Error(`wav: a header saying 0 bytes gave ${String(heard.length)} samples`)
+    }
+  } finally {
+    await deletePage(page.id)
+  }
+}
+
+/** A damaged search index file is set aside and rebuilt when the index next opens. */
+async function checkSearchIndexRecovery(): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`search index recovery: ${message}`)
+  }
+  // Nothing left to write, so no worker opens the file again while it's being damaged.
+  await flushAllSessions()
+  await flushSearchIndex()
+  await stopSearchIndex()
+  const dir = join(app.getPath('userData'), 'index')
+  const db = join(dir, 'lyra.db')
+  // The stopped worker can hold its files a moment after exit (Windows).
+  const patiently = async (step: () => Promise<void>): Promise<void> => {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await step()
+        return
+      } catch (error) {
+        if (attempt >= 15) throw error
+        await new Promise((resolve) => setTimeout(resolve, 100 * attempt))
+      }
+    }
+  }
+  for (const suffix of ['-wal', '-shm']) await patiently(() => rm(db + suffix, { force: true }))
+  await patiently(() => writeFile(db, Buffer.alloc(8192, 'not a database ')))
+  // Any worker a late write started meanwhile had the old file open: the next one opens this.
+  await stopSearchIndex()
+  const page = await createPage()
+  await editSession(page.id, (doc) => {
+    editDoc(doc, { title: 'Index recovery', notes: 'quillwort after the rebuild' }, 'main')
+  })
+  const found = (await searchSessions('quillwort')).some((hit) => hit.id === page.id)
+  if (!found) fail('search did not answer after the index was damaged')
+  if (!(await readdir(dir)).some((name) => name.startsWith('lyra.db.corrupt-'))) fail('the damaged file was not kept aside')
+  await deletePage(page.id)
+}
+
+/** Stopping a recording lists the take's tracks in the manifest. */
+async function checkRecordingManifest(win: BrowserWindow): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`recording manifest: ${message}`)
+  }
+  const previous = getSettings().audioRetentionDays
+  // Test runs don't identify speakers, so with 0 days the audio would go as soon as it stops.
+  overrideSettings({ audioRetentionDays: 30 })
+  const page = await createPage()
+  try {
+    await win.webContents.executeJavaScript(`(async () => {
+      await window.api.startRecording(${JSON.stringify(page.id)}, false)
+      window.api.appendRecording('mic', new Int16Array(16000).fill(700))
+      await window.api.stopRecording()
+    })()`)
+    const manifest = await readManifestOf(page.id)
+    const mic = manifest.tracks.find((track) => track.name === 'mic')
+    if (!mic || Math.abs(mic.seconds - 1) > 0.01 || manifest.audio !== 'kept' || manifest.endedAt === null) {
+      fail(`tracks after stopping: ${JSON.stringify(manifest.tracks)} (${manifest.audio})`)
+    }
+  } finally {
+    overrideSettings({ audioRetentionDays: previous })
+    await deletePage(page.id)
+  }
+}
+
+/**
+ * Switching sessions quickly: a window that opens A and B at once and then closes A gets B's
+ * changes and no longer A's (main's subscriber bookkeeping, under the renderer's race fix).
+ */
+async function checkSessionSwitch(win: BrowserWindow): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`session switch: ${message}`)
+  }
+  const [a, b] = [await createPage(), await createPage()]
+  const ids = JSON.stringify({ a: a.id, b: b.id })
+  await win.webContents.executeJavaScript(`(async () => {
+    const { a, b } = ${ids}
+    window.__smokeSwitch = { seen: [], stop: window.api.onSessionUpdate((change) => { window.__smokeSwitch.seen.push(change.id) }) }
+    await Promise.all([window.api.openSession(a), window.api.openSession(b)])
+    window.api.closeSession(a)
+    // A round trip after the close, so main has handled it before the edits below.
+    await window.api.getSettings()
+  })()`)
+  await editSession(a.id, (doc) => {
+    editDoc(doc, { notes: 'switched away' }, 'main')
+  })
+  await editSession(b.id, (doc) => {
+    editDoc(doc, { notes: 'switched to' }, 'main')
+  })
+  const seen: unknown = await win.webContents.executeJavaScript(`(async () => {
+    const { b } = ${ids}
+    for (let i = 0; i < 50 && !window.__smokeSwitch.seen.includes(b); i++) await new Promise((done) => setTimeout(done, 20))
+    window.__smokeSwitch.stop()
+    window.api.closeSession(b)
+    return window.__smokeSwitch.seen
+  })()`)
+  const updates = z.array(z.string()).parse(seen)
+  if (!updates.includes(b.id)) fail('the session opened last got no updates')
+  if (updates.includes(a.id)) fail('a closed session still sent updates to the window')
+  for (const id of [a.id, b.id]) await deletePage(id)
+}
+
 /** Copy buttons: the sandboxed preload has no clipboard module, so text goes through main. */
 async function checkCopy(win: BrowserWindow): Promise<void> {
   const text = `lyra smoke copy ${String(Date.now())}`
@@ -943,7 +1287,17 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
     await checkSearchIndexMirror()
     await checkSearchQueries()
     await checkSemanticSearch()
+    await checkSessionRecovery()
+    await checkSpeakerIds()
+    await checkVoices()
+    await checkSettingsFile()
+    await checkRelabelKeepsAudio()
+    await checkUnfinishedWav()
+    // Last of the index checks: the rebuilt index holds only what changed since (see the report).
+    await checkSearchIndexRecovery()
     await checkCopy(win)
+    await checkRecordingManifest(win)
+    await checkSessionSwitch(win)
     const result: unknown = await win.webContents.executeJavaScript(`
       (async () => {
         const fail = (message) => { throw new Error(message) }
@@ -1012,6 +1366,11 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
         if (model.cloudModel !== 'llama3.1:8b' || model.cloudBaseUrl !== 'http://localhost:11434/v1') fail('the cloud model was not saved')
         const badUrl = await window.api.updateSettings({ cloudBaseUrl: 'ftp://nope' })
         if (badUrl.cloudBaseUrl !== 'http://localhost:11434/v1') fail('a non-http server address was saved')
+        // Transcripts go to this server, so plain http only stays on this computer.
+        const remoteHttp = await window.api.updateSettings({ cloudBaseUrl: 'http://example.com/v1' })
+        if (remoteHttp.cloudBaseUrl !== 'http://localhost:11434/v1') fail('a plain-http remote server address was saved')
+        const unknownKey = await window.api.updateSettings({ notASetting: true }).then(() => false, () => true)
+        if (!unknownKey) fail('updateSettings accepted an unknown key')
         await window.api.updateSettings({ cloudProvider: 'anthropic', cloudModel: null, cloudBaseUrl: null })
         const language = (await window.api.getSettings()).transcriptionLanguage
         const badLanguage = await window.api.updateSettings({ transcriptionLanguage: 'klingon' })
@@ -1046,6 +1405,31 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
         const badSimilar = await window.api.similarLines(meetingPage.id, 'nope', 'c0').then(() => false, () => true)
         if (!badSimilar) fail('similarLines accepted a non-array')
         await window.api.deletePage(meetingPage.id)
+
+        // Settings tools: previews delete nothing, diagnostics carry no content, bad args are refused.
+        const refuses = async (call) => { try { await call(); return false } catch { return true } }
+        const preview = await window.api.previewRetention(30)
+        if (typeof preview.sessions !== 'number' || typeof preview.bytes !== 'number') fail('retention preview: ' + JSON.stringify(preview))
+        if (!(await refuses(() => window.api.previewRetention(-5)))) fail('retention preview took a negative day count')
+        const info = await window.api.getDiagnostics()
+        if (!info.version || !Array.isArray(info.places) || info.places.length !== 4) fail('diagnostics: ' + JSON.stringify(info))
+        if (info.text.includes('Smoke page') || info.text.includes('hello from smoke')) fail('diagnostics carried note text')
+        const perms = await window.api.permissionStatus()
+        if (!perms.microphone || !perms.screen) fail('permission status: ' + JSON.stringify(perms))
+        if ((await window.api.cancelModelDownload('no-such-model.bin')) !== false) fail('cancelled a download that was not running')
+        if (!(await refuses(() => window.api.cancelModelDownload('../settings.json')))) fail('models:cancel took a path')
+        if (!(await refuses(() => window.api.listServerModels('http://192.168.1.5:11434/v1')))) fail('listModels took http to another computer')
+        if (!(await refuses(() => window.api.revealFolder('/')))) fail('diagnostics:reveal took a path')
+        if (!(await refuses(() => window.api.openPermissionSettings('camera')))) fail('openSettings took an unknown kind')
+        if (typeof window.api.detectServers !== 'function') fail('detectServers missing from the bridge')
+        const engineBefore = (await window.api.getSettings()).notesEngine
+        await window.api.updateSettings({ notesEngine: 'off' })
+        const offTest = await window.api.testNotesWriter()
+        if (offTest.ok || offTest.error !== 'Summaries are off.') fail('testWriter with summaries off: ' + JSON.stringify(offTest))
+        await window.api.updateSettings({ notesEngine: engineBefore })
+        const vocab = await window.api.updateSettings({ vocabulary: [' Acme', 'acme', 'Siobhan'] })
+        if (JSON.stringify(vocab.vocabulary) !== '["Acme","Siobhan"]') fail('vocabulary not cleaned: ' + JSON.stringify(vocab.vocabulary))
+        await window.api.updateSettings({ vocabulary: [] })
 
         for (const bad of ['../escape.txt', '..\\\\escape.txt', '.hidden.txt', 'x/y.txt', 'note.exe']) {
           const rejected = await window.api.getPage(bad).then(() => false, () => true)

@@ -11,6 +11,7 @@ import {
   type Ref
 } from 'react'
 import { createPortal } from 'react-dom'
+import { radioIndex } from '../lib/focus'
 import { CheckIcon, ChevronDownIcon } from './Icons'
 
 type ScrollAreaProps = HTMLAttributes<HTMLElement> & {
@@ -156,9 +157,12 @@ export function Select<T extends string>({
     else if (event.key === 'Home') setActive(0)
     else if (event.key === 'End') setActive(last)
     else if (event.key === 'Enter' || event.key === ' ') pick(active)
-    else if (event.key === 'Escape' || event.key === 'Tab') {
-      close(event.key === 'Escape')
-      if (event.key === 'Tab') return
+    else if (event.key === 'Escape') close(true)
+    else if (event.key === 'Tab') {
+      // The list is portaled to the end of the page, so Tab from it would fall off the end.
+      // Refocus the button first; the browser then moves on from there as usual.
+      close(true)
+      return
     } else if (event.key.length === 1) {
       // Type-ahead: jump to the first option starting with what was typed recently.
       const now = Date.now()
@@ -271,23 +275,48 @@ type SegmentedProps<T extends string> = {
   options: readonly { value: T; label: string }[]
   onChange: (value: T) => void
   label: string
+  className?: string
 }
 
-/** Two or three exclusive choices, all visible at once (a select hides them). */
+/**
+ * Two or three exclusive choices, all visible at once (a select hides them). A radio group:
+ * one tab stop, and the arrow keys move to and choose the next option.
+ */
 export function Segmented<T extends string>({
   value,
   options,
   onChange,
-  label
+  label,
+  className
 }: SegmentedProps<T>) {
+  const group = useRef<HTMLDivElement>(null)
+  const current = Math.max(
+    0,
+    options.findIndex((option) => option.value === value)
+  )
+  const onKeyDown = (event: ReactKeyboardEvent): void => {
+    const next = radioIndex(event.key, current, options.length)
+    const option = next === null ? undefined : options[next]
+    if (next === null || !option) return
+    event.preventDefault()
+    onChange(option.value)
+    group.current?.querySelectorAll<HTMLElement>('[role="radio"]')[next]?.focus()
+  }
   return (
-    <div className="segmented" role="radiogroup" aria-label={label}>
-      {options.map((option) => (
+    <div
+      className={className ? `segmented ${className}` : 'segmented'}
+      role="radiogroup"
+      aria-label={label}
+      ref={group}
+      onKeyDown={onKeyDown}
+    >
+      {options.map((option, index) => (
         <button
           key={option.value}
           type="button"
           role="radio"
           aria-checked={option.value === value}
+          tabIndex={index === current ? 0 : -1}
           onClick={() => {
             onChange(option.value)
           }}

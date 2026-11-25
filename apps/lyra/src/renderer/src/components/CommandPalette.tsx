@@ -1,6 +1,7 @@
 import Fuse from 'fuse.js'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { PageSummary, SearchField, SearchMatch } from '../../../shared/types'
+import { useDialogFocus } from '../hooks/useDialogFocus'
 import { useSearch } from '../hooks/useSearch'
 import { clockLabel, relativeTime } from '../lib/format'
 import { ScrollArea } from './Controls'
@@ -84,6 +85,8 @@ export function CommandPalette({ pages, activeId, commands, onOpen, onClose }: P
   const [selected, setSelected] = useState(0)
   const search = useSearch(query)
   const list = useRef<HTMLDivElement>(null)
+  const dialog = useRef<HTMLDivElement>(null)
+  useDialogFocus(dialog, true)
   const needle = query.trim()
 
   const commandFuse = useMemo(
@@ -164,6 +167,7 @@ export function CommandPalette({ pages, activeId, commands, onOpen, onClose }: P
   return (
     <div className="modal-backdrop palette-backdrop" onMouseDown={onClose}>
       <div
+        ref={dialog}
         className="palette"
         role="dialog"
         aria-modal="true"
@@ -174,7 +178,7 @@ export function CommandPalette({ pages, activeId, commands, onOpen, onClose }: P
         <label className="palette-input">
           <SearchIcon />
           <input
-            autoFocus
+            data-autofocus
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search notes, transcripts and commands…"
@@ -185,7 +189,9 @@ export function CommandPalette({ pages, activeId, commands, onOpen, onClose }: P
             aria-activedescendant={active ? `palette-${active.key}` : undefined}
             spellCheck={false}
           />
-          {search.pending ? <span className="palette-spinner" aria-label="Searching" /> : null}
+          {search.pending ? (
+            <span className="palette-spinner" role="status" aria-label="Searching" />
+          ) : null}
         </label>
         <div className="palette-scopes" role="tablist" aria-label="Search in">
           {SCOPES.map((entry) => (

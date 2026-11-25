@@ -1,10 +1,12 @@
+import { useMemo } from 'react'
 import type { PageSummary, Settings } from '../../../shared/types'
-import { LOW_CONFIDENCE, SURE_MATCH } from '../../../shared/sessionDoc'
+import { LOW_CONFIDENCE, SURE_MATCH, type TranscriptSegment } from '../../../shared/sessionDoc'
 import type { OpenPage } from '../hooks/usePages'
 import { formatDuration, readingMinutes, relativeTime } from '../lib/format'
 import { speakerTone } from '../lib/speakerTone'
 import { CopyIcon, FolderIcon, PeopleIcon } from './Icons'
 import { ScrollArea } from './Controls'
+import { SummaryButton } from './SummaryButton'
 import { TagRow } from './TagRow'
 import { tip } from './Tooltip'
 
@@ -46,15 +48,26 @@ export function DetailsPanel({
   onCopy
 }: Props) {
   const total = page.transcript.length
-  const present = page.speakers.filter((speaker) =>
-    page.transcript.some((line) => line.cluster === speaker.id)
-  )
-  const pending = present.filter(
-    (speaker) => !speaker.confirmed && (speaker.confidence ?? 0) < SURE_MATCH
-  )
-  const unsure = page.transcript.filter(
-    (line) => line.confidence !== null && line.confidence < LOW_CONFIDENCE
-  )
+  // One pass over the transcript instead of one per speaker: long sessions have thousands of lines.
+  const { present, pending, unsure, talk, all } = useMemo(() => {
+    const lines = new Map<string, number>()
+    const talk = new Map<string, number>()
+    let all = 0
+    const unsure: TranscriptSegment[] = []
+    for (const line of page.transcript) {
+      const length = Math.max(0, line.end - line.start)
+      all += length
+      if (line.confidence !== null && line.confidence < LOW_CONFIDENCE) unsure.push(line)
+      if (line.cluster === null) continue
+      lines.set(line.cluster, (lines.get(line.cluster) ?? 0) + 1)
+      talk.set(line.cluster, (talk.get(line.cluster) ?? 0) + length)
+    }
+    const present = page.speakers.filter((speaker) => lines.has(speaker.id))
+    const pending = present.filter(
+      (speaker) => !speaker.confirmed && (speaker.confidence ?? 0) < SURE_MATCH
+    )
+    return { present, pending, unsure, talk: { lines, seconds: talk }, all }
+  }, [page.transcript, page.speakers])
 
   const facts: [string, string][] = []
   if (summary) facts.push(['Started', new Date(summary.startedAt).toLocaleString(undefined, DATE)])
@@ -119,13 +132,10 @@ export function DetailsPanel({
           ) : null}
           <ul className="details-speakers">
             {present.map((speaker) => {
-              const lines = page.transcript.filter((line) => line.cluster === speaker.id)
-              const talk = lines.reduce((sum, line) => sum + Math.max(0, line.end - line.start), 0)
-              const all = page.transcript.reduce(
-                (sum, line) => sum + Math.max(0, line.end - line.start),
-                0
-              )
-              const share = all ? talk / all : lines.length / Math.max(1, total)
+              const lineCount = talk.lines.get(speaker.id) ?? 0
+              const share = all
+                ? (talk.seconds.get(speaker.id) ?? 0) / all
+                : lineCount / Math.max(1, total)
               const state =
                 speaker.confirmed || (speaker.confidence ?? 0) >= SURE_MATCH
                   ? 'sure'
@@ -162,8 +172,7 @@ export function DetailsPanel({
                       <span className="meter" aria-hidden="true">
                         <i style={{ width: percent(share) }} />
                       </span>
-                      {percent(share)} of talk · {lines.length}{' '}
-                      {lines.length === 1 ? 'line' : 'lines'}
+                      {percent(share)} of talk · {lineCount} {lineCount === 1 ? 'line' : 'lines'}
                     </span>
                   </button>
                 </li>
@@ -189,18 +198,12 @@ export function DetailsPanel({
             Show in folder
           </button>
           {present.length && notesEngine !== 'off' ? (
-            <button
-              type="button"
+            <SummaryButton
+              pageId={page.id}
+              hasSummary={!!page.summary.trim()}
               className="ghost-btn"
-              onClick={() => {
-                window.api.generateNotes(page.id).catch(() => {
-                  // Shown through the meeting status line.
-                })
-              }}
-            >
-              <PeopleIcon />
-              {page.summary.trim() ? 'Rewrite summary' : 'Write summary'}
-            </button>
+              icon={<PeopleIcon />}
+            />
           ) : null}
         </div>
       </section>

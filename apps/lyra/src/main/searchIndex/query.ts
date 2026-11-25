@@ -24,10 +24,19 @@ const FIELD_WEIGHT: Record<PassageHit['field'], number> = {
 /** A match inside a word ("illo" in "Dillon") counts for less than a word match. */
 const PARTIAL_WEIGHT = 0.5
 const MAX_PASSAGES = 5
-/** Passages read per query, before grouping by session. */
+/**
+ * Passages read per query, before grouping by session. They're cut by the same score they're
+ * ranked by (fieldWeightSql), so a common word can't push a title match out.
+ */
 const PASSAGE_LIMIT = 2000
 const MAX_CORRECTIONS = 3
 
+/** FIELD_WEIGHT as SQL over `p.field`; the weights are numbers we wrote, not input. */
+const fieldWeightSql = `CASE p.field ${Object.entries(FIELD_WEIGHT)
+  .map(([field, weight]) => `WHEN '${field}' THEN ${String(weight)}`)
+  .join(' ')} ELSE 1 END`
+
+/** Folded the way the FTS tables fold (remove_diacritics), so query and index agree. */
 const fold = (text: string): string => text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
 
 /** Query words: letters and digits only, so nothing in them is FTS5 syntax. */
@@ -156,7 +165,7 @@ function passageQuery(table: 'passages_fts' | 'passages_tri', match: string, que
       JOIN sessions s ON s.id = p.session_id
       LEFT JOIN speakers sp ON sp.session_id = p.session_id AND sp.cluster = p.cluster
       WHERE ${table} MATCH ? AND ${filters.sql}
-      ORDER BY rank LIMIT ${String(PASSAGE_LIMIT)}`,
+      ORDER BY ${fieldWeightSql} + max(0, -bm25(${table})) DESC LIMIT ${String(PASSAGE_LIMIT)}`,
     args: [match, ...filters.args]
   }
 }
@@ -182,7 +191,8 @@ async function matchPassages(db: Client, query: SearchQuery, words: string[]): P
         segmentId: row.segment_id,
         speaker: row.speaker,
         start: row.start_sec,
-        // bm25 is negative, more so for a better match; the field sets the floor.
+        // bm25 is negative, more so for a better match; the field sets the floor. The same
+        // score orders the query (passageQuery).
         relevance: (FIELD_WEIGHT[row.field] + Math.max(0, -row.rank)) * weight
       })
     }
@@ -284,13 +294,13 @@ async function matchChunks(db: Client, query: SearchQuery, embedder: Embedder): 
   const filters = filtersOf(query)
   const result = await db.execute({
     sql: `SELECT c.session_id AS session, c.field, c.segment_id, c.start_sec, c.text,
-        1 - vector_distance_cos(e.embedding, ?) AS similarity
+        1 - vector_distance_cos(v.embedding, ?) AS similarity
       FROM chunks c
-      JOIN embeddings e ON e.hash = c.hash AND e.model = ?
+      JOIN vectors v ON v.hash = c.hash AND v.space = ?
       JOIN sessions s ON s.id = c.session_id
       WHERE ${filters.sql}
       ORDER BY similarity DESC LIMIT ${String(CHUNK_LIMIT)}`,
-    args: [new Uint8Array(vector.buffer, vector.byteOffset, vector.byteLength), embedder.model, ...filters.args]
+    args: [new Uint8Array(vector.buffer, vector.byteOffset, vector.byteLength), embedder.space, ...filters.args]
   })
   const chunks = result.rows.map((row) => ChunkRow.parse(row))
   const best = chunks[0]?.similarity ?? 0

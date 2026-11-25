@@ -19,7 +19,8 @@ are none — don't invent nits.
    migrations keep originals until success).
 4. **TypeScript rules** (`.agents/rules/typescript.md`): no `any`, no `!`, no unexplained
    `eslint-disable`, no weakened config.
-5. **Cross-platform:** Windows paths and file names, CRLF, macOS permissions.
+5. **Cross-platform:** Windows paths and file names, LF line endings (`.gitattributes`), macOS
+   permissions.
 6. **Verification:** `pnpm check` / `pnpm smoke:ui` were run; new behavior has a smoke case; UI
    changes were looked at.
 7. **Scope:** unrelated reformatting or refactors called out.

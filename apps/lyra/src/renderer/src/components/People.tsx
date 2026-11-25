@@ -4,6 +4,7 @@ import { openMicrophone, startCapture, type CaptureHandle } from '../audio/captu
 import { SAMPLE_RATE } from '../../../shared/audio/vad'
 import { perform } from '../lib/history'
 import { log } from '../lib/log'
+import { notify } from '../lib/toast'
 import { ConfirmDialog } from './ConfirmDialog'
 import { useContextMenu } from './ContextMenu'
 import { TrashIcon } from './Icons'
@@ -28,6 +29,35 @@ export function usePeople(): Person[] {
 
 type EnrollProps = { micDeviceId: string | null; onDone: () => void }
 
+/** Seconds left at which the countdown is read out; every tick would drown the passage. */
+const ANNOUNCE_AT = [10, 5]
+
+/** One press of "Start recording": what to release however it ends. */
+type Attempt = {
+  /** The user pressed Cancel (or Escape): drop the sample, and take back a voice saved anyway. */
+  cancelled: boolean
+  /** The dialog closed under it. */
+  unmounted: boolean
+  stream: MediaStream | null
+  capture: CaptureHandle | null
+  /** Ends the recording wait early. */
+  abort: (() => void) | null
+}
+
+class Cancelled extends Error {}
+
+function release(attempt: Attempt): void {
+  // `stop` stops the stream's tracks too; the stream alone covers a capture that never started.
+  attempt.capture?.stop()
+  attempt.capture = null
+  attempt.stream?.getTracks().forEach((track) => {
+    track.stop()
+  })
+  attempt.stream = null
+}
+
+const errorText = (caught: unknown): string => (caught instanceof Error ? caught.message : String(caught))
+
 /** Records ~20 s of read-aloud speech and saves it as a voiceprint. */
 function Enroll({ micDeviceId, onDone }: EnrollProps) {
   const [name, setName] = useState('')
@@ -35,49 +65,127 @@ function Enroll({ micDeviceId, onDone }: EnrollProps) {
   const [elapsed, setElapsed] = useState(0)
   const [phase, setPhase] = useState<'idle' | 'recording' | 'saving'>('idle')
   const [error, setError] = useState<string | null>(null)
-  const capture = useRef<CaptureHandle | null>(null)
+  /** What screen readers hear: the start, a few marks, saving. Not the per-frame countdown. */
+  const [announcement, setAnnouncement] = useState('')
+  const attempt = useRef<Attempt | null>(null)
 
-  useEffect(() => () => capture.current?.stop(), [])
+  // Closing Settings (or switching tabs) mid-recording: release the microphone, even if it is
+  // still opening, and say the sample was dropped rather than losing it silently.
+  useEffect(
+    () => () => {
+      const current = attempt.current
+      if (!current) return
+      current.unmounted = true
+      const recording = current.stream !== null || current.capture !== null
+      release(current)
+      current.abort?.()
+      if (recording) notify('Voice recording stopped before it finished; nothing was saved.')
+    },
+    []
+  )
+
+  const cancel = (): void => {
+    const current = attempt.current
+    if (!current) {
+      onDone()
+      return
+    }
+    current.cancelled = true
+    release(current)
+    current.abort?.()
+    attempt.current = null
+    setPhase('idle')
+    setElapsed(0)
+    setAnnouncement('Recording cancelled.')
+  }
+
+  // While recording or saving, Escape cancels the enrollment instead of closing Settings.
+  const cancelRef = useRef(cancel)
+  cancelRef.current = cancel
+  useEffect(() => {
+    if (phase === 'idle') return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      event.preventDefault()
+      event.stopPropagation()
+      cancelRef.current()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => {
+      window.removeEventListener('keydown', onKey, true)
+    }
+  }, [phase])
 
   const record = async (): Promise<void> => {
+    const run: Attempt = { cancelled: false, unmounted: false, stream: null, capture: null, abort: null }
+    attempt.current = run
+    const stopped = (): boolean => run.cancelled || run.unmounted
     setError(null)
+    setElapsed(0)
     const frames: Float32Array[] = []
     let samples = 0
+    const announced = new Set<number>()
     try {
       const { stream } = await openMicrophone(micDeviceId)
+      run.stream = stream
+      if (stopped()) throw new Cancelled()
       setPhase('recording')
+      setAnnouncement(`Recording. Read the passage aloud for ${String(ENROLL_SECONDS)} seconds.`)
       await new Promise<void>((resolve, reject) => {
-        void startCapture(
+        run.abort = () => {
+          reject(new Cancelled())
+        }
+        startCapture(
           stream,
           (frame) => {
             frames.push(frame)
             samples += frame.length
-            setElapsed(samples / SAMPLE_RATE)
+            const seconds = samples / SAMPLE_RATE
+            setElapsed(seconds)
+            const left = Math.ceil(ENROLL_SECONDS - seconds)
+            if (ANNOUNCE_AT.includes(left) && !announced.has(left)) {
+              announced.add(left)
+              setAnnouncement(`${String(left)} seconds left.`)
+            }
             if (samples >= ENROLL_SECONDS * SAMPLE_RATE) resolve()
           },
           (reason) => {
             reject(new Error(reason))
           }
         ).then((handle) => {
-          capture.current = handle
+          // Cancelled while the audio engine was starting: stop it at once.
+          if (stopped()) handle.stop()
+          else run.capture = handle
         }, reject)
       })
-      capture.current?.stop()
-      capture.current = null
+      release(run)
+      run.abort = null
       setPhase('saving')
+      setAnnouncement('Recording done. Saving the voice.')
       const pcm = new Float32Array(samples)
       let offset = 0
       for (const frame of frames) {
         pcm.set(frame, offset)
         offset += frame.length
       }
-      await window.api.enrollPerson(name, pcm, self)
+      const person = await window.api.enrollPerson(name.trim(), pcm, self)
+      if (run.cancelled) {
+        // Cancelled while main was saving: take it back, so Cancel means nothing was kept.
+        await window.api.deletePerson(person.id).catch((caught: unknown) => {
+          log('people', 'could not remove a cancelled voice', errorText(caught))
+        })
+        return
+      }
+      attempt.current = null
+      notify(`Saved ${person.name}’s voice`)
       onDone()
     } catch (caught) {
-      capture.current?.stop()
-      capture.current = null
-      log('people', 'enroll failed', String(caught))
+      release(run)
+      if (attempt.current === run) attempt.current = null
+      if (stopped()) return
+      log('people', 'enroll failed', errorText(caught))
       setError(caught instanceof Error ? caught.message : 'Could not save the voice')
+      setAnnouncement('')
       setPhase('idle')
     }
   }
@@ -129,18 +237,36 @@ function Enroll({ micDeviceId, onDone }: EnrollProps) {
         <>
           <p className="enroll-passage">{PASSAGE}</p>
           <div className="enroll-progress" aria-hidden="true">
-            <span style={{ width: `${Math.min(100, (elapsed / ENROLL_SECONDS) * 100)}%` }} />
+            <span style={{ width: `${String(Math.min(100, (elapsed / ENROLL_SECONDS) * 100))}%` }} />
           </div>
-          <p className="settings-notice">
+          <p className="settings-notice" aria-hidden="true">
             {phase === 'recording'
-              ? `Recording… ${Math.ceil(Math.max(0, ENROLL_SECONDS - elapsed))} s left`
+              ? `Recording… ${String(Math.ceil(Math.max(0, ENROLL_SECONDS - elapsed)))} s left`
               : 'Saving voice (the first time downloads a ~46 MB model)…'}
           </p>
+          <div className="settings-buttons">
+            <button className="btn" type="button" onClick={cancel}>
+              Cancel
+            </button>
+          </div>
         </>
       )}
-      {error ? <p className="settings-notice is-error">{error}</p> : null}
+      <p className="enroll-announce" aria-live="polite">
+        {announcement}
+      </p>
+      {error ? (
+        <p className="settings-notice is-error" role="alert">
+          {error}
+        </p>
+      ) : null}
     </div>
   )
+}
+
+/** A voice change main refused: logged without the name, and told to the user. */
+function failed(action: string, caught: unknown, message: string): void {
+  log('people', `could not ${action}`, errorText(caught))
+  notify(message)
 }
 
 /** Who "me" is now, so making someone else "me" can be undone. */
@@ -163,29 +289,36 @@ function PersonRow({ person, people }: { person: Person; people: readonly Person
       return
     }
     const before = person.name
-    void perform({
+    perform({
       label: `Renamed ${before} to ${next}`,
       run: () => window.api.renamePerson(person.id, next),
       undo: () => window.api.renamePerson(person.id, before)
+    }).catch((caught: unknown) => {
+      setName(person.name)
+      failed('rename', caught, `Couldn’t rename ${before}.`)
     })
   }
 
   const makeSelf = (): void => {
     const before = selfId(people)
-    void perform({
+    perform({
       label: `Marked ${person.name} as you`,
       run: () => window.api.setSelfPerson(person.id),
       undo: () => window.api.setSelfPerson(before)
+    }).catch((caught: unknown) => {
+      failed('set self', caught, `Couldn’t mark ${person.name} as you.`)
     })
   }
 
   const remove = (): void => {
     setConfirming(false)
-    void perform({
+    perform({
       label: `Deleted ${person.name}’s voice`,
       undoneLabel: `Restored ${person.name}’s voice`,
       run: () => window.api.deletePerson(person.id),
       undo: () => window.api.restorePerson(person.id)
+    }).catch((caught: unknown) => {
+      failed('delete', caught, `Couldn’t delete ${person.name}’s voice.`)
     })
   }
 
