@@ -56,10 +56,10 @@ export const MicIcon = () => (
   </Icon>
 )
 
-export const PersonIcon = () => (
+export const PeopleIcon = () => (
   <Icon>
-    <circle cx="12" cy="8.5" r="3.5" />
-    <path d="M5 20a7 7 0 0 1 14 0" />
+    <circle cx="9" cy="8.5" r="3" />
+    <path d="M3.5 19a5.5 5.5 0 0 1 11 0M15.5 5.8a3 3 0 0 1 0 5.4M17 14.2a5.5 5.5 0 0 1 3.5 4.8" />
   </Icon>
 )
 

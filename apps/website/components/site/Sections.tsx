@@ -6,6 +6,7 @@ import { cx } from '@/lib/cx'
 import { REPO_URL, type Release } from '@/lib/releases'
 import { DownloadCards, HeroDownload } from './DownloadLinks'
 import { HeroGraph } from './HeroGraph'
+import { HeroSky } from './HeroSky'
 import { Keys } from './Keys'
 import { MicIcon, SpeakerIcon } from './SiteIcons'
 import styles from './site.module.css'
@@ -55,6 +56,7 @@ export function Header() {
 export function Hero({ release }: { release: Release }) {
   return (
     <section className={styles.hero}>
+      <HeroSky />
       <div className={styles.inner}>
         <div className={styles.heroCopy}>
           <p className={styles.eyebrow}>Voice notebook for macOS, Windows and Linux</p>
