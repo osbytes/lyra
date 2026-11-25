@@ -1,6 +1,6 @@
 // Reports who is using audio input, once at startup and then on every change. Lyra's main
 // process reads these lines:
-//   "apps:<bundle id>,<bundle id>"   macOS 14+: the apps capturing audio right now
+//   "apps:<id>,<id>;out:<id>,<id>"   macOS 14+: the apps capturing audio, then those playing it
 //   "1" / "0"                        older macOS, or no app named: the default input is busy or not
 //
 // Build: swiftc -O native/mac/micwatch.swift -o build/helpers/micwatch
@@ -46,9 +46,10 @@ func getUInt32(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector)
   return status == noErr ? value : nil
 }
 
-// Bundle ids of the processes capturing audio input, from CoreAudio's process objects.
+// Bundle ids of the processes capturing audio input (or playing output), from CoreAudio's
+// process objects.
 @available(macOS 14.0, *)
-func inputBundleIDs() -> [String]? {
+func bundleIDs(running selector: AudioObjectPropertySelector) -> [String]? {
   var address = AudioObjectPropertyAddress(
     mSelector: kAudioHardwarePropertyProcessObjectList,
     mScope: kAudioObjectPropertyScopeGlobal,
@@ -62,7 +63,7 @@ func inputBundleIDs() -> [String]? {
     return nil
   }
   var ids = Set<String>()
-  for object in objects where getUInt32(object, kAudioProcessPropertyIsRunningInput) ?? 0 != 0 {
+  for object in objects where getUInt32(object, selector) ?? 0 != 0 {
     var bundleAddress = AudioObjectPropertyAddress(
       mSelector: kAudioProcessPropertyBundleID,
       mScope: kAudioObjectPropertyScopeGlobal,
@@ -75,15 +76,18 @@ func inputBundleIDs() -> [String]? {
     }
     guard status == noErr, let value = bundle?.takeRetainedValue() else { continue }
     let id = value as String
-    if !id.isEmpty && !id.contains(",") { ids.insert(id) }
+    if !id.isEmpty && !id.contains(",") && !id.contains(";") { ids.insert(id) }
   }
   return ids.sorted()
 }
 
 func report() -> String {
   let inUse = defaultInputDevice().map(isRunningSomewhere) ?? false
-  if #available(macOS 14.0, *), let ids = inputBundleIDs(), !ids.isEmpty {
-    return "apps:" + ids.joined(separator: ",")
+  if #available(macOS 14.0, *), let ids = bundleIDs(running: kAudioProcessPropertyIsRunningInput),
+    !ids.isEmpty
+  {
+    let playing = bundleIDs(running: kAudioProcessPropertyIsRunningOutput) ?? []
+    return "apps:" + ids.joined(separator: ",") + ";out:" + playing.joined(separator: ",")
   }
   return inUse ? "1" : "0"
 }

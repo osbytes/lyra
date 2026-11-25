@@ -267,13 +267,13 @@ async function checkMeetingDetector(): Promise<void> {
   const fail = (message: string): never => {
     throw new Error(`meeting detector: ${message}`)
   }
-  const kinds = ['Zoom', 'MSTeams', '91750D7E.Slack', 'Discord', 'us.zoom.xos', 'chrome', 'com.apple.Safari', 'obs64', '']
+  const kinds = ['Zoom', 'MSTeams', '91750D7E.Slack', 'Discord', 'us.zoom.xos', 'chrome', 'com.apple.Safari', 'obs64', 'Element', '']
     .map((name) => {
       const found = classifyMicUser(name)
       return found.kind === 'meeting' ? found.meeting.id : found.kind
     })
     .join(',')
-  if (kinds !== 'zoom,teams,slack,discord,zoom,browser,browser,other,other') fail(`classified ${kinds}`)
+  if (kinds !== 'zoom,teams,slack,discord,zoom,browser,browser,not-call,other,other') fail(`classified ${kinds}`)
   const titles = [
     ['Meet - abc-defg-hij - Google Chrome'],
     ['Zoom Meeting - Personal - Microsoft Edge'],
@@ -283,10 +283,11 @@ async function checkMeetingDetector(): Promise<void> {
     .map((list) => meetingFromTitles(list)?.id ?? 'none')
     .join(',')
   if (titles !== 'meet,zoom,none,meet') fail(`titles matched ${titles}`)
-  const mac = [...parseHelperLine('apps:us.zoom.xos,com.apple.Safari')].join(',')
-  const win = [...parseHelperLine('apps:chrome,electron,Zoom', 'Electron')].join(',')
-  if (mac !== 'us.zoom.xos,com.apple.Safari' || win !== 'chrome,Zoom' || parseHelperLine('1').size !== 1 || parseHelperLine('0').size) {
-    fail(`helper lines parsed as ${mac} and ${win}`)
+  const mac = [...parseHelperLine('apps:us.zoom.xos,com.apple.Safari').mic].join(',')
+  const win = parseHelperLine('apps:chrome,electron,Zoom;out:Spotify,electron,Zoom', 'Electron')
+  const parsed = `${[...win.mic].join(',')}|${[...win.playing].join(',')}`
+  if (mac !== 'us.zoom.xos,com.apple.Safari' || parsed !== 'chrome,Zoom|Spotify,Zoom' || parseHelperLine('1').mic.size !== 1 || parseHelperLine('0').mic.size) {
+    fail(`helper lines parsed as ${mac} and ${parsed}`)
   }
 
   let now = 0
@@ -296,12 +297,13 @@ async function checkMeetingDetector(): Promise<void> {
     titles: () => Promise.resolve(tabTitles),
     sustainMs: 2000,
     snoozeMs: 60_000,
-    maxTitleChecks: 2
+    maxTitleChecks: 2,
+    callWaitMs: 30_000
   })
   const policy: DetectorPolicy = { meetings: true, anyApp: false, recording: false, ignored: () => false }
-  const at = async (time: number, users: string[], over: Partial<DetectorPolicy> = {}) => {
+  const at = async (time: number, users: string[], over: Partial<DetectorPolicy> = {}, playing: string[] = []) => {
     now = time
-    return (await detector.update(new Set(users), { ...policy, ...over }))?.key ?? null
+    return (await detector.update({ mic: new Set(users), playing: new Set(playing) }, { ...policy, ...over }))?.key ?? null
   }
   // Already on the mic when watching starts: skipped until it lets go.
   if ((await at(0, ['Discord'])) !== null || (await at(5000, ['Discord'])) !== null) fail('asked about a call already running')
@@ -342,6 +344,24 @@ async function checkMeetingDetector(): Promise<void> {
   if ((await at(113_000, ['obs64'], { anyApp: true })) !== 'obs64') fail('any-app mode did not ask')
   await at(114_000, ['Zoom'])
   if ((await at(117_000, ['Zoom'], { ignored: (label) => label === 'Zoom' })) !== null) fail('asked about an ignored app')
+  // An unlisted app is a call when it is on the mic and playing sound, both for 2 s.
+  await at(120_000, [])
+  await at(121_000, ['Element'], {}, ['Element'])
+  if ((await at(122_000, ['Element'], {}, ['Element'])) !== null) fail('asked about a call after 1 s')
+  if ((await at(123_000, ['Element'], {}, ['Element'])) !== 'element') fail('missed an unlisted call app')
+  // On the mic without sound (dictation): waits a while for sound, then gives up for this use.
+  await at(124_000, [])
+  await at(125_000, ['Wispr Flow'])
+  if ((await at(127_000, ['Wispr Flow'])) !== null) fail('asked about dictation')
+  await at(160_000, ['Wispr Flow'])
+  await at(161_000, ['Wispr Flow'], {}, ['Wispr Flow'])
+  if ((await at(164_000, ['Wispr Flow'], {}, ['Wispr Flow'])) !== null) fail('kept waiting for sound past the limit')
+  // Recorders and browsers play sound without that meaning a call.
+  tabTitles = ['YouTube - Google Chrome']
+  await at(170_000, [])
+  await at(171_000, ['obs64', 'chrome'], {}, ['obs64', 'chrome'])
+  await at(173_000, ['obs64', 'chrome'], {}, ['obs64', 'chrome'])
+  if ((await at(176_000, ['obs64', 'chrome'], {}, ['obs64', 'chrome'])) !== null) fail('a recorder or a playing browser looked like a call')
 }
 
 /** Session store: concurrent edits merge, the log persists, and the export follows. */

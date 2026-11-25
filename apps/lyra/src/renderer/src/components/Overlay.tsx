@@ -31,7 +31,7 @@ function PromptCard({ prompt }: { prompt: MicPrompt }) {
     >
       {meeting ? (
         <p>
-          Looks like a {who} call started. Record it in Lyra, with the call’s audio?
+          A call started in {who}. Record it in Lyra, with the call’s audio?
         </p>
       ) : (
         <p>

@@ -3,6 +3,11 @@
  *
  * A mic user's name is what the mic watcher reports: an exe name on Windows (`Zoom`, `chrome`),
  * a package name (`MSTeams`, `91750D7E.Slack`), or a bundle id on macOS (`us.zoom.xos`).
+ *
+ * The lists give names and a quicker answer; they aren't the whole story. An app that isn't
+ * listed still counts as a call when it is on the mic and playing sound at once (see
+ * meetingDetector.ts). Browsers can't be judged that way, since one process plays every tab, so
+ * they need a meeting site's title.
  */
 
 export type MeetingApp = { id: string; label: string }
@@ -17,7 +22,7 @@ type Known = MeetingApp & {
 /**
  * Apps that only take the microphone for a call, so mic use alone is the signal. Chat apps whose
  * mic is also used for voice messages (WhatsApp, Telegram, Signal) are left out on purpose: a
- * long voice note would look like a call.
+ * long voice note would look like a call. Their real calls play sound, so they're still found.
  */
 const KNOWN: readonly Known[] = [
   {
@@ -37,7 +42,14 @@ const KNOWN: readonly Known[] = [
   {
     id: 'teams',
     label: 'Microsoft Teams',
-    apps: ['msteams', 'teams', 'ms-teams', 'com.microsoft.teams', 'com.microsoft.teams2'],
+    apps: [
+      'msteams',
+      'teams',
+      'ms-teams',
+      'ms-teams_modulehost',
+      'com.microsoft.teams',
+      'com.microsoft.teams2'
+    ],
     title: /\bmicrosoft teams\b/i
   },
   {
@@ -97,6 +109,30 @@ const BROWSERS: readonly string[] = [
   'com.apple.safari'
 ]
 
+/**
+ * Apps that take the mic and play sound at the same time without being a call: recorders,
+ * streaming tools and mic processors (some run all day). They never prompt as a meeting.
+ */
+const NOT_CALLS: readonly string[] = [
+  'obs64',
+  'obs32',
+  'obs',
+  'com.obsproject.obs-studio',
+  'streamlabs obs',
+  'audacity',
+  'org.audacityteam.audacity',
+  'voicemeeter',
+  'voicemeeterpro',
+  'voicemeeter8',
+  'voicemeeter8x64',
+  'nvidia broadcast',
+  'nvidia broadcast ui',
+  'krisp',
+  'ai.krisp.krispmac',
+  'com.apple.garageband10',
+  'com.apple.voicememos'
+]
+
 /** `91750D7E.Slack` and `Slack` both match `slack`; bundle ids match in full. */
 function matches(name: string, candidates: readonly string[]): boolean {
   const lower = name.toLowerCase()
@@ -106,6 +142,9 @@ function matches(name: string, candidates: readonly string[]): boolean {
 export type MicUserKind =
   | { kind: 'meeting'; meeting: MeetingApp }
   | { kind: 'browser' }
+  /** Known not to be a call, even while it plays sound. */
+  | { kind: 'not-call' }
+  /** Anything else: a call if it is also playing sound. */
   | { kind: 'other' }
 
 export function classifyMicUser(name: string): MicUserKind {
@@ -113,6 +152,7 @@ export function classifyMicUser(name: string): MicUserKind {
   const known = KNOWN.find((entry) => matches(name, entry.apps))
   if (known) return { kind: 'meeting', meeting: { id: known.id, label: known.label } }
   if (matches(name, BROWSERS)) return { kind: 'browser' }
+  if (matches(name, NOT_CALLS)) return { kind: 'not-call' }
   return { kind: 'other' }
 }
 

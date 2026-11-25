@@ -22,7 +22,13 @@ import { micSessionsScript } from './micSessionsWin'
 export type MicUsers = Set<string>
 export const UNKNOWN_APP = ''
 
-type Listener = (users: MicUsers) => void
+/**
+ * Who is on the mic, and who is playing sound right now. `playing` is empty where the platform
+ * can't say (the registry fallback, Linux, macOS before 14).
+ */
+export type AudioUsers = { mic: MicUsers; playing: Set<string> }
+
+type Listener = (users: AudioUsers) => void
 
 const POLL_MS = 2000
 const CONSENT_KEY =
@@ -82,17 +88,27 @@ async function pollLinux(): Promise<MicUsers> {
 
 const APPS_PREFIX = 'apps:'
 
+const PLAYING_PREFIX = ';out:'
+
 /**
- * One line from a helper: `apps:<name>,<name>` (process names on Windows, bundle ids on macOS),
- * or `1`/`0` when the macOS helper can't name apps. `own` (Lyra's own process name) is dropped.
+ * One line from a helper: `apps:<name>,…;out:<name>,…` (process names on Windows, bundle ids on
+ * macOS; the playing part is optional), or `1`/`0` when the macOS helper can't name apps. `own`
+ * (Lyra's own process name) is dropped.
  */
-export function parseHelperLine(line: string, own = ''): MicUsers {
+export function parseHelperLine(line: string, own = ''): AudioUsers {
   const trimmed = line.trim()
-  if (trimmed.startsWith(APPS_PREFIX)) {
-    const names = trimmed.slice(APPS_PREFIX.length).split(',')
-    return new Set(names.filter((name) => name !== '' && name.toLowerCase() !== own.toLowerCase()))
+  if (!trimmed.startsWith(APPS_PREFIX)) {
+    return { mic: trimmed === '1' ? new Set([UNKNOWN_APP]) : new Set(), playing: new Set() }
   }
-  return trimmed === '1' ? new Set([UNKNOWN_APP]) : new Set()
+  const body = trimmed.slice(APPS_PREFIX.length)
+  const split = body.indexOf(PLAYING_PREFIX)
+  const names = (list: string): Set<string> =>
+    new Set(
+      list.split(',').filter((name) => name !== '' && name.toLowerCase() !== own.toLowerCase())
+    )
+  return split < 0
+    ? { mic: names(body), playing: new Set() }
+    : { mic: names(body.slice(0, split)), playing: names(body.slice(split + PLAYING_PREFIX.length)) }
 }
 
 function macHelperPath(): string {
@@ -127,7 +143,7 @@ export class MicWatcher {
       if (this.polling) return
       this.polling = true
       try {
-        this.onChange(await poll())
+        this.onChange({ mic: await poll(), playing: new Set() })
         this.failures = 0
       } catch (error) {
         // Logged once per streak so a missing `pactl` doesn't flood the log.

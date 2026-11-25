@@ -1,7 +1,9 @@
 /**
- * A PowerShell script that names the processes capturing audio on Windows, from WASAPI's
- * per-device audio sessions (IAudioSessionManager2 on every active capture endpoint). It prints
- * `apps:<process>,<process>` at start and on every change, and exits when Lyra (`parentPid`) does.
+ * A PowerShell script that names the processes capturing and playing audio on Windows, from
+ * WASAPI's per-device audio sessions (IAudioSessionManager2 on every active endpoint). It prints
+ * `apps:<capturing>,…;out:<playing>,…` at start and on every change, and exits when Lyra
+ * (`parentPid`) does. Playback is how a call shows itself: an app on the mic that is also playing
+ * sound is almost always a call, whatever the app.
  *
  * Why this and not the privacy "consent store" in the registry: recent Windows 11 builds keep
  * that in a database (`PersistedInDatabase`) and stop updating the registry copy, so it no longer
@@ -66,13 +68,20 @@ interface ILyraSessionControl2 {
 }
 
 public static class LyraMicSessions {
-  const int CAPTURE = 1, ACTIVE_DEVICES = 1, SESSION_ACTIVE = 1, CLSCTX_ALL = 23;
+  const int RENDER = 0, CAPTURE = 1, ACTIVE_DEVICES = 1, SESSION_ACTIVE = 1, CLSCTX_ALL = 23;
 
   public static string Users() {
+    var capturing = Sessions(CAPTURE);
+    var playing = Sessions(RENDER);
+    if (capturing == null || playing == null) return null;
+    return "apps:" + string.Join(",", capturing) + ";out:" + string.Join(",", playing);
+  }
+
+  static SortedSet<string> Sessions(int flow) {
     var names = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
     var enumerator = (ILyraDeviceEnumerator)new LyraDeviceEnumerator();
     ILyraDeviceCollection devices;
-    if (enumerator.EnumAudioEndpoints(CAPTURE, ACTIVE_DEVICES, out devices) < 0) return null;
+    if (enumerator.EnumAudioEndpoints(flow, ACTIVE_DEVICES, out devices) < 0) return null;
     int count;
     devices.GetCount(out count);
     Guid iid = typeof(ILyraSessionManager2).GUID;
@@ -91,7 +100,7 @@ public static class LyraMicSessions {
             int state;
             uint pid;
             if (session.GetState(out state) >= 0 && state == SESSION_ACTIVE && session.GetProcessId(out pid) >= 0 && pid != 0) {
-              try { names.Add(Process.GetProcessById((int)pid).ProcessName.Replace(",", "")); } catch (ArgumentException) {}
+              try { names.Add(Process.GetProcessById((int)pid).ProcessName.Replace(",", "").Replace(";", "")); } catch (ArgumentException) {}
             }
             Marshal.ReleaseComObject(session);
           }
@@ -103,7 +112,7 @@ public static class LyraMicSessions {
     }
     Marshal.ReleaseComObject(devices);
     Marshal.ReleaseComObject(enumerator);
-    return "apps:" + string.Join(",", names);
+    return names;
   }
 }
 '@

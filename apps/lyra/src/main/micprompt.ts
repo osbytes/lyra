@@ -2,7 +2,7 @@ import { ipcMain } from 'electron'
 import type { PromptAnswer } from '../shared/types'
 import { log } from './log'
 import { DETECTOR_DEFAULTS, MeetingDetector, type PromptTarget } from './meetingDetector'
-import { MicWatcher, type MicUsers } from './micwatch'
+import { MicWatcher, type AudioUsers } from './micwatch'
 import { hidePrompt, showPrompt } from './overlay'
 import { isRecording, onSessionState, sendSessionCommand } from './session'
 import { getSettings, onSettingsChanged, updateSettings } from './settings'
@@ -16,7 +16,7 @@ const detector = new MeetingDetector({
   titles: windowTitles
 })
 
-let latest: MicUsers = new Set()
+let latest: AudioUsers = { mic: new Set(), playing: new Set() }
 let current: PromptTarget | null = null
 let busy = false
 let recheck: ReturnType<typeof setTimeout> | null = null
@@ -43,9 +43,9 @@ function scheduleRecheck(): void {
   }, due - Date.now() + 50)
 }
 
-async function onUsers(users: MicUsers): Promise<void> {
+async function onUsers(users: AudioUsers): Promise<void> {
   latest = users
-  if (current !== null && !users.has(current.user)) {
+  if (current !== null && !users.mic.has(current.user)) {
     hidePrompt()
     current = null
   }
@@ -64,7 +64,11 @@ async function onUsers(users: MicUsers): Promise<void> {
     if (target && watching() && !isRecording()) {
       current = target
       // App ids only: never window titles.
-      log('micprompt', 'asking', { kind: target.kind, app: target.key || 'unknown' })
+      log('micprompt', 'asking', {
+        kind: target.kind,
+        via: target.via,
+        app: target.key || 'unknown'
+      })
       showPrompt({ kind: target.kind, app: target.label })
     }
   } finally {
