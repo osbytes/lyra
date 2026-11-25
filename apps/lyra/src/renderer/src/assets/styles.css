@@ -2296,9 +2296,29 @@ code {
   height: 28px;
 }
 
+/*
+ * The processing status sits in the transcript's header bar, never in the scrolling content:
+ * work in progress must stay in view however far down the user has scrolled. It shrinks with an
+ * ellipsis (full text in the tooltip) so the bar's buttons keep their place.
+ */
+.meeting-status-live {
+  display: flex;
+  min-width: 0;
+  cursor: default;
+}
+
 .meeting-status {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
   color: var(--text-muted);
   font-size: 12px;
+}
+
+.meeting-status-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .meeting-status.is-error {
@@ -2307,10 +2327,8 @@ code {
 
 /* Work still running on this session: a pill with a spinner, so it isn't taken for finished. */
 .meeting-status.is-busy {
-  display: inline-flex;
-  align-items: center;
   gap: 8px;
-  min-height: 28px;
+  min-height: 24px;
   padding: 2px 12px 2px 10px;
   border-radius: 999px;
   background: var(--accent-soft);
@@ -3682,13 +3700,6 @@ code {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-}
-
-/* In the panel layout the transcript keeps only its status line; speakers live in the panel. */
-.speakers-bar.status-only > :not(.speakers-tools),
-.speakers-bar.status-only .pill,
-.speakers-bar.status-only .btn {
-  display: none;
 }
 
 /*

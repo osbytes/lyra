@@ -4,6 +4,7 @@ import type { PageSummary, UpdateStatus, WhisperStatus } from '../../shared/type
 import type { TranscriptSegment } from '../../shared/sessionDoc'
 import { DetailsPanel } from './components/DetailsPanel'
 import { DictationDock } from './components/DictationDock'
+import { MeetingStatus } from './components/MeetingStatus'
 import { Summary } from './components/Summary'
 import { NotesEditor, type NotesHandle } from './components/NotesEditor'
 import { TagRow } from './components/TagRow'
@@ -831,6 +832,7 @@ export default function App(): React.JSX.Element {
                       {current.transcript.length} {current.transcript.length === 1 ? 'line' : 'lines'}
                     </span>
                   )}
+                  <MeetingStatus pageId={current.id} />
                   <span className="transcript-bar-tools">
                     {PANE_UP[paneMode] ? (
                       <button

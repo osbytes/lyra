@@ -13,6 +13,14 @@ page records the decisions behind them, including where Lyra departs from the os
   No telemetry.
 - Anything that records, uploads or uses the network is off by default.
 
+## Interface
+
+- **Work in progress is always in view.** While Lyra is still working on something the user is
+  looking at (processing a session's audio, labeling speakers, writing a summary), the sign of it
+  sits in fixed chrome such as a header bar, never in content that scrolls or collapses away.
+  Results may still change until it finishes, so the user must be able to tell at a glance
+  wherever they are on the page.
+
 ## Twelve factors, for a desktop app
 
 [12factor.net](https://12factor.net/) is written for services; this is how each factor reads for
