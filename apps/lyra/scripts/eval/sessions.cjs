@@ -73,6 +73,9 @@ const SEATS = {
  *   through the speakers (`bleed`). A video is a stranger talking; it isn't in the reference.
  * - `fan`: a fan or laptop's hum and rush at that level in the room.
  * - `moves`: [person, seat]: that person moves to another seat halfway through.
+ * - `script`: [person, start, seconds] turns in place of drawn ones, for a case rebuilt from a
+ *   real session that came out wrong (the investigate-session skill): its timeline and seats,
+ *   with corpus voices and words, so nothing of the real people is kept. `minutes` is ignored.
  */
 const SESSIONS = {
   'room-2-desk': { people: ['near', 'mid'], sex: 'same', rt60: 0.4, minutes: 4, talk: [1, 1], backchannels: 2 },
@@ -91,6 +94,24 @@ const SESSIONS = {
   'hybrid-2+2': { people: ['near', 'mid', 'system', 'system'], sex: 'mixed', rt60: 0.4, bleed: 0.9, minutes: 5, talk: [1, 1, 1, 1] },
   'call-1+1-quick': { people: ['near', 'system'], sex: 'same', rt60: 0.3, bleed: 0.9, minutes: 3, talk: [1, 1], style: 'quick', backchannels: 3 },
   'call-1+3': { people: ['near', 'system', 'system', 'system'], sex: 'same', rt60: 0.3, bleed: 0, minutes: 5, talk: [2, 1, 1, 1] },
+  // Cases from real sessions. A 106 s call: the owner says one line at the start, one remote
+  // person does nearly all the talking and a second says one sentence late on. Relabeling folded
+  // both short speakers into the main voice, leaving one speaker for three people.
+  'case-call-1+2-brief': {
+    people: ['near', 'system', 'system'],
+    sex: 'mixed',
+    rt60: 0.3,
+    bleed: 0.5,
+    talk: [1, 1, 1],
+    script: [
+      [0, 4.0, 2.7],
+      [1, 14.7, 18.3],
+      [1, 35.9, 8.3],
+      [1, 46.8, 39.7],
+      [2, 86.9, 3.6],
+      [1, 91.3, 12.5]
+    ]
+  },
   'meeting-60min': {
     people: ['near', 'mid', 'far', 'system', 'system', 'system'],
     sex: 'mixed',
@@ -306,6 +327,40 @@ function sessionDir(dataDir, id) {
   return join(dataDir, CORPORA[corpusName()].sessions, id)
 }
 
+/** A turn shorter than this is left unfilled at its end rather than cut from a sentence. */
+const FILL_SLACK_SECONDS = 0.8
+
+/**
+ * One scripted turn: `person` talks from `at` for about `seconds`, in whole utterances from
+ * their queue (the longest that fits, again and again). What's left that no utterance fits is
+ * the start of one, faded out; like a backchannel its words are unknown, so it has no text.
+ */
+function fillTurn(dataDir, queue, person, at, seconds) {
+  const out = []
+  let start = at
+  while (at + seconds - start > FILL_SLACK_SECONDS || out.length === 0) {
+    const left = at + seconds - start
+    const fits = queue.filter((u) => u.seconds <= left + 0.3)
+    // The next unused one that fills at least half of what's left (used ones go to the back),
+    // so a long turn isn't one sentence over and over; else the longest that fits.
+    const utterance =
+      fits.find((u) => u.seconds >= Math.min(left, 8) / 2) ??
+      [...fits].sort((a, b) => b.seconds - a.seconds)[0] ??
+      [...queue].sort((a, b) => a.seconds - b.seconds)[0]
+    queue.splice(queue.indexOf(utterance), 1)
+    queue.push(utterance)
+    let audio = decode(dataDir, utterance)
+    const whole = fits.length > 0
+    if (!whole) {
+      const cut = audio.subarray(0, Math.round(left * RATE))
+      audio = cut.map((value, i) => value * Math.min(1, (cut.length - i) / (0.05 * RATE)))
+    }
+    out.push({ person, text: whole ? utterance.text : '', start, end: start + audio.length / RATE, audio })
+    start += audio.length / RATE + 0.2
+  }
+  return out
+}
+
 /** Builds one session's mic.wav, system.wav, enroll.wav and reference; reuses them if current. */
 async function prepare(dataDir, id) {
   const { name, seed, session } = parseId(id)
@@ -346,7 +401,13 @@ async function prepare(dataDir, id) {
   const placed = []
   let cursor = 0.5
   let current = 0
-  while (cursor < session.minutes * 60) {
+  if (session.script) {
+    for (const [person, at, seconds] of session.script) {
+      placed.push(...fillTurn(dataDir, queues[person], person, at, seconds))
+      cursor = Math.max(cursor, ...placed.map((line) => line.end))
+    }
+  }
+  while (!session.script && cursor < session.minutes * 60) {
     if (placed.length > 0 && rand() >= style.keep) {
       const others = weights.map((weight, i) => (i === current ? 0 : weight))
       let pick = rand() * others.reduce((sum, weight) => sum + weight, 0)

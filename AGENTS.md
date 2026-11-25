@@ -124,4 +124,5 @@ Pick the role that matches the task and follow its file; load a skill when its t
 | [add-ipc-channel](.agents/skills/add-ipc-channel/SKILL.md) | Exposing a new main-process capability to the renderer |
 | [add-setting](.agents/skills/add-setting/SKILL.md) | Adding a user-configurable setting |
 | [qa-test](.agents/skills/qa-test/SKILL.md) | Changes touching audio, Whisper, speakers or meeting notes; any request to QA or test with audio |
+| [investigate-session](.agents/skills/investigate-session/SKILL.md) | A real session came out wrong: find the cause, fix it, add a de-identified eval case (`/investigate-session` in Claude Code) |
 | [verify-change](.agents/skills/verify-change/SKILL.md) | Before declaring any change done or committing |
