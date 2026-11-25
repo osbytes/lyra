@@ -26,6 +26,13 @@ export function isTaskLaunch(): boolean {
 export function prepareTaskProfile(task: Task): void {
   app.setPath('userData', join(tmpdir(), `${TASK_PROFILE_PREFIX}${String(process.pid)}`))
   overrideSettings({ notesDir: join(app.getPath('userData'), 'notes') })
+  if (task.kind === 'meeting' && task.capture) {
+    // Chromium's fake capture device plays the WAV as the microphone, once, then silence.
+    app.commandLine.appendSwitch('use-fake-device-for-media-stream')
+    app.commandLine.appendSwitch('use-fake-ui-for-media-stream')
+    app.commandLine.appendSwitch('use-file-for-fake-audio-capture', `${task.mic}%noloop`)
+    overrideSettings({ captureSystemAudio: false })
+  }
   if (task.kind === 'smoke') {
     // A pre-0.2 page in the old location, for the migration check.
     const legacy = join(app.getPath('userData'), 'pages')

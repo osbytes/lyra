@@ -12,11 +12,47 @@ import { readWav } from '../meeting/wav'
 import type { Services } from '../services'
 import { replayRecording } from '../meeting/replay'
 import { relabeled } from '../meeting/relabel'
-import { trackPath } from '../recorder'
+import { onRecordingFinished, recordingPageId, trackPath } from '../recorder'
+import { toggleSession } from '../session'
 import { log } from '../log'
+import { transcribeWithParakeet } from '../parakeet'
+import { transcribePcm, warmUp } from '../whisper'
 import type { Task } from './args'
 
 type MeetingTask = Extract<Task, { kind: 'meeting' }>
+
+/** Settles once `check` is true, looking every 50 ms. */
+async function until(check: () => boolean, timeoutMs: number, what: string): Promise<void> {
+  const started = Date.now()
+  while (!check()) {
+    if (Date.now() - started > timeoutMs) throw new Error(`timed out waiting for ${what}`)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+}
+
+/**
+ * Records `wavPath` the way a user records a session: the window's real start (the session
+ * command the hotkey sends), getUserMedia on Chromium's fake microphone playing the file
+ * (`prepareTaskProfile`), the capture graph and worklet, and the recorder. Whisper is loaded first
+ * so the window starts listening at once; the fake device plays from when the mic opens, so the
+ * timeline can start a few frames late. Returns the session's id once the recording has stopped.
+ */
+async function captureThroughWindow(wavPath: string): Promise<string> {
+  await warmUp()
+  const seconds = (await readWav(wavPath)).length / 16000
+  const finished = new Promise<string>((resolve) => {
+    const off = onRecordingFinished((recording) => {
+      off()
+      resolve(recording.pageId)
+    })
+  })
+  toggleSession()
+  await until(() => recordingPageId() !== null, 30_000, 'the window to start recording')
+  // Real time: the file plays as it would from a microphone, then a moment for the last chunk.
+  await new Promise((resolve) => setTimeout(resolve, seconds * 1000 + 1500))
+  toggleSession()
+  return finished
+}
 
 /**
  * Dev check: runs the real speaker pipeline (models, diarization, Whisper) on a
@@ -25,7 +61,7 @@ type MeetingTask = Extract<Task, { kind: 'meeting' }>
 export async function runMeetingFixture(task: MeetingTask, services: Services): Promise<void> {
   const wavPath = task.mic
   try {
-    const page = await createPage()
+    const page = task.capture ? { id: await captureThroughWindow(wavPath) } : await createPage()
     if (task.enroll) {
       const models = await ensureSpeakerModels()
       await addPerson('Enrolled', await embedVoice(await readWav(task.enroll), models), true)
@@ -34,7 +70,9 @@ export async function runMeetingFixture(task: MeetingTask, services: Services): 
     const systemFixture = task.system
     const started = Date.now()
     // `live` (the default) replays the audio as a recording; `offline` labels it after the fact.
-    if (task.pipeline === 'offline') {
+    if (task.capture) {
+      await relabeled(page.id)
+    } else if (task.pipeline === 'offline') {
       const micPath = trackPath(page.id, 'mic')
       await mkdir(join(micPath, '..'), { recursive: true })
       await copyFile(wavPath, micPath)
@@ -42,7 +80,8 @@ export async function runMeetingFixture(task: MeetingTask, services: Services): 
       if (systemFixture && systemPath) await copyFile(systemFixture, systemPath)
       await processMeeting({ pageId: page.id, micPath, systemPath, seconds: 0 })
     } else {
-      await replayRecording(page.id, wavPath, systemFixture)
+      const transcribe = task.asr === 'parakeet' ? transcribeWithParakeet : transcribePcm
+      await replayRecording(page.id, wavPath, systemFixture, { transcribe, carryContext: task.context })
       await relabeled(page.id)
     }
     await flushAllSessions()

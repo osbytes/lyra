@@ -169,7 +169,9 @@ function createWindow(): void {
     mainWindow.hide()
   })
 
-  if (task?.kind !== 'smoke') {
+  // Tasks run headless (the smoke test, evals and replays stay off screen and out of the way);
+  // only screenshots need the window drawn.
+  if (!task || task.kind === 'screenshot') {
     mainWindow.on('ready-to-show', () => {
       mainWindow.show()
     })
@@ -314,7 +316,9 @@ void app.whenReady().then(() => {
 
   registerIpc()
   registerSessionIpc()
-  registerRecorderIpc({ identifySpeakers: !isTestRun, transcribe: !isTestRun })
+  // A capture replay records through the window, so it needs the real recorder.
+  const recordsForReal = !isTestRun || (task.kind === 'meeting' && task.capture)
+  registerRecorderIpc({ identifySpeakers: recordsForReal, transcribe: recordsForReal })
   // Evals pass --no-relabel to score the track-labeled lines on their own.
   if (task?.kind !== 'meeting' || task.relabel) {
     onRecordingFinished((recording) => {
