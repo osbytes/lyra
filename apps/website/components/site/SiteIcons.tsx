@@ -56,6 +56,13 @@ export const MicIcon = () => (
   </Icon>
 )
 
+export const PersonIcon = () => (
+  <Icon>
+    <circle cx="12" cy="8.5" r="3.5" />
+    <path d="M5 20a7 7 0 0 1 14 0" />
+  </Icon>
+)
+
 export const SpeakerIcon = () => (
   <Icon>
     <path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" />

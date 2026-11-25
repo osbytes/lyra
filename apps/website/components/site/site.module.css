@@ -131,24 +131,26 @@
   color: var(--ink);
 }
 
-/* Hero */
+/* Hero: the copy on the left, and on the right the graph of voices landing on a page. */
 
 .hero .inner {
   display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
-  gap: 28px 64px;
-  align-items: end;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  gap: 40px 56px;
+  align-items: center;
   padding-block: 48px 52px;
 }
 
-.hero .eyebrow {
-  grid-column: 1 / -1;
+.heroCopy {
+  display: grid;
+  gap: 28px;
+  min-width: 0;
 }
 
 .h1 {
   margin: 0;
   font-family: var(--f-display);
-  font-size: clamp(58px, 10.5vw, 136px);
+  font-size: clamp(58px, 8.4vw, 116px);
   font-weight: 600;
   line-height: 0.9;
   letter-spacing: -0.04em;
@@ -174,7 +176,7 @@
 
 .lede {
   max-width: 32em;
-  margin: 0 0 26px;
+  margin: 36px 0 26px;
   color: var(--ink-2);
   font-size: 18px;
   line-height: 1.6;

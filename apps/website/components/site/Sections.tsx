@@ -6,6 +6,7 @@ import { MeetingCard } from '@/components/demo/MeetingCard'
 import { cx } from '@/lib/cx'
 import { REPO_URL, type Release } from '@/lib/releases'
 import { DownloadCards, HeroDownload } from './DownloadLinks'
+import { HeroGraph } from './HeroGraph'
 import { Keys } from './Keys'
 import { MicIcon, SpeakerIcon } from './SiteIcons'
 import styles from './site.module.css'
@@ -56,32 +57,35 @@ export function Hero({ release }: { release: Release }) {
   return (
     <section className={styles.hero}>
       <div className={styles.inner}>
-        <p className={styles.eyebrow}>Voice notebook for macOS, Windows and Linux</p>
-        <h1 className={styles.h1}>
-          Talk onto{' '}
-          <em>
-            pages
-            <svg className={styles.smile} viewBox="0 0 100 20" preserveAspectRatio="none" aria-hidden="true">
-              <path d="M2 4 Q50 22 98 4" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
-            </svg>
-          </em>
-          .
-        </h1>
-        <div>
-          <p className={styles.lede}>
-            Lyra writes down what you say while you say it, entirely on your computer. Keep typing while it listens, fix
-            any line, and come back later. Every session is a plain text file in a folder you choose.
-          </p>
-          <div className={styles.ctas}>
-            <HeroDownload release={release} />
-            <a className={cx(styles.btn, styles.btnGhost)} href={REPO_URL}>
-              Source on GitHub
-            </a>
+        <div className={styles.heroCopy}>
+          <p className={styles.eyebrow}>Voice notebook for macOS, Windows and Linux</p>
+          <h1 className={styles.h1}>
+            Talk onto{' '}
+            <em>
+              pages
+              <svg className={styles.smile} viewBox="0 0 100 20" preserveAspectRatio="none" aria-hidden="true">
+                <path d="M2 4 Q50 22 98 4" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+              </svg>
+            </em>
+            .
+          </h1>
+          <div>
+            <p className={styles.lede}>
+              Lyra writes down what you say while you say it, entirely on your computer. Keep typing while it listens,
+              fix any line, and come back later. Every session is a plain text file in a folder you choose.
+            </p>
+            <div className={styles.ctas}>
+              <HeroDownload release={release} />
+              <a className={cx(styles.btn, styles.btnGhost)} href={REPO_URL}>
+                Source on GitHub
+              </a>
+            </div>
+            <p className={styles.heroNote}>
+              Press <Keys combo="Mod+Shift+Space" className={styles.keys} /> on this page to start a session.
+            </p>
           </div>
-          <p className={styles.heroNote}>
-            Press <Keys combo="Mod+Shift+Space" className={styles.keys} /> on this page to start a session.
-          </p>
         </div>
+        <HeroGraph />
       </div>
     </section>
   )
