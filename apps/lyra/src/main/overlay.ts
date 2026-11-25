@@ -86,6 +86,8 @@ function createOverlay(): BrowserWindow {
     alwaysOnTop: true,
     // Never steal focus from whatever the user is typing into.
     focusable: false,
+    // macOS: a non-activating panel, which may float over another app's full-screen window.
+    ...(process.platform === 'darwin' ? { type: 'panel' } : {}),
     hasShadow: false,
     backgroundColor: '#00000000',
     webPreferences: {
@@ -96,7 +98,13 @@ function createOverlay(): BrowserWindow {
     }
   })
   win.setAlwaysOnTop(true, 'floating')
-  if (process.platform === 'darwin') win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  // Without `skipTransformProcessType`, asking to be visible over full-screen apps turns the
+  // whole app into a background agent on macOS: no Dock icon, no Cmd+Tab, so once the main window
+  // is hidden there is no way back to it. The panel type (above) is what lets the pill sit over
+  // a full-screen call without that.
+  if (process.platform === 'darwin') {
+    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true })
+  }
 
   const { rendererUrl } = config()
   if (is.dev && rendererUrl) {
