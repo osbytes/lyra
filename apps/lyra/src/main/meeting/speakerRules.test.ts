@@ -104,3 +104,22 @@ describe('movedLines and pinnedSpeakers', () => {
     expect(pinnedSpeakers(words, moved)).toEqual([null, 'c2', null])
   })
 })
+
+describe('movedLines with the user mark', () => {
+  it('pins a live line the user assigned, which has no pass to compare with', () => {
+    const transcript = [
+      { id: 'live-mic-0', rawId: null, cluster: 'c3', start: 0, end: 4, userCluster: true },
+      { id: 'live-mic-5', rawId: null, cluster: 'c0', start: 5, end: 7, userCluster: false },
+      // A marked line with no speaker has nothing to pin.
+      { id: 'live-mic-8', rawId: null, cluster: null, start: 8, end: 9, userCluster: true }
+    ]
+    const moved = movedLines(transcript, new Map())
+    expect(moved.map((line) => line.id)).toEqual(['live-mic-0'])
+    expect(pinnedSpeakers([{ start: 1, end: 2 }, { start: 5, end: 6 }], moved)).toEqual(['c3', null])
+  })
+
+  it('pins a marked line even where diarization agreed with the user', () => {
+    const transcript = [{ id: 'pass-1-s0', rawId: 'pass-1-s0', cluster: 'c1', start: 0, end: 4, userCluster: true }]
+    expect(movedLines(transcript, new Map([['pass-1-s0', 'c1']]))).toHaveLength(1)
+  })
+})

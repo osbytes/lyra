@@ -10,6 +10,7 @@ import {
   docTranscript,
   editDoc,
   initDoc,
+  isUserAssigned,
   joinSplitLines,
   liveModeOf,
   mergeSpeakers,
@@ -24,6 +25,7 @@ import {
   restoreMissingSpeakers,
   setSegmentEdits,
   setSegmentText,
+  setSegmentsCluster,
   snapshotOf,
   speakerToMergeInto,
   startTranscriber,
@@ -236,6 +238,7 @@ describe('readSegment', () => {
       start: 0,
       end: 0,
       cluster: null,
+      userCluster: false,
       text: 'heard',
       original: 'heard',
       edits: [],
@@ -393,5 +396,112 @@ describe('asUpdate', () => {
     expect(snapshotOf(replica).notes).toBe('notes')
     expect(() => asUpdate('not binary')).toThrow(/binary/)
     expect(() => asUpdate([1, 2, 3])).toThrow(/binary/)
+  })
+})
+
+describe('the user\'s choice of speaker', () => {
+  const ORIGIN_RELABEL = 'relabel'
+  const live = { joinGap: 8, maxLine: 30 }
+
+  /** A call heard live: two lines on the mic, before any relabel. */
+  function liveCall(): Y.Doc {
+    const doc = newDoc()
+    upsertSpeaker(doc, 'c0', speaker('Me'), ORIGIN_TRANSCRIBER)
+    upsertSpeaker(doc, 'c1', speaker('Remote'), ORIGIN_TRANSCRIBER)
+    appendLiveSegment(doc, line('live-mic-0', 'c0', 0, 4, 'Hello there.'), live, ORIGIN_TRANSCRIBER)
+    appendLiveSegment(doc, line('live-sys-20', 'c1', 20, 24, 'Hi back.'), live, ORIGIN_TRANSCRIBER)
+    return doc
+  }
+  const clusters = (doc: Y.Doc): (string | null)[] => snapshotOf(doc).transcript.map((entry) => entry.cluster)
+
+  it('survives a new pass over a live line the user moved', () => {
+    const doc = liveCall()
+    setSegmentsCluster(doc, ['live-mic-0'], 'c1', ORIGIN_USER)
+    expect(isUserAssigned(doc, 'live-mic-0')).toBe(true)
+    expect(isUserAssigned(doc, 'live-sys-20')).toBe(false)
+    // The new pass heard the first line as c0; the user said it's c1.
+    replaceTranscript(
+      doc,
+      [{ ...line('pass-1-s0', 'c0', 0.2, 4, 'Hello there.'), rawId: 'pass-1-s0' }, line('pass-1-s1', 'c1', 20, 24, 'Hi back.')],
+      ORIGIN_RELABEL
+    )
+    const [first, second] = snapshotOf(doc).transcript
+    expect(first).toMatchObject({ id: 'pass-1-s0', cluster: 'c1', userCluster: true, text: 'Hello there.', edited: false })
+    expect(second).toMatchObject({ cluster: 'c1', userCluster: false })
+    // And the one after it.
+    replaceTranscript(doc, [line('pass-2-s0', 'c0', 0, 4, 'Hello there.')], ORIGIN_RELABEL)
+    expect(clusters(doc)).toEqual(['c1'])
+  })
+
+  it('keeps the new pass\'s words while keeping the user\'s speaker', () => {
+    const doc = liveCall()
+    setSegmentsCluster(doc, ['live-mic-0'], 'c1', ORIGIN_USER)
+    replaceTranscript(doc, [line('pass-1-s0', 'c0', 0, 4, 'Hello, there.')], ORIGIN_RELABEL)
+    expect(snapshotOf(doc).transcript[0]).toMatchObject({ cluster: 'c1', text: 'Hello, there.', original: 'Hello, there.' })
+  })
+
+  it('lets a new pass relabel a line once the user\'s speaker is gone', () => {
+    const doc = liveCall()
+    setSegmentsCluster(doc, ['live-mic-0'], 'c1', ORIGIN_USER)
+    removeSpeaker(doc, 'c1', ORIGIN_USER)
+    replaceTranscript(doc, [line('pass-1-s0', 'c0', 0, 4, 'Hello there.')], ORIGIN_RELABEL)
+    expect(snapshotOf(doc).transcript[0]).toMatchObject({ cluster: 'c0', userCluster: false })
+  })
+
+  it('is not set by a machine writer, and a new pass takes its speaker over an unmarked line', () => {
+    const doc = liveCall()
+    setSegmentsCluster(doc, ['live-mic-0'], 'c1', ORIGIN_RELABEL)
+    setSegmentsCluster(doc, ['live-sys-20'], 'c0', ORIGIN_TRANSCRIBER)
+    expect(snapshotOf(doc).transcript.map((entry) => entry.userCluster)).toEqual([false, false])
+    replaceTranscript(doc, [line('pass-1-s0', 'c0', 0, 4, 'Hello there.')], ORIGIN_RELABEL)
+    expect(clusters(doc)).toEqual(['c0'])
+  })
+
+  it('is set by a pass that kept the user\'s choice for its words', () => {
+    const doc = liveCall()
+    replaceTranscript(doc, [{ ...line('pass-1-s0', 'c1', 0, 4, 'Hello there.'), userCluster: true }], ORIGIN_RELABEL)
+    expect(isUserAssigned(doc, 'pass-1-s0')).toBe(true)
+  })
+
+  it('is set on the lines a merge moves, and kept on lines already marked', () => {
+    const doc = liveCall()
+    upsertSpeaker(doc, 'c2', speaker('Speaker 3'), ORIGIN_TRANSCRIBER)
+    appendLiveSegment(doc, line('live-mic-40', 'c2', 40, 42, 'Third.'), live, ORIGIN_TRANSCRIBER)
+    setSegmentsCluster(doc, ['live-sys-20'], 'c2', ORIGIN_USER)
+    mergeSpeakers(doc, 'c2', 'c0', ORIGIN_USER)
+    expect(clusters(doc)).toEqual(['c0', 'c0', 'c0'])
+    expect(snapshotOf(doc).transcript.map((entry) => entry.userCluster)).toEqual([false, true, true])
+    // A machine merge moves lines without claiming them for the user.
+    const other = liveCall()
+    mergeSpeakers(other, 'c1', 'c0', ORIGIN_RELABEL)
+    expect(snapshotOf(other).transcript.map((entry) => entry.userCluster)).toEqual([false, false])
+  })
+
+  it('keeps live words that follow from joining a line the user assigned', () => {
+    const doc = liveCall()
+    setSegmentsCluster(doc, ['live-sys-20'], 'c1', ORIGIN_USER)
+    appendLiveSegment(doc, line('live-sys-25', 'c1', 25, 27, 'More words.'), live, ORIGIN_TRANSCRIBER)
+    expect(texts(doc)).toEqual(['Hello there.', 'Hi back.', 'More words.'])
+    expect(snapshotOf(doc).transcript.map((entry) => entry.userCluster)).toEqual([false, true, false])
+  })
+
+  it('reaches a replica, and undoing the move takes it back', () => {
+    const doc = liveCall()
+    const replica = new Y.Doc()
+    Y.applyUpdate(replica, Y.encodeStateAsUpdate(doc))
+    const undo = new Y.UndoManager(docTranscript(replica), { trackedOrigins: new Set([ORIGIN_USER]) })
+    setSegmentsCluster(replica, ['live-mic-0'], 'c1', ORIGIN_USER)
+    Y.applyUpdate(doc, Y.encodeStateAsUpdate(replica, Y.encodeStateVector(doc)))
+    expect(isUserAssigned(doc, 'live-mic-0')).toBe(true)
+    const copy = new Y.Doc()
+    Y.applyUpdate(copy, Y.encodeStateAsUpdate(doc))
+    expect(snapshotOf(copy).transcript[0]).toMatchObject({ cluster: 'c1', userCluster: true })
+    undo.undo()
+    expect(snapshotOf(replica).transcript[0]).toMatchObject({ cluster: 'c0', userCluster: false })
+  })
+
+  it('reads as unassigned on documents from before the mark', () => {
+    const doc = liveCall()
+    expect(readSegment(docTranscript(doc).get(0)).userCluster).toBe(false)
   })
 })

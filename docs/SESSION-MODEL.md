@@ -155,7 +155,8 @@ Y.Doc
     ├─ start, end                      (seconds; audio playback and the margin timestamp)
     ├─ cluster                         (→ meta.speakers; a per-line reassignment overrides it)
     ├─ text: Y.Text                    ← the user edits this
-    └─ edited: boolean                 (set on the first user edit; shows the "edited" mark)
+    ├─ edited: boolean                 (set on the first user edit; shows the "edited" mark)
+    └─ userCluster: boolean            (the user chose this line's speaker; later passes keep it)
 ```
 
 - **Speakers are data, not text.** Renaming Speaker 2 to Sam sets one `Y.Map` field. The

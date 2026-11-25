@@ -86,18 +86,21 @@ export function ownedVoiceprints(
 }
 
 /**
- * Lines the user moved to another speaker: their pass gave them one speaker and they now show
- * another. Only lines from a labeled pass can be told apart; a live line has no record of the
- * speaker it was heard as.
+ * Lines whose speaker the user chose: marked so in the document (`userCluster`), which covers
+ * live lines too. Documents from before the mark fall back to comparing with the pass: a line
+ * its pass gave one speaker that now shows another was moved. A live line there has no record
+ * of the speaker it was heard as, so an unmarked move on one can't be told apart.
  */
-export function movedLines<T extends CurrentLine & Span>(
+export function movedLines<T extends CurrentLine & Span & { userCluster?: boolean }>(
   transcript: readonly T[],
   passClusters: ReadonlyMap<string, string | null>
 ): (T & { cluster: string })[] {
   return transcript.flatMap((line) => {
-    const origin = passClusters.get(line.rawId ?? line.id)
     const { cluster } = line
-    return origin !== undefined && cluster !== null && origin !== cluster ? [{ ...line, cluster }] : []
+    if (cluster === null) return []
+    const origin = passClusters.get(line.rawId ?? line.id)
+    const moved = line.userCluster === true || (origin !== undefined && origin !== cluster)
+    return moved ? [{ ...line, cluster }] : []
   })
 }
 

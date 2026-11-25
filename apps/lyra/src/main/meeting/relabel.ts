@@ -221,7 +221,7 @@ export function relabelSession(pageId: string): Promise<void> {
     })
     .catch((error: unknown) => {
       log('relabel', 'failed', { pageId, error: error instanceof Error ? error.message : String(error) })
-      broadcast({ pageId, state: 'error', progress: 0, message: error instanceof Error ? error.message : String(error) })
+      broadcast({ pageId, task: 'speakers', state: 'error', progress: 0, message: error instanceof Error ? error.message : String(error) })
     })
     .finally(async () => {
       if (running.get(pageId) === next) running.delete(pageId)
@@ -252,7 +252,7 @@ async function relabel(pageId: string): Promise<void> {
   const started = Date.now()
 
   const models = await ensureSpeakerModels()
-  broadcast({ pageId, state: 'diarizing', progress: 0 })
+  broadcast({ pageId, task: 'speakers', state: 'diarizing', progress: 0 })
   const result = await mergeSamePerson(
     mergeTinySpeakers(
       await diarize({
@@ -266,7 +266,8 @@ async function relabel(pageId: string): Promise<void> {
     pageId,
     systemPath !== null
   )
-  // Lines the user moved to another speaker in an earlier pass: their words keep that speaker.
+  // Lines whose speaker the user chose (marked, or moved since an earlier pass): their words keep
+  // that speaker, live lines from a take never relabeled included.
   const moved = movedLines(before.transcript, await passClusters(pageId))
   const speakers = assignWords(words, result.segments)
   const pins = pinnedSpeakers(words, moved)
@@ -289,7 +290,7 @@ async function relabel(pageId: string): Promise<void> {
   // Bail before naming the voices, which takes a while.
   if (stale((await readSession(pageId)).transcript)) {
     log('relabel', 'session changed while diarizing; left as is', { pageId })
-    broadcast({ pageId, state: 'done', progress: 1 })
+    broadcast({ pageId, task: 'speakers', state: 'done', progress: 1 })
     return
   }
 
@@ -337,19 +338,26 @@ async function relabel(pageId: string): Promise<void> {
         upsertSpeaker(doc, fresh, entry, ORIGIN_RELABEL)
       }
       const map = speakersOf(doc)
-      segments = lines.map((line, index) => ({
-        id: `${passId}-s${String(index)}`,
-        rawId: `${passId}-s${String(index)}`,
-        start: line.words[0]?.start ?? 0,
-        end: line.words.at(-1)?.end ?? 0,
+      segments = lines.map((line, index) => {
         // A speaker the user moved words to, unless they've since removed that speaker.
-        cluster: (line.pinned !== null && map?.has(line.pinned) ? line.pinned : idOf.get(line.speaker)) ?? null,
-        confidence: null,
-        text: line.words.map((word) => word.text).join('').trim()
-      }))
+        const pinned = line.pinned !== null && map?.has(line.pinned) === true ? line.pinned : null
+        return {
+          id: `${passId}-s${String(index)}`,
+          rawId: `${passId}-s${String(index)}`,
+          start: line.words[0]?.start ?? 0,
+          end: line.words.at(-1)?.end ?? 0,
+          cluster: pinned ?? idOf.get(line.speaker) ?? null,
+          // Still the user's choice, so the pass after this one keeps it too.
+          userCluster: pinned !== null,
+          confidence: null,
+          text: line.words.map((word) => word.text).join('').trim()
+        }
+      })
       replaceTranscript(doc, segments, ORIGIN_RELABEL)
-      // Voices nobody speaks as any more.
-      const used = new Set([...fields.keys(), ...segments.flatMap((segment) => segment.cluster ?? [])])
+      // Voices nobody speaks as any more. Read from the document: a line can keep the speaker the
+      // user chose for the old line under it (`replaceTranscript`), not the one written here.
+      const shown = snapshotOf(doc).transcript.flatMap((line) => line.cluster ?? [])
+      const used = new Set([...fields.keys(), ...shown])
       for (const id of [...(map?.keys() ?? [])]) if (!used.has(id)) removeSpeaker(doc, id, ORIGIN_RELABEL)
       renumberSpeakers(doc, ORIGIN_RELABEL)
     }, ORIGIN_RELABEL)
@@ -357,7 +365,7 @@ async function relabel(pageId: string): Promise<void> {
   })
   if (!applied) {
     log('relabel', 'session changed while diarizing; left as is', { pageId })
-    broadcast({ pageId, state: 'done', progress: 1 })
+    broadcast({ pageId, task: 'speakers', state: 'done', progress: 1 })
     return
   }
   // Only now that the pass is in the session may it teach saved voices.
@@ -396,7 +404,7 @@ async function relabel(pageId: string): Promise<void> {
     ...manifest,
     passes: [...manifest.passes, { id: passId, kind: 'diarized', createdAt: pass.createdAt, model: pass.model }]
   }))
-  broadcast({ pageId, state: 'done', progress: 1 })
+  broadcast({ pageId, task: 'speakers', state: 'done', progress: 1 })
   log('relabel', 'labeled', { pageId, pass: passId, speakers: fields.size, lines: segments.length })
   if (fields.size >= 2) notifyLabeled(pageId)
 }
