@@ -8,7 +8,7 @@ import { overrideSettings } from '../settings'
 import { isTaskName, parseTask, type Task } from './args'
 import { runMeetingFixture } from './meeting'
 import { captureScreenshot } from './screenshot'
-import { runUiSmoke } from './smoke'
+import { runUiSmoke, seedSmokeProfile } from './smoke'
 
 /** The temp profile folder a task run uses; the launch scripts delete it afterwards. */
 export const TASK_PROFILE_PREFIX = 'lyra-task-'
@@ -35,6 +35,8 @@ export function isTaskLaunch(): boolean {
 /** Points the app at a throwaway profile before anything reads userData or settings. */
 export function prepareTaskProfile(task: Task): void {
   app.setPath('userData', join(tmpdir(), `${TASK_PROFILE_PREFIX}${String(process.pid)}`))
+  // Before anything reads settings or voices: files the smoke checks expect to be kept.
+  if (task.kind === 'smoke') seedSmokeProfile(app.getPath('userData'))
   overrideSettings({ notesDir: join(app.getPath('userData'), 'notes') })
   if (task.kind === 'meeting' && task.capture) {
     // Chromium's fake capture device plays the WAV as the microphone, once, then silence.

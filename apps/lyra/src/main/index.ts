@@ -22,9 +22,14 @@ import { checkConfig, config, ConfigError, configSummary } from './config'
 import { attachEditMenu } from './editMenu'
 import {
   CreatePageArg,
+  ModelNameArg,
   PageIdArg,
   parseSettingsPatch,
+  PermissionKindArg,
+  RetentionDaysArg,
+  RevealTargetArg,
   SavePageArg,
+  ServerUrlArg,
   SessionUpdateArg
 } from './ipcSchemas'
 import { migrateLegacyPages, resolveInNotes, startWatchingNotes } from './pages'
@@ -76,7 +81,11 @@ import {
   registerRecorderIpc,
   repairInterruptedAudio
 } from './recorder'
-import { startAudioRetention } from './audioRetention'
+import { previewAudioSweep, startAudioRetention } from './audioRetention'
+import { getDiagnostics, noteWhisperUsed, revealFolder } from './diagnostics'
+import { cancelModelDownload } from './models'
+import { detectServers, listServerModels, testWriter } from './notesServers'
+import { openPermissionSettings, permissionStatus } from './permissions'
 import { createTray } from './tray'
 import { registerUpdater } from './updater'
 import { broadcastStatus, warmUp } from './whisper'
@@ -370,10 +379,54 @@ function registerIpc(): void {
   ipcMain.on('log:write', (_event, scope: unknown, message: unknown, data: unknown) => {
     log(String(scope), String(message), data)
   })
-  ipcMain.handle('whisper:warmUp', () => warmUp())
+  ipcMain.handle('whisper:warmUp', async () => {
+    await warmUp()
+    noteWhisperUsed()
+  })
   // Sandboxed preloads no longer get Electron's clipboard module, so copying goes through main.
   ipcMain.on('clipboard:write', (_event, text: unknown) => {
     if (typeof text === 'string') clipboard.writeText(text)
+  })
+  registerSettingsToolsIpc()
+}
+
+/** Settings' helpers: retention preview, summary servers, About, permissions, downloads. */
+function registerSettingsToolsIpc(): void {
+  ipcMain.handle('retention:preview', (event, days: unknown) => {
+    requireMainWindow(event)
+    return previewAudioSweep(RetentionDaysArg.parse(days))
+  })
+  // These three reach the network, so each runs only from a click in Settings.
+  ipcMain.handle('notes:detectServers', (event) => {
+    requireMainWindow(event)
+    return detectServers()
+  })
+  ipcMain.handle('notes:listModels', (event, baseUrl: unknown) => {
+    requireMainWindow(event)
+    return listServerModels(ServerUrlArg.parse(baseUrl))
+  })
+  ipcMain.handle('notes:testWriter', (event) => {
+    requireMainWindow(event)
+    return testWriter()
+  })
+  ipcMain.handle('diagnostics:get', (event) => {
+    requireMainWindow(event)
+    return getDiagnostics()
+  })
+  ipcMain.handle('diagnostics:reveal', (event, target: unknown) => {
+    requireMainWindow(event)
+    return revealFolder(RevealTargetArg.parse(target))
+  })
+  ipcMain.handle('models:cancel', (event, name: unknown) => {
+    requireMainWindow(event)
+    const cancelled = cancelModelDownload(ModelNameArg.parse(name))
+    if (cancelled) log('models', 'download cancelled from the window')
+    return cancelled
+  })
+  ipcMain.handle('permissions:status', () => permissionStatus())
+  ipcMain.handle('permissions:openSettings', (event, kind: unknown) => {
+    requireMainWindow(event)
+    return openPermissionSettings(PermissionKindArg.parse(kind))
   })
 }
 
@@ -531,6 +584,8 @@ void app.whenReady().then(() => {
     if (recording === wasRecording) return
     wasRecording = recording
     setIndexBusy('recording', recording)
+    // A recording transcribes as it goes, so Whisper's backend is now a fact, not a plan.
+    if (recording) noteWhisperUsed()
     if (recording) releaseNotesModel()
   })
   if (!isTestRun) {

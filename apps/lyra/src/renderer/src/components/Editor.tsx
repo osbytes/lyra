@@ -1,13 +1,7 @@
 import { useLayoutEffect, useRef, type Ref } from 'react'
-import { appendTranscript } from '../../../shared/transcriptText'
 
 type Props = {
   value: string
-  /** Unconfirmed dictation, drawn where the transcriber will write it. */
-  ghost: string
-  listening: boolean
-  /** The transcriber's cursor in `value`; it writes there, not at the user's caret. */
-  transcriberAt?: number | null
   onChange: (value: string) => void
   /** Accessible name; also turns off the "start talking" placeholder for secondary fields. */
   label?: string
@@ -35,19 +29,10 @@ export function mapPosition(before: string, after: string, position: number): nu
 }
 
 /**
- * A textarea layered over a mirror of its own text. The mirror sizes the field to its content
- * and draws the transcriber's cursor (and its unconfirmed words) where it writes, like a second
- * author in the document. The user's caret stays where they left it when text arrives.
+ * A textarea layered over a mirror of its own text; the mirror sizes the field to its content.
+ * The user's caret stays where they left it when text arrives from elsewhere.
  */
-export function Editor({
-  value,
-  ghost,
-  listening,
-  transcriberAt,
-  onChange,
-  label,
-  ref
-}: Props) {
+export function Editor({ value, onChange, label, ref }: Props) {
   const area = useRef<HTMLTextAreaElement | null>(null)
   // What the textarea last showed, and the user's selection in it.
   const shown = useRef({ value, start: value.length, end: value.length })
@@ -62,22 +47,10 @@ export function Editor({
     shown.current = { value, start: el?.selectionStart ?? last.start, end: el?.selectionEnd ?? last.end }
   }, [value])
 
-  const at = Math.max(0, Math.min(transcriberAt ?? value.length, value.length))
-  const before = value.slice(0, at)
-  const after = value.slice(at)
-  // Unconfirmed words are previewed only at the end: in the middle they would sit on top of the
-  // text that follows (the mirror is drawn underneath the textarea).
-  const atEnd = !after.trim()
-  const merged = ghost && atEnd ? appendTranscript(before, ghost) : before
-  const preview = merged.startsWith(before) ? merged.slice(before.length) : ''
-
   return (
     <div className="editor-field">
       <div className="editor-mirror" aria-hidden="true">
-        {before}
-        <span className="ghost">{preview}</span>
-        {listening ? <span className="transcriber-caret" /> : null}
-        {after}
+        {value}
         {'​'}
       </div>
       <textarea
@@ -97,11 +70,7 @@ export function Editor({
           const el = event.currentTarget
           shown.current = { ...shown.current, start: el.selectionStart, end: el.selectionEnd }
         }}
-        placeholder={
-          preview || listening || label
-            ? ''
-            : 'Start talking or typing. Your words land here and save automatically.'
-        }
+        placeholder={label ? '' : 'Start talking or typing. Your words land here and save automatically.'}
         aria-label={label ?? 'Page body'}
       />
     </div>

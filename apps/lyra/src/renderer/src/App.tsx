@@ -44,7 +44,9 @@ import {
   undo as undoAction,
   undoAt as historyUndoAt
 } from './lib/history'
-import { notify, onToast, type ToastMessage } from './lib/toast'
+import { scrollBehavior } from './lib/motion'
+import { behindLabel } from './lib/status'
+import { notify, onToast, replacesToast, type ToastMessage } from './lib/toast'
 import { tip } from './components/Tooltip'
 import lyraIcon from './assets/lyra-icon.png'
 
@@ -120,7 +122,7 @@ function revealLine(lineId: string, frame = 0): void {
     if (frame < REVEAL_FRAMES) requestAnimationFrame(() => revealLine(lineId, frame + 1))
     return
   }
-  line.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  line.scrollIntoView({ block: 'center', behavior: scrollBehavior() })
   line.classList.add('search-flash')
   line.addEventListener('animationend', () => line.classList.remove('search-flash'), { once: true })
 }
@@ -321,7 +323,7 @@ export default function App(): React.JSX.Element {
     const view = scroller.current
     if (!view || !followHere || lineCount === 0) return
     if (view.scrollHeight - view.scrollTop - view.clientHeight > FOLLOW_SLACK) return
-    requestAnimationFrame(() => view.scrollTo({ top: view.scrollHeight, behavior: 'smooth' }))
+    requestAnimationFrame(() => view.scrollTo({ top: view.scrollHeight, behavior: scrollBehavior() }))
   }, [lineCount, followHere])
 
   /** The dock: continue recording the open session, or stop the recording (wherever it is). */
@@ -336,28 +338,48 @@ export default function App(): React.JSX.Element {
     setFind(null)
     await open(id)
   }
+  // Stable handlers for the memoized sidebar, so typing in the notes doesn't redraw it.
+  const openPageRef = useRef(openPage)
+  openPageRef.current = openPage
+  const openFromSidebar = useCallback((id: string) => void openPageRef.current(id), [])
+  const openSettings = useCallback(() => setShowSettings(true), [])
+  const openSearch = useCallback(() => setShowSearch(true), [])
 
   const [toast, setToast] = useState<ToastMessage | null>(null)
+  // The toast under the pointer or holding focus; it stays up until it's let go.
+  const [heldToast, setHeldToast] = useState<ToastMessage | null>(null)
+  const toastHeld = toast !== null && heldToast === toast
+  const toastButton = useRef<HTMLButtonElement>(null)
+  // Where focus was before F6 jumped to the toast's button, to go back there afterwards.
+  const toastReturn = useRef<Element | null>(null)
   useEffect(() => {
-    if (!toast) return
+    if (!toast || toastHeld) return
     const timer = setTimeout(() => setToast(null), TOAST_MS)
     return () => clearTimeout(timer)
-  }, [toast])
+  }, [toast, toastHeld])
+  const showToast = useCallback((next: ToastMessage) => {
+    setToast((current) => (replacesToast(current, next) ? next : current))
+  }, [])
+  const leaveToast = useCallback(() => {
+    const back = toastReturn.current
+    toastReturn.current = null
+    if (back instanceof HTMLElement && back.isConnected) back.focus()
+  }, [])
 
-  useEffect(() => onToast(setToast), [])
+  useEffect(() => onToast(showToast), [showToast])
 
   // Every undoable action outside a session's document says what it did, with Undo or Redo.
   useEffect(
     () =>
       onHistory((event) => {
         if (event.quiet && event.kind === 'done') return
-        setToast(
+        showToast(
           event.kind === 'undone'
             ? { text: event.undoneLabel, action: { label: 'Redo', run: () => void redoAction() } }
             : { text: event.label, action: { label: 'Undo', run: () => void undoAction() } }
         )
       }),
-    []
+    [showToast]
   )
 
   /** Undo or redo whichever came last: an edit to the open session, or an action elsewhere. */
@@ -389,15 +411,35 @@ export default function App(): React.JSX.Element {
     })
   }
 
+  // Hovering or focusing the toast holds it; F6 reaches its button from anywhere (see onKey).
   const toastElement = toast ? (
-    <div className="toast" role="status">
+    <div
+      className="toast"
+      role="status"
+      onMouseMove={() => {
+        if (heldToast !== toast) setHeldToast(toast)
+      }}
+      onMouseLeave={() => setHeldToast(null)}
+      onFocus={() => setHeldToast(toast)}
+      onBlur={() => setHeldToast(null)}
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape') return
+        event.preventDefault()
+        setToast(null)
+        leaveToast()
+      }}
+    >
       <span>{toast.text}</span>
       {toast.action ? (
         <button
+          ref={toastButton}
           type="button"
+          aria-keyshortcuts="F6"
+          {...tip(toast.action.label, 'F6')}
           onClick={() => {
             toast.action?.run()
             setToast(null)
+            leaveToast()
           }}
         >
           {toast.action.label}
@@ -467,6 +509,13 @@ export default function App(): React.JSX.Element {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
+      // F6 jumps to the toast's action (Undo, Move them…) before it times out.
+      if (event.key === 'F6' && !event.metaKey && !event.ctrlKey && toastButton.current) {
+        event.preventDefault()
+        toastReturn.current = document.activeElement
+        toastButton.current.focus()
+        return
+      }
       if (!(event.metaKey || event.ctrlKey)) return
       const key = event.key.toLowerCase()
       // The page's text lives in a shared document, so undo goes through it (and skips text
@@ -591,12 +640,12 @@ export default function App(): React.JSX.Element {
           activeId={current?.id}
           recordingId={recordingId}
           update={update}
-          onOpen={(id) => void openPage(id)}
+          onOpen={openFromSidebar}
           onCreate={newSession}
           onDelete={setConfirmDelete}
-          onSettings={() => setShowSettings(true)}
+          onSettings={openSettings}
           settingsIssue={settingsIssues.length > 0}
-          onSearch={() => setShowSearch(true)}
+          onSearch={openSearch}
           tags={knownTags}
           tagFilter={tagFilter}
           onTagFilter={setTagFilter}
@@ -844,6 +893,7 @@ export default function App(): React.JSX.Element {
               onSystemAudioChange={(captureSystemAudio) => void updateSettings({ captureSystemAudio })}
               subscribeLevel={dictation.subscribeLevel}
               transcribing={transcribing}
+              behind={progress ? behindLabel(progress) : null}
               onToggle={toggleDictation}
               startedAt={listeningSince}
               elsewhere={elsewhere}

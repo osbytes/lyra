@@ -15,9 +15,13 @@ import {
 
 const WIDTH = 340
 const PILL_HEIGHT = 44
-const PROMPT_HEIGHT = 128
+/** Room for the question, the shortcut line and a row of buttons. */
+const PROMPT_HEIGHT = 152
 const MARGIN = 24
-const PROMPT_TIMEOUT_MS = 10_000
+/** Long enough to read and reach with the pointer; the prompt is the way into meeting capture. */
+const PROMPT_TIMEOUT_MS = 20_000
+/** While the pointer rests on the card it stays; this is how often that's checked. */
+const PROMPT_HOVER_CHECK_MS = 1_000
 
 let overlay: BrowserWindow | null = null
 let prompt: MicPrompt | null = null
@@ -165,7 +169,7 @@ function clearPrompt(): void {
   overlay?.webContents.send('prompt:show', null)
 }
 
-/** Shows the "mic in use" card; it hides itself after a few seconds. */
+/** Shows the "mic in use" card; it hides itself after a while unless the pointer is on it. */
 export function showPrompt(next: MicPrompt): void {
   if (getSessionState().phase !== 'idle') return
   prompt = next
@@ -178,7 +182,34 @@ export function showPrompt(next: MicPrompt): void {
   place(win, PROMPT_HEIGHT)
   win.showInactive()
   if (promptTimer) clearTimeout(promptTimer)
-  promptTimer = setTimeout(hidePrompt, PROMPT_TIMEOUT_MS)
+  promptTimer = setTimeout(expirePrompt, PROMPT_TIMEOUT_MS)
+}
+
+/**
+ * Whether the pointer is over the card. Checked here rather than reported by the page: no IPC
+ * carries hover from it, and a window that can't take focus doesn't get pointer moves on every
+ * platform.
+ */
+function pointerOnOverlay(): boolean {
+  if (!overlay || overlay.isDestroyed() || !overlay.isVisible()) return false
+  const point = screen.getCursorScreenPoint()
+  const bounds = overlay.getBounds()
+  return (
+    point.x >= bounds.x &&
+    point.x < bounds.x + bounds.width &&
+    point.y >= bounds.y &&
+    point.y < bounds.y + bounds.height
+  )
+}
+
+function expirePrompt(): void {
+  promptTimer = null
+  if (!prompt) return
+  if (pointerOnOverlay()) {
+    promptTimer = setTimeout(expirePrompt, PROMPT_HOVER_CHECK_MS)
+    return
+  }
+  hidePrompt()
 }
 
 export function hidePrompt(): void {

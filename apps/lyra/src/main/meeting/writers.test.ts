@@ -70,6 +70,7 @@ describe('chooseWriter', () => {
     audioRetentionDays: null,
     captureSystemAudio: false,
     transcriptionLanguage: 'auto',
+    vocabulary: [],
     notesEngine: 'cloud',
     cloudProvider: 'openai-compatible',
     cloudModel: 'llama3.1',

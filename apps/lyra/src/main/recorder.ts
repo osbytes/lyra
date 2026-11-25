@@ -22,7 +22,7 @@ import {
   SAMPLE_RATE,
   wavHeader
 } from './wavFile'
-import { MODEL_LABEL, retryGpu, transcribePcm } from './whisper'
+import { MODEL_LABEL, retryGpu, transcribePcm, whisperBackend } from './whisper'
 
 /**
  * Records every session's audio as it is captured: one 16 kHz mono 16-bit WAV per track
@@ -281,10 +281,15 @@ function segmentOf(chunk: TranscribedChunk): LiveSegment {
   }
 }
 
-function reportProgress(recording: Recording, progress: { queued: number }): void {
+function reportProgress(recording: Recording, progress: { queued: number; queuedSeconds: number }): void {
   if (progress.queued === recording.queued) return
   recording.queued = progress.queued
-  const status: TranscriptProgress = { pageId: recording.pageId, queued: progress.queued }
+  const status: TranscriptProgress = {
+    pageId: recording.pageId,
+    queued: progress.queued,
+    queuedSeconds: progress.queuedSeconds,
+    backend: whisperBackend()
+  }
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send('transcriber:progress', status)
 }
 

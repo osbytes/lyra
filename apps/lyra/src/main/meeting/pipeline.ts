@@ -393,7 +393,7 @@ export async function nextPassId(pageId: string): Promise<string> {
 export async function processMeeting(recording: MeetingRecording): Promise<void> {
   const { pageId } = recording
   const status = (state: MeetingStatus['state'], progress: number, message?: string): void => {
-    broadcast({ pageId, state, progress, ...(message ? { message } : {}) })
+    broadcast({ pageId, task: 'speakers', state, progress, ...(message ? { message } : {}) })
   }
   log('meeting', 'processing', { pageId, seconds: +recording.seconds.toFixed(1) })
 

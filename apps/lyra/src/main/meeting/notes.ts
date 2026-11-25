@@ -26,7 +26,7 @@ const ORIGIN_NOTES = 'notes'
  * `task` field, it is set here (`task: 'notes'`) and nowhere else.
  */
 function broadcast(pageId: string, state: MeetingStatus['state'], progress: number, message?: string): void {
-  const status: MeetingStatus = { pageId, state, progress, ...(message ? { message } : {}) }
+  const status: MeetingStatus = { pageId, task: 'notes', state, progress, ...(message ? { message } : {}) }
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send('meeting:status', status)
 }
 

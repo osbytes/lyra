@@ -8,6 +8,7 @@ import { getSettings } from './settings'
 import { ensureSpeechVad } from './speechVad'
 import { ensureModelFile, hasModelFile, modelsDir, type ModelFile } from './models'
 import { isHallucination, wordsFromTokens } from './whisperText'
+import { withVocabulary } from '../shared/vocabulary'
 
 /**
  * Whisper large-v3-turbo, 5-bit. Recordings are transcribed in whole chunks at pauses rather than
@@ -207,9 +208,11 @@ export function warmUp(): Promise<void> {
 }
 
 /** Transcribes 16 kHz mono PCM into words with timestamps relative to the start of `pcm`. */
-export async function transcribePcm(pcm: Float32Array, prompt = ''): Promise<TranscriptWord[]> {
+export async function transcribePcm(pcm: Float32Array, context = ''): Promise<TranscriptWord[]> {
   if (pcm.length < 4800) return []
   await ensureModel()
+  // Read per chunk so a Settings change applies to the next one; an empty list leaves `context` as is.
+  const prompt = withVocabulary(context, getSettings().vocabulary)
   const queuedAt = Date.now()
   let startedAt = 0
   // whisper.cpp can't be cancelled, so a hung call blocks every later one; make that visible.

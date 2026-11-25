@@ -11,7 +11,9 @@ import { useHotkeys } from 'react-hotkeys-hook'
 import type { WhisperStatus } from '../../../shared/types'
 import type { DictationPhase, Levels } from '../hooks/useDictation'
 import { useMicrophones } from '../hooks/useMicrophones'
+import { useDialogFocus } from '../hooks/useDialogFocus'
 import { formatDuration, shortcutLabel } from '../lib/format'
+import { phaseAnnouncement } from '../lib/status'
 import { Floating, ScrollArea, Switch } from './Controls'
 import { ChevronDownIcon, GripIcon, MicIcon, MicSmallIcon, SpeakerIcon, StopIcon } from './Icons'
 import { MicrophoneSelect } from './MicrophoneSelect'
@@ -37,6 +39,8 @@ type Props = {
   subscribeLevel: SubscribeLevel
   /** Speech is waiting to be transcribed. */
   transcribing: boolean
+  /** Set when transcription has fallen well behind the recording ("Transcribing… 20 s behind"). */
+  behind: string | null
   /** Starts or stops recording into the open session (or stops the one recording elsewhere). */
   onToggle: () => void
   /** When the recording began (ms since epoch), so the timer survives switching sessions. */
@@ -118,14 +122,19 @@ function useElapsed(startedAt: number | null): number {
   return startedAt === null ? 0 : Math.max(0, now - startedAt)
 }
 
-function statusText(phase: DictationPhase, status: WhisperStatus, transcribing: boolean): string {
+function statusText(
+  phase: DictationPhase,
+  status: WhisperStatus,
+  transcribing: boolean,
+  behind: string | null
+): string {
   if (status.state === 'downloading') {
     const pct = status.total ? Math.round((status.received / status.total) * 100) : 0
     return `Downloading speech model… ${String(pct)}%`
   }
   if (phase === 'starting') return 'Warming up…'
   if (phase === 'finishing') return 'Finishing transcript…'
-  if (phase === 'listening') return transcribing ? 'Transcribing…' : 'Listening'
+  if (phase === 'listening') return behind ?? (transcribing ? 'Transcribing…' : 'Listening')
   // Idle: the mic button's tooltip says what it does.
   return ''
 }
@@ -142,6 +151,7 @@ function Sources({
 }) {
   const [open, setOpen] = useState(false)
   const anchor = useRef<HTMLButtonElement>(null)
+  const popover = useRef<HTMLElement>(null)
   const { microphones } = useMicrophones()
   const mic = micDeviceId
     ? microphones.find((entry) => entry.deviceId === micDeviceId)?.label
@@ -150,8 +160,11 @@ function Sources({
   const summary = `${micLabel}${systemAudio ? ' and computer audio' : ''}`
   const rect = open ? anchor.current?.getBoundingClientRect() : undefined
 
-  // Focus stays on the anchor when the popover opens, so Escape is heard document-wide. A nested
-  // dropdown that handled Escape itself has already prevented it and closes alone.
+  const shown = open && rect !== undefined
+  useDialogFocus(popover, shown)
+
+  // Escape is heard document-wide, wherever focus is in the popover. A nested dropdown that
+  // handled Escape itself has already prevented it and closes alone.
   useHotkeys(
     'escape',
     () => {
@@ -194,8 +207,10 @@ function Sources({
         <Floating>
           <div className="picker-layer" onMouseDown={() => setOpen(false)}>
             <ScrollArea
+              ref={popover}
               className="picker sources"
               role="dialog"
+              aria-modal="true"
               aria-label="What to record"
               style={{
                 ...(rect.top < POPOVER_ROOM
@@ -344,6 +359,16 @@ function useDockDrag() {
   return { area, dock, dragging, nearTop, onPointerDown, reset }
 }
 
+/** The latest phase change to announce; stays put (and so silent) until the next change. */
+function usePhaseAnnouncement(phase: DictationPhase): string {
+  const [said, setSaid] = useState({ phase, text: '' })
+  if (said.phase !== phase) {
+    // Adjusting state from the last render's phase, as React recommends over an effect.
+    setSaid({ phase, text: phaseAnnouncement(said.phase, phase) ?? said.text })
+  }
+  return said.text
+}
+
 export function DictationDock(props: Props) {
   const { phase, status, error, notice, subscribeLevel, transcribing, onToggle, elsewhere } = props
   const listening = phase === 'listening'
@@ -352,7 +377,8 @@ export function DictationDock(props: Props) {
   const elapsed = useElapsed(listening ? props.startedAt : null)
   const button = useRef<HTMLButtonElement>(null)
   const drag = useDockDrag()
-  const label = statusText(phase, status, transcribing)
+  const label = statusText(phase, status, transcribing, props.behind)
+  const announcement = usePhaseAnnouncement(phase)
 
   useEffect(() => {
     return subscribeLevel((levels) => {
@@ -373,6 +399,11 @@ export function DictationDock(props: Props) {
           {notice}
         </p>
       ) : null}
+
+      {/* Says when recording starts and stops; the status text beside the button isn't read. */}
+      <span className="visually-hidden" aria-live="polite">
+        {announcement}
+      </span>
 
       <div
         ref={drag.dock}

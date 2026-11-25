@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
+import { keyLabel } from '../lib/format'
+import { scrollBehavior } from '../lib/motion'
 import { ChevronDownIcon, CloseIcon } from './Icons'
 import { tip } from './Tooltip'
 
@@ -82,7 +84,7 @@ function reveal(range: Range): void {
   const pane = element.closest('.scroller')
   const view = pane?.getBoundingClientRect()
   if (pane && view && box.top >= view.top + 24 && box.bottom <= view.bottom - 24) return
-  element.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  element.scrollIntoView({ block: 'center', behavior: scrollBehavior() })
 }
 
 /**
@@ -192,7 +194,7 @@ export function FindBar({ root, initial, request, onClose }: Props) {
         aria-label="Previous match"
         disabled={!ranges.length}
         onClick={() => step(-1)}
-        {...tip('Previous', 'Shift+Enter')}
+        {...tip('Previous', keyLabel('Shift+Enter'))}
       >
         <ChevronDownIcon />
       </button>
@@ -202,11 +204,11 @@ export function FindBar({ root, initial, request, onClose }: Props) {
         aria-label="Next match"
         disabled={!ranges.length}
         onClick={() => step(1)}
-        {...tip('Next', 'Enter')}
+        {...tip('Next', keyLabel('Enter'))}
       >
         <ChevronDownIcon />
       </button>
-      <button type="button" className="icon-btn" aria-label="Close find" onClick={onClose} {...tip('Close', 'Esc')}>
+      <button type="button" className="icon-btn" aria-label="Close find" onClick={onClose} {...tip('Close', keyLabel('Esc'))}>
         <CloseIcon />
       </button>
     </div>

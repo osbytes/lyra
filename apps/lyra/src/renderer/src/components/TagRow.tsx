@@ -48,7 +48,7 @@ export function TagRow({ tags, known, onAdd, onRemove }: Props) {
   }
 
   return (
-    <div className="tags" aria-label="Tags">
+    <div className="tags" role="group" aria-label="Tags">
       {tags.map((tag) => (
         <span
           key={tag}

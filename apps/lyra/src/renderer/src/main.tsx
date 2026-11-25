@@ -1,4 +1,5 @@
 import './assets/styles.css'
+import './assets/settings.css'
 import { StrictMode, Suspense, lazy } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ErrorBoundary } from './components/ErrorBoundary'

@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react'
 import { Floating } from './Controls'
+import { useDialogFocus } from '../hooks/useDialogFocus'
 
 type Props = {
   title: string
@@ -16,15 +17,15 @@ type Props = {
  * Enter confirms, Escape or clicking outside cancels; focus starts on the confirming button.
  */
 export function ConfirmDialog({ title, children, confirm, danger = false, onConfirm, onCancel }: Props) {
-  const button = useRef<HTMLButtonElement>(null)
+  const dialog = useRef<HTMLDivElement>(null)
   const cancel = useRef(onCancel)
   cancel.current = onCancel
   const titleId = useId()
   const bodyId = useId()
 
+  useDialogFocus(dialog, true)
+
   useEffect(() => {
-    const previous = document.activeElement
-    button.current?.focus()
     const onKey = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape') return
       event.preventDefault()
@@ -32,16 +33,14 @@ export function ConfirmDialog({ title, children, confirm, danger = false, onConf
       cancel.current()
     }
     window.addEventListener('keydown', onKey, true)
-    return () => {
-      window.removeEventListener('keydown', onKey, true)
-      if (previous instanceof HTMLElement && previous.isConnected) previous.focus()
-    }
+    return () => window.removeEventListener('keydown', onKey, true)
   }, [])
 
   return (
     <Floating>
     <div className="modal-backdrop confirm-backdrop" onMouseDown={onCancel}>
       <div
+        ref={dialog}
         className="confirm"
         role="alertdialog"
         aria-modal="true"
@@ -60,7 +59,7 @@ export function ConfirmDialog({ title, children, confirm, danger = false, onConf
             Cancel
           </button>
           <button
-            ref={button}
+            data-autofocus
             className={danger ? 'btn primary is-danger' : 'btn primary'}
             type="button"
             onClick={onConfirm}

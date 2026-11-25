@@ -1,8 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { PROVIDERS, ProviderId, type KeySource } from '../../../shared/ai'
+import { formatBytes } from '../../../shared/bytes'
 import { WHISPER_LANGUAGES } from '../../../shared/languages'
 import { mergeIgnoredApps } from '../../../shared/ignoredApps'
-import type { Settings as SettingsValue } from '../../../shared/types'
+import { isStricterRetention } from '../../../shared/retention'
+import type { NotesTestResult, Settings as SettingsValue } from '../../../shared/types'
+import { useDialogFocus } from '../hooks/useDialogFocus'
+import { usePermissions } from '../hooks/usePermissions'
 import {
   keyChanged,
   hotkeyProblem,
@@ -12,44 +16,26 @@ import {
 } from '../hooks/useSettingsIssues'
 import { homePath } from '../lib/format'
 import { record } from '../lib/history'
+import { ipcErrorMessage } from '../lib/ipcError'
+import { hostedPrivacy } from '../lib/summaryPrivacy'
+import { AboutSettings, InfoIcon } from './About'
 import { ConfirmDialog } from './ConfirmDialog'
 import { ScrollArea, Segmented, Select, Switch } from './Controls'
 import { HotkeyInput } from './HotkeyInput'
 import { CloseIcon, FolderIcon, GearIcon, PeopleIcon, RecordIcon } from './Icons'
+import { LocalServerSettings, TestResult } from './LocalServer'
 import { MicrophoneSelect } from './MicrophoneSelect'
 import { PeopleSettings } from './People'
+import { PermissionRow } from './Permissions'
+import { CommitInput, Row, Section, type SectionProps, type Update } from './SettingsParts'
 import { tip } from './Tooltip'
-
-type Update = (patch: Partial<SettingsValue>) => Promise<SettingsValue>
+import { VocabularyEditor } from './Vocabulary'
 
 type Props = {
   settings: SettingsValue
   update: Update
   issues: SettingsIssue[]
   onClose: () => void
-}
-
-type SectionProps = Pick<Props, 'settings' | 'update'>
-
-export function Section({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section className="settings-section">
-      <h3>{title}</h3>
-      <div className="settings-card">{children}</div>
-    </section>
-  )
-}
-
-export function Row({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
-  return (
-    <div className="settings-row">
-      <div className="settings-label">
-        <span>{label}</span>
-        {hint ? <small>{hint}</small> : null}
-      </div>
-      <div className="settings-control">{children}</div>
-    </div>
-  )
 }
 
 /** What Ctrl+Z says it undid, per setting. */
@@ -60,14 +46,14 @@ const CHANGE_LABELS: Partial<Record<keyof SettingsValue, string>> = {
   launchAtLogin: 'Changed open at login',
   captureSystemAudio: 'Changed computer audio capture',
   transcriptionLanguage: 'Changed the transcription language',
-  audioRetentionDays: 'Changed how long audio is kept',
   notesEngine: 'Changed session summaries',
   cloudProvider: 'Changed the summary provider',
   cloudModel: 'Changed the summary model',
   cloudBaseUrl: 'Changed the server address',
   semanticSearch: 'Changed search by meaning',
   micPrompt: 'Changed the microphone prompt',
-  meetingPrompt: 'Changed the meeting prompt'
+  meetingPrompt: 'Changed the meeting prompt',
+  vocabulary: 'Changed names and terms'
 }
 
 /** `update`, recorded so Ctrl+Z (and Ctrl+Shift+Z) can take the change back. */
@@ -99,39 +85,69 @@ const FILE_FORMATS = [
 ] as const
 
 function StorageSection({ settings, update }: SectionProps) {
-  const [notice, setNotice] = useState<string | null>(null)
+  const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null)
   const [moveFrom, setMoveFrom] = useState<{ from: string; to: string } | null>(null)
+  const [busy, setBusy] = useState<'picking' | 'moving' | null>(null)
 
   const changeFolder = async (): Promise<void> => {
     const previous = settings.notesDir
-    // Main shows the picker and switches the folder itself; the new settings arrive here and
-    // through the settings broadcast.
-    const next = await window.api.pickFolder()
-    if (!next || next.notesDir === previous) return
-    setMoveFrom({ from: previous, to: next.notesDir })
+    setNotice(null)
+    setBusy('picking')
+    try {
+      // Main shows the picker and switches the folder itself; the new settings arrive here and
+      // through the settings broadcast. It refuses while recording or identifying speakers.
+      const next = await window.api.pickFolder()
+      if (next && next.notesDir !== previous) setMoveFrom({ from: previous, to: next.notesDir })
+    } catch (caught) {
+      setNotice({ text: ipcErrorMessage(caught, 'Couldn’t change the sessions folder.'), error: true })
+    } finally {
+      setBusy(null)
+    }
   }
 
-  const move = async (): Promise<void> => {
+  const move = async (from: string): Promise<void> => {
     setMoveFrom(null)
-    // Main remembers the folder it switched from; it takes no path from this window.
-    const { moved, skipped } = await window.api.moveNotes()
-    setNotice(
-      `Moved ${String(moved)} ${moved === 1 ? 'session' : 'sessions'}` +
-        (skipped ? ` · ${String(skipped)} skipped (same name already there)` : '')
-    )
+    setBusy('moving')
+    setNotice({ text: 'Moving sessions…', error: false })
+    try {
+      // Main remembers the folder it switched from; it takes no path from this window.
+      const { moved, skipped } = await window.api.moveNotes()
+      setNotice({
+        text:
+          `Moved ${String(moved)} ${moved === 1 ? 'session' : 'sessions'}` +
+          (skipped ? ` · ${String(skipped)} skipped (same name already there)` : ''),
+        error: false
+      })
+    } catch (caught) {
+      setNotice({
+        text: `${ipcErrorMessage(caught, 'Couldn’t move the sessions.')} They’re still in ${homePath(from)}.`,
+        error: true
+      })
+    } finally {
+      setBusy(null)
+    }
   }
 
   return (
     <Section title="Storage">
       <Row label="Sessions folder" hint={homePath(settings.notesDir)}>
         <div className="settings-buttons">
-          <button className="btn" type="button" onClick={() => void changeFolder()}>
+          <button
+            className="btn"
+            type="button"
+            disabled={busy !== null}
+            onClick={() => void changeFolder()}
+          >
             Change…
           </button>
           <button
             className="btn"
             type="button"
-            onClick={() => void window.api.revealNotesFolder()}
+            onClick={() => {
+              window.api.revealNotesFolder().catch((caught: unknown) => {
+                setNotice({ text: ipcErrorMessage(caught, 'Couldn’t open the folder.'), error: true })
+              })
+            }}
             {...tip('Open in file manager')}
           >
             <FolderIcon />
@@ -139,7 +155,14 @@ function StorageSection({ settings, update }: SectionProps) {
           </button>
         </div>
       </Row>
-      {notice ? <p className="settings-notice">{notice}</p> : null}
+      {notice ? (
+        <p
+          className={notice.error ? 'settings-notice is-error' : 'settings-notice'}
+          role={notice.error ? 'alert' : 'status'}
+        >
+          {notice.text}
+        </p>
+      ) : null}
       <Row label="File format" hint="For new sessions. Existing .txt and .md files keep working.">
         <Segmented
           label="File format"
@@ -150,29 +173,67 @@ function StorageSection({ settings, update }: SectionProps) {
       </Row>
       {moveFrom ? (
         <ConfirmDialog
-          title="Move your existing sessions?"
+          title="Move your sessions to the new folder?"
           confirm="Move sessions"
-          onConfirm={() => void move()}
+          onConfirm={() => void move(moveFrom.from)}
           onCancel={() => {
+            const { from } = moveFrom
             setMoveFrom(null)
-            setNotice('Existing sessions were left where they were.')
+            setNotice({
+              text: `Your sessions stayed in ${homePath(from)}. They won’t show in Lyra until you move them here or switch back to that folder.`,
+              error: false
+            })
           }}
         >
-          From <code>{homePath(moveFrom.from)}</code> into <code>{homePath(moveFrom.to)}</code>.
-          Sessions left behind won’t show in Lyra.
+          Lyra now uses <code>{homePath(moveFrom.to)}</code>. Your existing sessions are still in{' '}
+          <code>{homePath(moveFrom.from)}</code> and won’t show in Lyra until they’re moved here, or
+          until you switch back to that folder. Cancel leaves them where they are.
         </ConfirmDialog>
       ) : null}
     </Section>
   )
 }
 
-const SUMMARY_ENGINES = [
+/**
+ * What writes summaries, as the user thinks of it. "Local server" isn't a stored engine: it is
+ * the cloud engine with the OpenAI-compatible provider, so settings.json stays readable by older
+ * builds. Only a native Ollama server on this computer counts as on-device (see writers.ts).
+ */
+type SummaryChoice = 'off' | 'local' | 'server' | 'cloud'
+
+const SUMMARY_CHOICES = [
   { value: 'off', label: 'Off' },
-  { value: 'local', label: 'On this computer' },
-  { value: 'cloud', label: 'Cloud model' }
+  { value: 'local', label: 'On this computer', hint: 'A built-in model; nothing leaves this computer' },
+  { value: 'server', label: 'Local server', hint: 'Ollama, LM Studio, llama.cpp…' },
+  { value: 'cloud', label: 'Cloud model', hint: 'Anthropic, OpenAI or Google, with your key' }
 ] as const
 
-const PROVIDER_OPTIONS = ProviderId.options.map((id) => ({ value: id, label: PROVIDERS[id].label }))
+function summaryChoice(settings: SettingsValue): SummaryChoice {
+  if (settings.notesEngine !== 'cloud') return settings.notesEngine
+  return settings.cloudProvider === 'openai-compatible' ? 'server' : 'cloud'
+}
+
+/** The settings a choice stands for; a provider switch clears the model (ids don't carry over). */
+function choicePatch(choice: SummaryChoice, settings: SettingsValue): Partial<SettingsValue> {
+  switch (choice) {
+    case 'off':
+    case 'local':
+      return { notesEngine: choice }
+    case 'server':
+      return settings.cloudProvider === 'openai-compatible'
+        ? { notesEngine: 'cloud' }
+        : { notesEngine: 'cloud', cloudProvider: 'openai-compatible', cloudModel: null }
+    case 'cloud':
+      return settings.cloudProvider === 'openai-compatible'
+        ? { notesEngine: 'cloud', cloudProvider: 'anthropic', cloudModel: null }
+        : { notesEngine: 'cloud' }
+  }
+}
+
+/** Hosted providers only: a server the user runs has its own choice above. */
+const PROVIDER_OPTIONS = ProviderId.options
+  .filter((id) => id !== 'openai-compatible')
+  .map((id) => ({ value: id, label: PROVIDERS[id].label }))
 
 const DEFAULT_HOTKEY = 'CommandOrControl+Shift+Space'
 
@@ -248,8 +309,99 @@ function languageChoices(): { value: string; label: string }[] {
   return [{ value: 'auto', label: 'Detect automatically' }, ...choices]
 }
 
-function RecordingSection({ settings, update }: SectionProps) {
+/** The choice's name, for the confirmation ("Keep audio for 7 days"). */
+function retentionLabel(days: number | null): string {
+  const value = retentionValue(days)
+  return RETENTION_CHOICES.find((choice) => choice.value === value)?.label ?? `${value} days`
+}
+
+type RetentionConfirm = { days: number | null; sessions: number; bytes: number }
+
+/**
+ * "Keep audio". A stricter value deletes recordings as soon as it is saved, so it is saved only
+ * after the user confirms how many sessions lose their audio. Saved without undo: Ctrl+Z can't
+ * bring deleted audio back, and redoing it would delete without asking.
+ */
+function RetentionRow({ settings, save }: { settings: SettingsValue; save: Update }) {
+  const [confirm, setConfirm] = useState<RetentionConfirm | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [checking, setChecking] = useState(false)
+
+  const choose = async (days: number | null): Promise<void> => {
+    setError(null)
+    if (!isStricterRetention(settings.audioRetentionDays, days)) {
+      await save({ audioRetentionDays: days })
+      return
+    }
+    setChecking(true)
+    try {
+      const preview = await window.api.previewRetention(days)
+      if (preview.sessions > 0) setConfirm({ days, ...preview })
+      else await save({ audioRetentionDays: days })
+    } catch (caught) {
+      setError(ipcErrorMessage(caught, 'Couldn’t check which recordings this would delete.'))
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  return (
+    <>
+      <Row
+        label="Keep audio"
+        hint="Audio lets you replay and re-transcribe a session. Transcripts are always kept."
+      >
+        <Select
+          label="Keep audio"
+          value={retentionValue(settings.audioRetentionDays)}
+          options={retentionChoices(settings.audioRetentionDays)}
+          disabled={checking}
+          onChange={(value) => {
+            void choose(parseRetention(value)).catch((caught: unknown) => {
+              setError(ipcErrorMessage(caught, 'Couldn’t change how long audio is kept.'))
+            })
+          }}
+        />
+      </Row>
+      {error ? (
+        <p className="settings-notice is-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      {confirm ? (
+        <ConfirmDialog
+          title={`Delete the audio of ${String(confirm.sessions)} ${confirm.sessions === 1 ? 'session' : 'sessions'}?`}
+          confirm="Delete audio"
+          danger
+          onConfirm={() => {
+            const { days } = confirm
+            setConfirm(null)
+            save({ audioRetentionDays: days }).catch((caught: unknown) => {
+              setError(ipcErrorMessage(caught, 'Couldn’t change how long audio is kept.'))
+            })
+          }}
+          onCancel={() => {
+            setConfirm(null)
+          }}
+        >
+          Keeping audio for {retentionLabel(confirm.days).toLowerCase()} deletes the recordings of{' '}
+          {confirm.sessions} {confirm.sessions === 1 ? 'session' : 'sessions'}
+          {confirm.bytes > 0 ? ` (${formatBytes(confirm.bytes)})` : ''} now. Their transcripts and
+          notes stay. Deleted audio can’t be brought back.
+        </ConfirmDialog>
+      ) : null}
+    </>
+  )
+}
+
+function RecordingSection({
+  settings,
+  update,
+  saveRetention
+}: SectionProps & { saveRetention: Update }) {
   const [languages] = useState(languageChoices)
+  const permissions = usePermissions()
+  const mac = window.api.platform === 'darwin'
   return (
     <Section title="Recording">
       <Row
@@ -263,9 +415,14 @@ function RecordingSection({ settings, update }: SectionProps) {
           onChange={(transcriptionLanguage) => void update({ transcriptionLanguage })}
         />
       </Row>
+      <VocabularyEditor settings={settings} update={update} />
       <Row
         label="Capture computer audio"
-        hint="Records the other side of calls (Zoom, Meet, Teams). On macOS this needs Screen Recording permission."
+        hint={
+          mac
+            ? 'Records the other side of calls (Zoom, Meet, Teams). macOS asks for Screen Recording permission for this.'
+            : 'Records the other side of calls (Zoom, Meet, Teams).'
+        }
       >
         <Switch
           label="Capture computer audio"
@@ -277,69 +434,14 @@ function RecordingSection({ settings, update }: SectionProps) {
         Recording other people usually requires their consent. Session audio, transcripts and
         voiceprints stay on this computer.
       </p>
-      <Row
-        label="Keep audio"
-        hint="Audio lets you replay and re-transcribe a session. Transcripts are always kept."
-      >
-        <Select
-          label="Keep audio"
-          value={retentionValue(settings.audioRetentionDays)}
-          options={retentionChoices(settings.audioRetentionDays)}
-          onChange={(value) => {
-            void update({ audioRetentionDays: parseRetention(value) })
-          }}
-        />
-      </Row>
+      {settings.captureSystemAudio ? <PermissionRow kind="screen" status={permissions} /> : null}
+      <RetentionRow settings={settings} save={saveRetention} />
     </Section>
   )
 }
 
-/** A text setting saved when the field loses focus or on Enter, not on every keystroke. */
-function CommitInput({
-  value,
-  placeholder,
-  label,
-  onCommit
-}: {
-  value: string | null
-  placeholder: string
-  label: string
-  /** Resolves to what was saved: a value the settings schema rejects is not kept. */
-  onCommit: (next: string | null) => Promise<string | null>
-}) {
-  const [text, setText] = useState(value ?? '')
-  // Undo, or another window, can change the saved value under the field.
-  useEffect(() => {
-    setText(value ?? '')
-  }, [value])
-  const commit = (): void => {
-    const trimmed = text.trim()
-    const next = trimmed ? trimmed : null
-    if (next === value) return
-    void onCommit(next).then((saved) => {
-      setText(saved ?? '')
-    })
-  }
-  return (
-    <input
-      className="settings-input"
-      value={text}
-      placeholder={placeholder}
-      autoComplete="off"
-      spellCheck={false}
-      onChange={(event) => {
-        setText(event.target.value)
-      }}
-      onBlur={commit}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter') commit()
-      }}
-      aria-label={label}
-    />
-  )
-}
-
-function SummarySection({ settings, update }: SectionProps) {
+/** The API key row, for hosted providers and for a server that asks for one. */
+function ApiKey({ settings }: Pick<SectionProps, 'settings'>) {
   const provider = settings.cloudProvider
   const info = PROVIDERS[provider]
   const [keySource, setKeySource] = useState<KeySource | null>(null)
@@ -365,52 +467,128 @@ function SummarySection({ settings, update }: SectionProps) {
       setKey('')
       keyChanged()
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Could not save the key')
+      setError(ipcErrorMessage(caught, 'Could not save the key'))
     }
   }
 
-  const missingKey = settings.notesEngine === 'cloud' && info.needsKey && keySource === null
+  const missingKey = info.needsKey && keySource === null
   const keyHint =
     keySource === 'keychain'
       ? 'Saved in your system keychain.'
       : keySource === 'environment'
         ? `From ${info.keyEnv ?? 'the environment'}. A key saved here is used instead.`
         : info.keyHelp
-  const destination =
-    provider === 'openai-compatible'
-      ? `the server at ${settings.cloudBaseUrl ?? 'the address below'}`
-      : `${info.label}’s API`
+
+  return (
+    <>
+      <div className={missingKey ? 'settings-group has-issue' : 'settings-group'}>
+        <Row label="API key" hint={keyHint}>
+          {keySource === 'keychain' ? (
+            <button className="btn" type="button" onClick={() => void saveKey(null)}>
+              Remove key
+            </button>
+          ) : (
+            <>
+              <input
+                className="settings-input"
+                type="password"
+                value={key}
+                autoComplete="off"
+                onChange={(event) => {
+                  setKey(event.target.value)
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && key.trim()) void saveKey(key)
+                }}
+                aria-label={`${info.label} API key`}
+              />
+              <button
+                className="btn"
+                type="button"
+                disabled={!key.trim()}
+                onClick={() => void saveKey(key)}
+              >
+                Save
+              </button>
+            </>
+          )}
+        </Row>
+        {missingKey ? (
+          <p className="settings-issue" role="alert">
+            <span className="issue-dot" aria-hidden="true" />
+            Summaries won’t run until you add a key.
+          </p>
+        ) : null}
+      </div>
+      {error ? <p className="settings-notice is-error">{error}</p> : null}
+    </>
+  )
+}
+
+/** "Test" for a hosted provider: one tiny request with Lyra's own sample text. */
+function TestHosted() {
+  const [state, setState] = useState<{ busy: boolean; result: NotesTestResult | null }>({
+    busy: false,
+    result: null
+  })
+  const run = async (): Promise<void> => {
+    setState({ busy: true, result: null })
+    try {
+      setState({ busy: false, result: await window.api.testNotesWriter() })
+    } catch (caught) {
+      setState({ busy: false, result: { ok: false, error: ipcErrorMessage(caught) } })
+    }
+  }
+  return (
+    <>
+      <Row label="Check the connection" hint="Sends a two-line sample (not your sessions) and asks for a title.">
+        <button className="btn" type="button" disabled={state.busy} onClick={() => void run()}>
+          {state.busy ? 'Testing…' : 'Test'}
+        </button>
+      </Row>
+      {state.result ? <TestResult result={state.result} /> : null}
+    </>
+  )
+}
+
+function SummarySection({ settings, update }: SectionProps) {
+  const choice = summaryChoice(settings)
+  const info = PROVIDERS[settings.cloudProvider]
 
   return (
     <Section title="Summaries">
       <Row
         label="Summarize sessions"
-        hint="A summary, decisions, action items and open questions above your notes."
+        hint="A summary, decisions, action items and open questions above your notes, and a suggested title."
       >
-        <Segmented
+        <Select
           label="Summarize sessions"
-          value={settings.notesEngine}
-          options={SUMMARY_ENGINES}
-          onChange={(notesEngine) => void update({ notesEngine })}
+          value={choice}
+          options={SUMMARY_CHOICES}
+          onChange={(next) => {
+            if (next !== choice) void update(choicePatch(next, settings))
+          }}
         />
       </Row>
-      {settings.notesEngine === 'local' ? (
+      {choice === 'local' ? (
         <p className="settings-notice">
           Runs a small model on this computer, so nothing leaves it. The first time downloads about
           2 GB; long sessions can take a few minutes.
         </p>
       ) : null}
-      {settings.notesEngine === 'cloud' ? (
+      {choice === 'server' ? (
         <>
-          <p className="settings-notice is-warning">
-            Sends the session’s transcript to {destination} to write the summary. Audio and
-            voiceprints stay on this computer.
-            {info.needsKey ? ' Uses your own API key and is billed to your account.' : ''}
-          </p>
+          <LocalServerSettings settings={settings} update={update} />
+          <ApiKey settings={settings} />
+        </>
+      ) : null}
+      {choice === 'cloud' ? (
+        <>
+          <p className="settings-notice is-warning">{hostedPrivacy(info.label, info.needsKey)}</p>
           <Row label="Provider" hint="Any of these, through one interface; switch whenever you like.">
             <Select
               label="Provider"
-              value={provider}
+              value={settings.cloudProvider}
               options={PROVIDER_OPTIONS}
               onChange={(cloudProvider) => {
                 // Model ids don't carry over between providers.
@@ -433,56 +611,8 @@ function SummarySection({ settings, update }: SectionProps) {
               onCommit={(cloudModel) => update({ cloudModel }).then((saved) => saved.cloudModel)}
             />
           </Row>
-          {info.needsBaseUrl ? (
-            <Row label="Server address" hint="Ollama, LM Studio, llama.cpp or any OpenAI-compatible API.">
-              <CommitInput
-                label="Server address"
-                value={settings.cloudBaseUrl}
-                placeholder="http://localhost:11434/v1"
-                onCommit={(cloudBaseUrl) => update({ cloudBaseUrl }).then((saved) => saved.cloudBaseUrl)}
-              />
-            </Row>
-          ) : null}
-          <div className={missingKey ? 'settings-group has-issue' : 'settings-group'}>
-            <Row label="API key" hint={keyHint}>
-              {keySource === 'keychain' ? (
-                <button className="btn" type="button" onClick={() => void saveKey(null)}>
-                  Remove key
-                </button>
-              ) : (
-                <>
-                  <input
-                    className="settings-input"
-                    type="password"
-                    value={key}
-                    autoComplete="off"
-                    onChange={(event) => {
-                      setKey(event.target.value)
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' && key.trim()) void saveKey(key)
-                    }}
-                    aria-label={`${info.label} API key`}
-                  />
-                  <button
-                    className="btn"
-                    type="button"
-                    disabled={!key.trim()}
-                    onClick={() => void saveKey(key)}
-                  >
-                    Save
-                  </button>
-                </>
-              )}
-            </Row>
-            {missingKey ? (
-              <p className="settings-issue" role="alert">
-                <span className="issue-dot" aria-hidden="true" />
-                Summaries won’t run until you add a key.
-              </p>
-            ) : null}
-          </div>
-          {error ? <p className="settings-notice is-error">{error}</p> : null}
+          <ApiKey settings={settings} />
+          <TestHosted />
         </>
       ) : null}
     </Section>
@@ -645,14 +775,33 @@ function PromptsSection({ settings, update }: SectionProps) {
 const TABS: readonly { id: SettingsTab; label: string; icon: ReactNode }[] = [
   { id: 'general', label: 'General', icon: <GearIcon /> },
   { id: 'sessions', label: 'Sessions', icon: <RecordIcon /> },
-  { id: 'people', label: 'People', icon: <PeopleIcon /> }
+  { id: 'people', label: 'People', icon: <PeopleIcon /> },
+  { id: 'about', label: 'About', icon: <InfoIcon /> }
 ]
+
+function MicrophoneSection({ settings, update }: SectionProps) {
+  const permissions = usePermissions()
+  return (
+    <Section title="Microphone">
+      <Row label="Input device" hint="Used for every session.">
+        <MicrophoneSelect
+          value={settings.micDeviceId}
+          onChange={(micDeviceId) => void update({ micDeviceId })}
+        />
+      </Row>
+      <PermissionRow kind="microphone" status={permissions} />
+    </Section>
+  )
+}
 
 export function SettingsDialog({ settings, update: rawUpdate, issues, onClose }: Props) {
   // Open on the tab with a problem, so the badge that brought the user here leads somewhere.
   const [tab, setTab] = useState<SettingsTab>(() => issues[0]?.tab ?? 'general')
   const active = TABS.find((entry) => entry.id === tab) ?? TABS[0]
   const update = useUndoableUpdate(settings, rawUpdate)
+  const dialog = useRef<HTMLDivElement>(null)
+  // Focus starts in the dialog, Tab stays in it, and goes back where it was on close.
+  useDialogFocus(dialog, true)
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
@@ -665,6 +814,7 @@ export function SettingsDialog({ settings, update: rawUpdate, issues, onClose }:
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div
+        ref={dialog}
         className="modal settings"
         role="dialog"
         aria-modal="true"
@@ -709,20 +859,13 @@ export function SettingsDialog({ settings, update: rawUpdate, issues, onClose }:
             {tab === 'general' ? (
               <>
                 <StorageSection settings={settings} update={rawUpdate} />
-                <Section title="Microphone">
-                  <Row label="Input device" hint="Used for every session.">
-                    <MicrophoneSelect
-                      value={settings.micDeviceId}
-                      onChange={(micDeviceId) => void update({ micDeviceId })}
-                    />
-                  </Row>
-                </Section>
+                <MicrophoneSection settings={settings} update={update} />
                 <StartupSection settings={settings} update={update} />
               </>
             ) : null}
             {tab === 'sessions' ? (
               <>
-                <RecordingSection settings={settings} update={update} />
+                <RecordingSection settings={settings} update={update} saveRetention={rawUpdate} />
                 <SummarySection settings={settings} update={update} />
                 <SearchSection settings={settings} update={update} />
                 <PromptsSection settings={settings} update={update} />
@@ -733,6 +876,7 @@ export function SettingsDialog({ settings, update: rawUpdate, issues, onClose }:
                 <PeopleSettings micDeviceId={settings.micDeviceId} />
               </Section>
             ) : null}
+            {tab === 'about' ? <AboutSettings /> : null}
           </ScrollArea>
         </div>
       </div>

@@ -17,3 +17,12 @@ export function onToast(listener: (toast: ToastMessage) => void): () => void {
     listeners.delete(listener)
   }
 }
+
+/**
+ * Whether `next` should take the toast slot from `current`. A plain notice ("Copied") never
+ * pushes out one that offers an action (Undo): that one stays until it is used or times out, and
+ * the notice is dropped, since showing it late would only confuse.
+ */
+export function replacesToast(current: ToastMessage | null, next: ToastMessage): boolean {
+  return !current?.action || next.action !== undefined
+}

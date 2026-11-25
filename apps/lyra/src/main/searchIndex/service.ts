@@ -174,6 +174,9 @@ function ensureReady(): Promise<void> {
     if (busy.size) await send(child, { type: 'setPaused', paused: true })
     if (embedderChoice) await restoreEmbedder(child, embedderChoice)
     startedAt = Date.now()
+    // A rebuilt index is empty: fill it now, not at the next launch. (Startup and crash restarts
+    // reconcile on their own; this covers a reopen mid-run.)
+    if (opened.recovered) startReconcile()
   })
   ready = opening
   opening.catch((error: unknown) => {

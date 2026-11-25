@@ -31,6 +31,7 @@ const RESTORED_NOTICE_MS = 8000
 const SILENT_MIC_NOTICE = 'Your microphone isn’t picking anything up. Check that it isn’t muted.'
 const NARROWBAND_NOTICE =
   'Your microphone is a headset in call mode, which lowers the quality of your voice and the computer’s audio. A built-in or wired mic transcribes better.'
+const RECORDER_FAILED = 'Recording stopped: couldn’t write audio (is the disk full?)'
 const STALLED_NOTICE =
   'Lyra isn’t receiving any audio, so nothing is being recorded. Try stopping and starting again, or choose another microphone.'
 
@@ -44,6 +45,7 @@ export type RecordOptions = { pageId: string; systemAudio: boolean }
 
 /** One call to `start`; a stop while it's warming up sets `cancelled`. */
 type Attempt = {
+  pageId: string
   cancelled: boolean
   /** Settles once the attempt has let go of everything it opened. */
   done: Promise<void>
@@ -127,6 +129,7 @@ export function useDictation({ getDeviceId }: Options) {
     if (session.current || starting.current) return 'busy'
     let settle = (): void => undefined
     const attempt: Attempt = {
+      pageId: record.pageId,
       cancelled: false,
       done: new Promise<void>((resolve) => {
         settle = resolve
@@ -359,6 +362,22 @@ export function useDictation({ getDeviceId }: Options) {
   }, [])
   const stopRef = useRef(stop)
   stopRef.current = stop
+
+  // Main stopped writing this recording's audio (a full disk, usually): stop capturing through
+  // the normal stop path, then say why, over whatever the stop itself reported.
+  useEffect(
+    () =>
+      window.api.onRecorderFailed((failure) => {
+        const page = recordingPage.current ?? starting.current?.pageId ?? null
+        if (failure.pageId !== page) return
+        log('dictation', 'recorder failed', { track: failure.track })
+        const failed = owner.current
+        void stopRef.current().finally(() => {
+          if (owner.current === failed) setError(RECORDER_FAILED)
+        })
+      }),
+    []
+  )
 
   useEffect(
     () => () => {

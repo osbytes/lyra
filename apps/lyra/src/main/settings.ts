@@ -23,6 +23,8 @@ export function defaultSettings(): Settings {
     audioRetentionDays: 30,
     captureSystemAudio: true,
     transcriptionLanguage: defaultLanguage(app.getPreferredSystemLanguages()),
+    // Empty: Whisper's prompt is then exactly what it was before the setting existed.
+    vocabulary: [],
     notesEngine: 'off',
     cloudProvider: 'anthropic',
     cloudModel: null,

@@ -49,6 +49,7 @@ const SettingsPatchSchema = z
     audioRetentionDays: field.audioRetentionDays.exactOptional(),
     captureSystemAudio: field.captureSystemAudio.exactOptional(),
     transcriptionLanguage: field.transcriptionLanguage.exactOptional(),
+    vocabulary: field.vocabulary.exactOptional(),
     notesEngine: field.notesEngine.exactOptional(),
     cloudProvider: field.cloudProvider.exactOptional(),
     cloudModel: field.cloudModel.exactOptional(),
@@ -87,3 +88,27 @@ export function parseSettingsPatch(
   const kept = Object.fromEntries(Object.entries(keys).filter(([key]) => !bad.has(key)))
   return { patch: SettingsPatchSchema.parse(kept), dropped: [...bad] }
 }
+
+/** `retention:preview`: a "Keep audio" value, checked as the setting itself is. */
+export const RetentionDaysArg = field.audioRetentionDays
+
+/**
+ * `notes:listModels`: a server address, checked as the setting is (https unless on this
+ * computer), so the model list is never asked of an address Settings would refuse to save.
+ */
+export const ServerUrlArg = field.cloudBaseUrl.unwrap()
+
+/**
+ * `models:cancel`: a model file name. Only a download already running under that name is
+ * stopped (`cancelModelDownload` looks it up), so any other name does nothing.
+ */
+export const ModelNameArg = z
+  .string()
+  .max(200)
+  .regex(/^[\w][\w.-]*$/, 'not a model file name')
+
+/** `permissions:openSettings`. Main maps each to a fixed system settings page. */
+export const PermissionKindArg = z.enum(['microphone', 'screen'])
+
+/** `diagnostics:reveal`. Main maps each to a fixed folder. */
+export const RevealTargetArg = z.enum(['logs', 'models'])
