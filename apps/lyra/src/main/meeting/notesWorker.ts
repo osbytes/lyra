@@ -2,12 +2,20 @@
  * Local meeting-notes worker (utilityProcess): runs a small instruct model with
  * llama.cpp, constrained to the notes JSON schema so output always parses.
  */
-import type { GbnfJsonObjectSchema, Llama, LlamaGrammar, LlamaModel } from 'node-llama-cpp'
+import type {
+  GbnfJsonObjectSchema,
+  Llama,
+  LlamaChatSessionRepeatPenalty,
+  LlamaGrammar,
+  LlamaModel
+} from 'node-llama-cpp'
 import { z } from 'zod'
 import { loadLlamaModule } from '../llamaModule'
+import { log } from '../log'
 import { fitText, promptTokens, titlePrompt, type TokenCounter } from './notesChunks'
 import { NOTES_SYSTEM_PROMPTS, TitleSuggestion, TITLE_SYSTEM_PROMPT } from './notesFormat'
 import { callSignal } from './notesJobs'
+import { limitNotesSchema } from './notesLimits'
 import { writeNotes } from './notesPipeline'
 import { NotesWorkerRequest, type NotesWorkerResponse } from './notesProtocol'
 
@@ -21,6 +29,14 @@ const TEMPLATE_TOKENS = 64
 const PROMPT_TIMEOUT_MS = 10 * 60_000
 /** The model (~2.5 GB in memory) is freed after this long unused, so Whisper has room. */
 const IDLE_UNLOAD_MS = 3 * 60_000
+/**
+ * A light penalty on the first try, and a firmer one on the one retry after a reply runs out of
+ * room: a small model that repeats a list item until the cap is the usual cause.
+ */
+const REPEAT_PENALTIES: readonly LlamaChatSessionRepeatPenalty[] = [
+  { lastTokens: 128, penalty: 1.1, penalizeNewLine: false },
+  { lastTokens: 256, penalty: 1.2, frequencyPenalty: 0.2, penalizeNewLine: false }
+]
 
 let llama: Llama | null = null
 let loaded: { path: string; model: LlamaModel } | null = null
@@ -47,7 +63,7 @@ async function unload(): Promise<void> {
  * it builds the grammar, and the reply is parsed against the zod schema in notesLocal.ts.
  */
 function grammarSchema(schema: z.ZodObject): GbnfJsonObjectSchema {
-  return z.toJSONSchema(schema, { target: 'draft-07' }) as GbnfJsonObjectSchema
+  return limitNotesSchema(z.toJSONSchema(schema, { target: 'draft-07' })) as GbnfJsonObjectSchema
 }
 
 /** One prompt in a fresh chat, constrained by `grammar`. */
@@ -55,19 +71,41 @@ async function prompt(
   model: LlamaModel,
   options: { grammar: LlamaGrammar; system: string; text: string; maxTokens: number; signal: AbortSignal }
 ): Promise<unknown> {
+  for (const repeatPenalty of REPEAT_PENALTIES) {
+    // Each try gets the full time: the retry is as long a prompt as the first.
+    const signal = callSignal(options.signal, PROMPT_TIMEOUT_MS)
+    const { stopReason, text } = await promptOnce(model, options, repeatPenalty, signal)
+    // The grammar keeps the JSON valid while it's written, but a reply cut off by the cap is
+    // unfinished; a stronger repeat penalty pulls a looping model out of its loop.
+    if (stopReason === 'maxTokens') {
+      log('notes', 'answer hit the output cap', { maxTokens: options.maxTokens, chars: text.length })
+      continue
+    }
+    // The caller checks the shape with the zod schema.
+    const value: unknown = JSON.parse(text)
+    return value
+  }
+  throw new Error('The notes model ran out of room before finishing. Try again.')
+}
+
+async function promptOnce(
+  model: LlamaModel,
+  options: { grammar: LlamaGrammar; system: string; text: string; maxTokens: number },
+  repeatPenalty: LlamaChatSessionRepeatPenalty,
+  signal: AbortSignal
+): Promise<{ stopReason: string; text: string }> {
   const { LlamaChatSession } = await loadLlamaModule()
   const context = await model.createContext({ contextSize: CONTEXT_SIZE })
   try {
     const session = new LlamaChatSession({ contextSequence: context.getSequence(), systemPrompt: options.system })
-    const text = await session.prompt(options.text, {
+    const reply = await session.promptWithMeta(options.text, {
       grammar: options.grammar,
       temperature: 0.2,
+      repeatPenalty,
       maxTokens: options.maxTokens,
-      signal: callSignal(options.signal, PROMPT_TIMEOUT_MS)
+      signal
     })
-    // The grammar guarantees JSON; the caller checks its shape with the zod schema.
-    const value: unknown = JSON.parse(text)
-    return value
+    return { stopReason: reply.stopReason, text: reply.responseText }
   } finally {
     await context.dispose()
   }

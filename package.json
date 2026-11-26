@@ -8,7 +8,7 @@
     "node": ">=22.18.0 <23"
   },
   "scripts": {
-    "dev": "turbo run dev --filter=lyra",
+    "dev": "pnpm --filter lyra dev",
     "dev:web": "turbo run dev --filter=web",
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
