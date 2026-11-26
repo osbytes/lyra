@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { finished } from 'node:stream/promises'
 import type { AudioTrack, MeetingRecording, TranscriptProgress } from '../shared/types'
 import { getSettings } from './settings'
-import { heardSpans, mergeLivePass, readLiveFile, writeLiveFile, type LiveSegment } from './livePass'
+import { mergeLivePass, readLiveFile, writeLiveFile, type LiveSegment } from './livePass'
 import { log } from './log'
 import { notifyLabeled } from './meeting/events'
 import { resolveInNotes } from './pages'
@@ -84,6 +84,19 @@ let identifySpeakers = true
 /** Off in test runs too, which have no Whisper model; the audio is still recorded. */
 let transcribeAudio = true
 const listeners = new Set<(recording: MeetingRecording) => void>()
+
+/** A take in progress, as its lines are written: what settling its speakers live needs. */
+export type LiveTake = {
+  pageId: string
+  /** Where the take starts on the session timeline, in seconds. */
+  offset: number
+  /** Audio recorded so far, on the session timeline. */
+  seconds: number
+  micPath: string
+  systemPath: string | null
+  writer: TakeWriter
+}
+const chunkListeners = new Set<(take: LiveTake) => void>()
 
 export function trackPath(pageId: string, track: AudioTrack): string {
   return join(sessionAudioDir(pageId), `${track}.wav`)
@@ -180,13 +193,12 @@ async function start(pageId: string, withSystem: boolean): Promise<number> {
     if (existing.state === 'corrupt') {
       log('recorder', 'live.json was unreadable; moved it aside', { pageId, aside: existing.aside })
     }
-    const earlier = heardSpans(existing.state === 'ok' ? existing.file : null)
     // Normally loaded by the window's warm-up already; replays and evals start here.
     if (transcribeAudio) {
       await ensureSpeechVad()
       retryGpu()
     }
-    const writer = new TakeWriter(pageId, tracks.has('system'), earlier)
+    const writer = new TakeWriter(pageId)
     const context = await writer.begin()
     const live: LiveSegment[] = []
     const recording: Recording = {
@@ -208,6 +220,8 @@ async function start(pageId: string, withSystem: boolean): Promise<number> {
         (chunk) => {
           live.push(segmentOf(chunk))
           writer.write(chunk)
+          // Only while it's still being recorded: once stopped, the whole recording is settled.
+          if (active === recording) for (const listener of chunkListeners) listener(liveTake(recording))
         },
         (progress) => {
           reportProgress(recording, progress)
@@ -237,6 +251,18 @@ async function start(pageId: string, withSystem: boolean): Promise<number> {
     }
     for (const file of tracks.values()) await finalize(file)
     throw error
+  }
+}
+
+function liveTake(recording: Recording): LiveTake {
+  const mic = recording.tracks.get('mic')
+  return {
+    pageId: recording.pageId,
+    offset: recording.offset,
+    seconds: (mic?.bytes ?? 0) / BYTES_PER_SECOND,
+    micPath: mic?.path ?? trackPath(recording.pageId, 'mic'),
+    systemPath: recording.tracks.get('system')?.path ?? null,
+    writer: recording.writer
   }
 }
 
@@ -505,6 +531,12 @@ export function onRecordingFinished(listener: (recording: MeetingRecording) => v
   return () => listeners.delete(listener)
 }
 
+/** Called with the take each time more of it has been transcribed, while it is being recorded. */
+export function onLiveChunk(listener: (take: LiveTake) => void): () => void {
+  chunkListeners.add(listener)
+  return () => chunkListeners.delete(listener)
+}
+
 /**
  * The recorder's IPC entry points without a window, so a fixture can replay recorded audio
  * through exactly what a live recording runs (`meeting/replay.ts`).
@@ -517,6 +549,14 @@ export const recorderFixture = {
     return start(pageId, withSystem)
   },
   append,
+  /**
+   * Resolves once the audio appended so far is transcribed. A replay hands audio over far faster
+   * than it was spoken; waiting here keeps the order of a real recording, where the words and the
+   * speakers of a stretch are in before much more has been said.
+   */
+  caughtUp: async (): Promise<void> => {
+    await active?.transcriber.settled()
+  },
   stop
 }
 

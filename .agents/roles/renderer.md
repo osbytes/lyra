@@ -24,6 +24,9 @@ You own `src/renderer/src/` except `audio/` (see the audio-pipeline role).
   renderer subscribes (`onSettingsChanged`, `onPagesChanged`) instead of keeping its own copy.
 - Long-lived callbacks read current values through refs (see `usePages`'s `currentRef`).
 - Keyboard: Ctrl on Windows/Linux, Cmd on macOS — use `shortcutLabel()` for display.
+- Progress and processing states (spinners, "still processing" notices) go in fixed chrome that
+  stays on screen, like the transcript's header bar, never inside a scroller where they can sit
+  past the fold. See "Interface" in [docs/PRINCIPLES.md](../../docs/PRINCIPLES.md).
 - Accessibility: buttons have `type="button"` and an `aria-label` when icon-only; dialogs have
   `role="dialog"` and close on Escape.
 

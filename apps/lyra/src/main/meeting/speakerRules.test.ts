@@ -105,6 +105,30 @@ describe('movedLines and pinnedSpeakers', () => {
   })
 })
 
+describe('movedLines over a live pass', () => {
+  it('leaves a live line where the live pass recorded no speaker for it', () => {
+    // The live pass keeps each chunk under the id its line got, with no speaker; the line shows
+    // the track's speaker. That isn't the user moving it.
+    const transcript = [
+      { id: 'live-mic-0', rawId: null, cluster: 'c0', start: 0, end: 4 },
+      { id: 'live-system-5000', rawId: null, cluster: 'c1', start: 5, end: 7 },
+      { id: 'pass-1-s2', rawId: 'pass-1-s2', cluster: 'c0', start: 8, end: 9 }
+    ]
+    const passes = new Map<string, string | null>([
+      ['live-mic-0', null],
+      ['live-system-5000', null],
+      ['pass-1-s2', 'c1']
+    ])
+    const moved = movedLines(transcript, passes)
+    expect(moved.map((line) => line.id)).toEqual(['pass-1-s2'])
+    expect(pinnedSpeakers([{ start: 1, end: 2 }, { start: 5, end: 6 }, { start: 8.2, end: 8.6 }], moved)).toEqual([
+      null,
+      null,
+      'c0'
+    ])
+  })
+})
+
 describe('movedLines with the user mark', () => {
   it('pins a live line the user assigned, which has no pass to compare with', () => {
     const transcript = [

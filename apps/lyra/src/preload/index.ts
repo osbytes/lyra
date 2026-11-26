@@ -53,6 +53,7 @@ const api: VoicePagesApi = {
   pickFolder: () => ipcRenderer.invoke('settings:pickFolder'),
   moveNotes: () => ipcRenderer.invoke('notes:move'),
   revealNotesFolder: () => ipcRenderer.invoke('notes:reveal'),
+  getAppUsage: () => ipcRenderer.invoke('app:usage'),
   exportIgnoredApps: () => ipcRenderer.invoke('prompts:exportIgnored'),
   importIgnoredApps: () => ipcRenderer.invoke('prompts:importIgnored'),
   onSessionCommand: (callback) => subscribe<SessionCommand>('session:command', callback),
@@ -116,6 +117,7 @@ const api: VoicePagesApi = {
   openPermissionSettings: (kind) => ipcRenderer.invoke('permissions:openSettings', kind),
   copyText: (text) => ipcRenderer.send('clipboard:write', text),
   platform: process.platform,
+  arch: process.arch,
   warmUp: () => ipcRenderer.invoke('whisper:warmUp'),
   log: (scope, message, data) => ipcRenderer.send('log:write', scope, message, data),
   onStatus: (callback) => {

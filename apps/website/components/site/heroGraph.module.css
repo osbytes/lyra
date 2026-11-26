@@ -1,0 +1,303 @@
+/* The hero's graph. Sizes are in container units so the picture scales as one piece. */
+
+.graph {
+  position: relative;
+  width: 100%;
+  max-width: 720px;
+  margin-inline: auto;
+  aspect-ratio: 720 / 600;
+  container-type: inline-size;
+  user-select: none;
+}
+
+/* On a phone the graph is too small at the column's width. Its stars and cards sit in x 77–712
+   of the 720-wide picture, so x 56–732 (that span with some air) is stretched across the screen.
+   The hero clips the rest; this centres the picture and makes it as large as it can be. */
+@media (max-width: 640px) {
+  .graph {
+    --span: 676;
+    width: calc(100vw * 720 / var(--span));
+    max-width: none;
+    margin-inline: 0;
+    margin-left: calc(50% - 50vw - 100vw * 56 / var(--span));
+  }
+}
+
+/* The sky is dark in either theme, so the app's dark tokens and tones apply here whatever the
+   visitor's scheme. Copied from the app's dark block. */
+.graph {
+  color-scheme: dark;
+  --surface: #1e1e24;
+  --border: #2a2a32;
+  --text: #ececf1;
+  --text-muted: #a3a3b2;
+  --text-subtle: #8b8b9a;
+  --accent: #6158f0;
+  --accent-soft: rgba(124, 117, 255, 0.16);
+  --accent-soft-text: #b4b0ff;
+  /* The local model's color: the app's amber speaker tone. */
+  --llm: #f6dd91;
+  --shadow-md: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 12px -2px rgba(0, 0, 0, 0.4);
+}
+
+.graph .dot[data-tone='0'] {
+  --tone-bg: rgba(130, 160, 255, 0.24);
+  --tone-text: #c3d1ff;
+}
+
+.graph .dot[data-tone='1'] {
+  --tone-bg: rgba(255, 160, 120, 0.22);
+  --tone-text: #ffc9ad;
+}
+
+.graph .dot[data-tone='2'] {
+  --tone-bg: rgba(110, 220, 160, 0.2);
+  --tone-text: #aeebc8;
+}
+
+/* A speaker's round mark, as the app draws it; .voice .dot sets the size. */
+.dot {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--tone-text, var(--accent-soft-text));
+  font-weight: 600;
+}
+
+.canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.voice {
+  position: absolute;
+  display: grid;
+  justify-items: center;
+  gap: 1.2cqw;
+  transform: translate(-50%, -2.8cqw);
+}
+
+/* The app's `.speaker-avatar` (its tones, its initials), drawn larger and set over its star. */
+.graph .voice .dot {
+  width: 5.6cqw;
+  height: 5.6cqw;
+  background: color-mix(in srgb, var(--tone-bg, var(--accent-soft)), #0b0b12 35%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--c) 40%, transparent);
+  font-size: 2.4cqw;
+  transition:
+    box-shadow 0.3s,
+    transform 0.3s;
+}
+
+.graph .voice .dot svg {
+  width: 3cqw;
+  height: 3cqw;
+}
+
+.graph .speaking .dot {
+  transform: scale(1.1);
+  box-shadow:
+    0 0 0 1px var(--c),
+    0 0 0 1.2cqw color-mix(in srgb, var(--c) 16%, transparent),
+    0 0 4cqw color-mix(in srgb, var(--c) 30%, transparent);
+}
+
+.voiceName {
+  color: var(--text-muted);
+  font: 500 1.8cqw/1 var(--f-mono);
+  white-space: nowrap;
+}
+
+/* Lyra, Whisper and the local model: a name and what it does, beside the star. */
+.engine {
+  position: absolute;
+  display: grid;
+  gap: 0.6cqw;
+  white-space: nowrap;
+  transition: filter 0.3s;
+}
+
+.right {
+  justify-items: start;
+  transform: translate(2.6cqw, -50%);
+}
+
+.belowLeft {
+  justify-items: end;
+  text-align: right;
+  transform: translate(calc(-100% - 1.2cqw), 2.4cqw);
+}
+
+.engineName {
+  color: var(--text);
+  font: 600 1.9cqw/1 var(--f-ui);
+}
+
+.engineNote {
+  color: var(--text-muted);
+  font: 500 1.35cqw/1 var(--f-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.main .engineName {
+  color: var(--accent-soft-text);
+  font: 400 italic 3.6cqw/1 var(--f-display);
+  letter-spacing: -0.01em;
+}
+
+.lit {
+  filter: drop-shadow(0 0 1.4cqw color-mix(in srgb, var(--c) 70%, transparent));
+}
+
+.lit .engineName {
+  color: color-mix(in srgb, var(--c) 60%, var(--text));
+}
+
+.card {
+  position: absolute;
+  display: grid;
+  gap: 0.7cqw;
+  padding: 1.3cqw 1.7cqw;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 1.2cqw;
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  backdrop-filter: blur(6px);
+  box-shadow: var(--shadow-md);
+  color: var(--text);
+  transform: translateY(-50%);
+  transition:
+    box-shadow 0.4s,
+    opacity 0.4s;
+}
+
+.kind {
+  display: flex;
+  align-items: center;
+  gap: 1cqw;
+  color: var(--text-muted);
+  font: 500 1.4cqw/1 var(--f-mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.kind::before {
+  content: '';
+  flex: none;
+  width: 1.2cqw;
+  height: 1.2cqw;
+  border-radius: 50%;
+  background: var(--c);
+}
+
+.text {
+  overflow: hidden;
+  font: 600 1.85cqw/1.3 var(--f-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A card hanging to the left of its star: `at` is its right edge. */
+.toLeft {
+  translate: -100% 0;
+}
+
+.fresh {
+  box-shadow:
+    0 0 0 0.5cqw color-mix(in srgb, var(--c) 35%, transparent),
+    var(--shadow-md);
+}
+
+/* A card hanging down from `at`, growing as lines arrive. */
+.top {
+  transform: none;
+}
+
+/* A card with nothing to show yet: it fades out but keeps its place. */
+.gone {
+  opacity: 0;
+}
+
+.step {
+  display: grid;
+  gap: 0.7cqw;
+}
+
+.wrap {
+  white-space: normal;
+  text-overflow: clip;
+}
+
+.waiting {
+  color: var(--text-subtle);
+  font: 500 1.6cqw/1.3 var(--f-ui);
+  font-style: italic;
+}
+
+/* A transcript line or an action item: a lead (speaker or checkbox), then the words. */
+.row {
+  display: flex;
+  align-items: baseline;
+  gap: 1cqw;
+  min-width: 0;
+}
+
+.who {
+  flex: none;
+  font: 600 1.6cqw/1.3 var(--f-ui);
+  color: var(--accent-soft-text);
+}
+
+.who[data-tone='0'] {
+  color: #c3d1ff;
+}
+
+.who[data-tone='1'] {
+  color: #ffc9ad;
+}
+
+.who[data-tone='2'] {
+  color: #aeebc8;
+}
+
+.said {
+  overflow: hidden;
+  font: 500 1.6cqw/1.3 var(--f-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.box {
+  flex: none;
+  align-self: center;
+  width: 1.3cqw;
+  height: 1.3cqw;
+  border: 1px solid color-mix(in srgb, var(--c) 70%, transparent);
+  border-radius: 0.3cqw;
+}
+
+.enter {
+  animation: arrive 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes arrive {
+  from {
+    opacity: 0;
+    transform: translateY(1cqw);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .enter {
+    animation: none;
+  }
+}

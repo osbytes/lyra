@@ -42,6 +42,7 @@ lyra meeting <mic.wav> [system.wav]         the real speaker pipeline (pnpm smok
   [--offline] [--no-relabel] [--output <file.json>] [--notes local|cloud] [--enroll <owner.wav>]
   [--asr whisper|parakeet] [--no-context]   eval experiments: the speech model, and Whisper
                                             without the earlier text as its prompt
+  [--larger-speaker-model]                  label with the opt-in speaker-activity model
   [--capture]                               play mic.wav as a fake microphone through the
                                             window's real capture path, in real time
 ```

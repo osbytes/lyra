@@ -74,6 +74,7 @@ import { registerKeyIpc } from './secrets'
 import { createServices, type Services } from './services'
 import { releaseNotesModel, stopNotesWorker } from './meeting/notesLocal'
 import { stopSpeakerWorker } from './meeting/speakers'
+import { startLiveLabels } from './meeting/liveLabels'
 import { relabelSession } from './meeting/relabel'
 import {
   finishRecordingForQuit,
@@ -92,6 +93,7 @@ import { registerUpdater } from './updater'
 import { broadcastStatus, warmUp } from './whisper'
 import { log, logPath } from './log'
 import { searchSessions } from './search'
+import { appUsage, startUsageSampler } from './usage'
 import { closeSearchIndex, setIndexBusy, startSearchIndex } from './searchIndex/service'
 import type { Task } from './tasks/args'
 import { isTaskLaunch, prepareTaskProfile, runTaskIn, taskFromArgv } from './tasks/run'
@@ -334,6 +336,7 @@ function registerIpc(): void {
   ipcMain.handle('pages:search', (_event, query: unknown) =>
     typeof query === 'string' ? searchSessions(query.slice(0, 200)) : []
   )
+  ipcMain.handle('app:usage', () => appUsage())
   ipcMain.handle('pages:get', (_event, id: unknown) => getPage(PageIdArg.parse(id)))
   ipcMain.handle('pages:create', (_event, options: unknown) => createPage(CreatePageArg.parse(options)))
   ipcMain.handle('settings:get', () => getSettings())
@@ -555,11 +558,13 @@ void app.whenReady().then(() => {
   })
 
   registerIpc()
+  startUsageSampler()
   registerSessionIpc()
   // A capture replay records through the window, so it needs the real recorder.
   const recordsForReal = !isTestRun || (task.kind === 'meeting' && task.capture)
   registerRecorderIpc({ identifySpeakers: recordsForReal, transcribe: recordsForReal })
-  // Evals pass --no-relabel to score the track-labeled lines on their own.
+  startLiveLabels()
+  // Evals pass --no-relabel to score the lines as they stood when the recording stopped.
   if (task?.kind !== 'meeting' || task.relabel) {
     onRecordingFinished((recording) => {
       if (identifiesSpeakers()) void relabelSession(recording.pageId)

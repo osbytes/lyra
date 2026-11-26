@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import { keyLabel } from '../lib/format'
-import { scrollBehavior } from '../lib/motion'
 import { ChevronDownIcon, CloseIcon } from './Icons'
 import { tip } from './Tooltip'
 
@@ -84,7 +83,9 @@ function reveal(range: Range): void {
   const pane = element.closest('.scroller')
   const view = pane?.getBoundingClientRect()
   if (pane && view && box.top >= view.top + 24 && box.bottom <= view.bottom - 24) return
-  element.scrollIntoView({ block: 'center', behavior: scrollBehavior() })
+  // Instant, like a browser's find: stepping through matches with Enter shouldn't wait on an
+  // animation, and a smooth scroll makes each jump lag behind the highlight.
+  element.scrollIntoView({ block: 'center', behavior: 'instant' })
 }
 
 /**

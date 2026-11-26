@@ -3,7 +3,8 @@ import { PANEL_WIDTHS } from '../../shared/settings'
 import type { PageSummary, UpdateStatus, WhisperStatus } from '../../shared/types'
 import type { TranscriptSegment } from '../../shared/sessionDoc'
 import { DetailsPanel } from './components/DetailsPanel'
-import { DictationDock } from './components/DictationDock'
+import { DictationDock, DictationMessage } from './components/DictationDock'
+import { ActivityToast, ProcessingToast, Toast, ToastStack } from './components/ToastStack'
 import { Summary } from './components/Summary'
 import { NotesEditor, type NotesHandle } from './components/NotesEditor'
 import { TagRow } from './components/TagRow'
@@ -45,7 +46,7 @@ import {
   undoAt as historyUndoAt
 } from './lib/history'
 import { scrollBehavior } from './lib/motion'
-import { behindLabel } from './lib/status'
+import { behindLabel, dockActivity } from './lib/status'
 import { notify, onToast, replacesToast, type ToastMessage } from './lib/toast'
 import { tip } from './components/Tooltip'
 import lyraIcon from './assets/lyra-icon.png'
@@ -416,11 +417,18 @@ export default function App(): React.JSX.Element {
     })
   }
 
+  const activity = dockActivity(status, progress ? behindLabel(progress) : null)
+  const activityElement = activity ? <ActivityToast activity={activity} /> : null
+
   // Hovering or focusing the toast holds it; F6 reaches its button from anywhere (see onKey).
   const toastElement = toast ? (
-    <div
-      className="toast"
+    <Toast
       role="status"
+      text={toast.text}
+      onDismiss={() => {
+        setToast(null)
+        leaveToast()
+      }}
       onMouseMove={() => {
         if (heldToast !== toast) setHeldToast(toast)
       }}
@@ -433,24 +441,25 @@ export default function App(): React.JSX.Element {
         setToast(null)
         leaveToast()
       }}
-    >
-      <span>{toast.text}</span>
-      {toast.action ? (
-        <button
-          ref={toastButton}
-          type="button"
-          aria-keyshortcuts="F6"
-          {...tip(toast.action.label, 'F6')}
-          onClick={() => {
-            toast.action?.run()
-            setToast(null)
-            leaveToast()
-          }}
-        >
-          {toast.action.label}
-        </button>
-      ) : null}
-    </div>
+      action={
+        toast.action ? (
+          <button
+            ref={toastButton}
+            type="button"
+            className="toast-action"
+            aria-keyshortcuts="F6"
+            {...tip(toast.action.label, 'F6')}
+            onClick={() => {
+              toast.action?.run()
+              setToast(null)
+              leaveToast()
+            }}
+          >
+            {toast.action.label}
+          </button>
+        ) : null
+      }
+    />
   ) : null
 
   const copy = (): void => {
@@ -889,35 +898,42 @@ export default function App(): React.JSX.Element {
             <DictationDock
               phase={dictation.phase}
               micName={dictation.micName}
-              status={status}
-              error={dictation.error}
-              notice={dictation.notice}
               micDeviceId={settings?.micDeviceId ?? null}
               onMicChange={(micDeviceId) => void updateSettings({ micDeviceId })}
               systemAudio={systemAudio}
               onSystemAudioChange={(captureSystemAudio) => void updateSettings({ captureSystemAudio })}
               subscribeLevel={dictation.subscribeLevel}
               transcribing={transcribing}
-              behind={progress ? behindLabel(progress) : null}
               onToggle={toggleDictation}
               startedAt={listeningSince}
               elsewhere={elsewhere}
-            >
+            />
+            <ToastStack>
+              <ProcessingToast pageId={current.id} />
+              {activityElement}
               {dictation.recording && systemAudio && settings && !settings.meetingNoticeSeen ? (
-                <div className="banner" role="status">
-                  <span className="banner-dot" aria-hidden="true" />
-                  Recording the computer’s audio too. Make sure everyone on the call is OK with it.
-                  <button
-                    className="btn"
-                    type="button"
-                    onClick={() => void updateSettings({ meetingNoticeSeen: true })}
-                  >
-                    Got it
-                  </button>
-                </div>
+                <Toast
+                  role="status"
+                  icon="dot"
+                  text="Recording the computer’s audio too. Make sure everyone on the call is OK with it."
+                  action={
+                    <button
+                      className="toast-action"
+                      type="button"
+                      onClick={() => void updateSettings({ meetingNoticeSeen: true })}
+                    >
+                      Got it
+                    </button>
+                  }
+                />
               ) : null}
+              <DictationMessage
+                error={dictation.error}
+                notice={dictation.notice}
+                onDismiss={dictation.dismissMessage}
+              />
               {toastElement}
-            </DictationDock>
+            </ToastStack>
           </div>
         ) : (
           <div className="empty">
@@ -942,7 +958,10 @@ export default function App(): React.JSX.Element {
                 </span>
               ) : null}
             </div>
-            {toastElement ? <div className="dock-area">{toastElement}</div> : null}
+            <ToastStack>
+              {activityElement}
+              {toastElement}
+            </ToastStack>
           </div>
         )}
         </div>

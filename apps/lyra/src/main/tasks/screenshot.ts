@@ -10,9 +10,10 @@ import {
 import { editDoc, replaceTranscript, addTag, upsertSpeaker } from '../../shared/sessionDoc'
 import { addPerson } from '../voices'
 import { log } from '../log'
+import type { MeetingStatus } from '../../shared/types'
 
 /** A labeled meeting, as the speaker pipeline would leave it, for reviewing the transcript UI. */
-async function seedScreenshotMeeting(): Promise<void> {
+async function seedScreenshotMeeting(): Promise<string> {
   const meeting = await createPage({ startedAt: '2026-11-23T10:30:00' })
   const sam = await addPerson('Sam', [0.1, 0.2, 0.3], false)
   const alex = await addPerson('Alex', [0.3, 0.2, 0.1], false)
@@ -44,10 +45,12 @@ async function seedScreenshotMeeting(): Promise<void> {
       ], 'seed')
     }, 'seed')
   })
+  return meeting.id
 }
 
-async function seedScreenshotPages(withMeeting: boolean): Promise<void> {
-  if (withMeeting) await seedScreenshotMeeting()
+/** Seeds the sample pages; resolves to the meeting's id when one was seeded. */
+async function seedScreenshotPages(withMeeting: boolean): Promise<string | null> {
+  const meetingId = withMeeting ? await seedScreenshotMeeting() : null
   const team = await createPage()
   await savePage({
     id: team.id,
@@ -79,6 +82,7 @@ async function seedScreenshotPages(withMeeting: boolean): Promise<void> {
       '- Export a page as plain text or markdown\n\n' +
       'The core loop is already good: open a page, talk, edit, copy, come back later.'
   })
+  return meetingId
 }
 
 /**
@@ -275,7 +279,7 @@ export async function captureScreenshot(win: BrowserWindow, reviewDir: string | 
         await save(reviewDir, `empty-${theme}.png`)
       }
     }
-    await seedScreenshotPages(reviewDir !== null)
+    const meetingId = await seedScreenshotPages(reviewDir !== null)
     nativeTheme.themeSource = 'light'
     await reload()
     // out/main → the repository's docs/ folder, which the README links to.
@@ -300,9 +304,20 @@ export async function captureScreenshot(win: BrowserWindow, reviewDir: string | 
         await settle()
         await save(reviewDir, `settings-${theme}.png`)
         // The tabs after General, in nav order.
-        for (const [index, tab] of ['sessions', 'people'].entries()) {
+        for (const [index, tab] of ['sessions', 'people', 'performance', 'about'].entries()) {
           await click(`.settings-nav button:nth-of-type(${String(index + 2)})`)
           await settle()
+          if (tab === 'performance') {
+            // The graphs appear once the first 5-second sample is in; then show the hover readout.
+            await win.webContents.executeJavaScript(`new Promise((resolve) => {
+              const poll = () => document.querySelector('.usage-chart-plot') ? resolve() : setTimeout(poll, 250)
+              poll()
+            })`)
+            await win.webContents.executeJavaScript(
+              `document.querySelector('.usage-chart-plot')?.focus()`
+            )
+            await settle()
+          }
           await save(reviewDir, `settings-${tab}-${theme}.png`)
           if (tab === 'sessions') {
             // Cloud summaries: provider, model and key rows (no key in a throwaway profile).
@@ -345,6 +360,30 @@ export async function captureScreenshot(win: BrowserWindow, reviewDir: string | 
         await win.webContents.executeJavaScript(`document.querySelector('.transcript')?.scrollIntoView()`)
         await settle()
         await save(reviewDir, `meeting-${theme}.png`)
+        // The same view with the details panel open, before any popover: the website's picture.
+        await pressShortcut('.')
+        await settle()
+        await save(reviewDir, `meeting-panel-${theme}.png`)
+        await pressShortcut('.')
+        await settle()
+        // Still processing, scrolled to the end: the status stays in view in the toast stack, with
+        // the time left, and the sidebar marks the session.
+        if (meetingId) {
+          const busy: MeetingStatus = {
+            pageId: meetingId,
+            task: 'speakers',
+            state: 'diarizing',
+            progress: 0,
+            estimate: { startedAt: Date.now() - 40_000, expectedMs: 160_000 }
+          }
+          win.webContents.send('meeting:status', busy)
+          await win.webContents.executeJavaScript(
+            `document.querySelector('.transcript-pane')?.scrollTo({ top: 1e6 })`
+          )
+          await settle()
+          await save(reviewDir, `processing-${theme}.png`)
+          win.webContents.send('meeting:status', { ...busy, state: 'done', progress: 1 })
+        }
         // The transcript bar's layouts: collapsed to the bar, then the transcript alone.
         const pane = async (label: string): Promise<void> => {
           await click(`.transcript-bar-tools button[aria-label="${label}"]`)

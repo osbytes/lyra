@@ -91,6 +91,14 @@ export const RecordIcon = () => (
   </Icon>
 )
 
+export const GaugeIcon = () => (
+  <Icon width="15" height="15">
+    <path d="M4.5 18a9 9 0 1 1 15 0" />
+    <path d="m12 14 4-5" />
+    <circle cx="12" cy="14" r="1.2" fill="currentColor" />
+  </Icon>
+)
+
 export const PeopleIcon = () => (
   <Icon width="15" height="15">
     <circle cx="9" cy="8" r="3.5" />

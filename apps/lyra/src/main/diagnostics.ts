@@ -7,11 +7,13 @@ import { diagnosticsText, notesEngineLabel, shortenHome } from './diagnosticsTex
 import { log, logPath } from './log'
 import { modelsDir } from './models'
 import { notesDir } from './pages'
+import { machineInfo, sampleResources } from './resources'
 import { getSettings } from './settings'
 import { MODEL_LABEL, whisperBackend } from './whisper'
 
 /**
- * Settings → About: versions, where Lyra keeps its files and how much room they take. Sizes come
+ * Settings → About: versions, the machine and what it's using, where Lyra keeps its files and
+ * how much room they take. Sizes come
  * from an async walk that stops after `MAX_ENTRIES`, so a huge folder costs a bounded amount of
  * work and the main process keeps answering while it runs. Asked for only when the section opens.
  */
@@ -96,6 +98,8 @@ export async function getDiagnostics(): Promise<Diagnostics> {
     node: process.versions.node,
     whisper: { model: MODEL_LABEL, backend: whisperUsed ? whisperBackend() : null },
     notesEngine: notesEngineLabel(getSettings()),
+    machine: await machineInfo(),
+    resources: await sampleResources('diagnostics').catch(() => null),
     places
   }
   log('diagnostics', 'gathered', { ms: Date.now() - started })

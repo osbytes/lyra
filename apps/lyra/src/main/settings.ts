@@ -32,6 +32,8 @@ export function defaultSettings(): Settings {
     meetingNoticeSeen: false,
     // Off until asked for: it downloads a model and works the CPU while it indexes.
     semanticSearch: false,
+    // Off until asked for: a large download, and more work for the CPU after each session.
+    largerSpeakerModel: false,
     detailsPanel: false,
     sidebar: true,
     sidebarWidth: PANEL_WIDTHS.sidebar.initial,

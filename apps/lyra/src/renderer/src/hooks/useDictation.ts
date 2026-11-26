@@ -401,6 +401,12 @@ export function useDictation({ getDeviceId }: Options) {
     []
   )
 
+  /** Clears the error or notice the user closed; a later problem shows a new one. */
+  const dismissMessage = useCallback(() => {
+    setError(null)
+    setNotice(null)
+  }, [])
+
   return {
     phase,
     recording: phase === 'listening' || phase === 'starting',
@@ -409,6 +415,7 @@ export function useDictation({ getDeviceId }: Options) {
     micName,
     error,
     notice,
+    dismissMessage,
     start,
     stop,
     subscribeLevel
