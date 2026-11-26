@@ -10,6 +10,19 @@
   user-select: none;
 }
 
+/* On a phone the graph is too small at the column's width. Its stars and cards sit in x 77–712
+   of the 720-wide picture, so x 56–732 (that span with some air) is stretched across the screen.
+   The hero clips the rest; this centres the picture and makes it as large as it can be. */
+@media (max-width: 640px) {
+  .graph {
+    --span: 676;
+    width: calc(100vw * 720 / var(--span));
+    max-width: none;
+    margin-inline: 0;
+    margin-left: calc(50% - 50vw - 100vw * 56 / var(--span));
+  }
+}
+
 /* The sky is dark in either theme, so the app's dark tokens and tones apply here whatever the
    visitor's scheme. Copied from the app's dark block. */
 .graph {
