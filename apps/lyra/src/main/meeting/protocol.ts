@@ -4,8 +4,8 @@ export type SpeakerModels = {
   segmentation: string
   embedding: string
   /**
-   * The speaker-activity model, when the user turned it on: a finished recording's turns then
-   * come from it (`speakerActivity.ts`) and voiceprints only name the speakers it found.
+   * The speaker-activity model, when the user turned it on: turns then come from it
+   * (`speakerActivity.ts`) and voiceprints only name the speakers it found.
    */
   activity: string | null
 }

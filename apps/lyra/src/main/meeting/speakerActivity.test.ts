@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   ACTIVITY_HIDDEN,
   ACTIVITY_SPEAKERS,
+  activityReader,
   activityTurns,
   readActivity,
   withoutEchoes,
@@ -117,5 +118,45 @@ describe('readActivity', () => {
     // Only the new frames' answers are kept: speaker 1 everywhere, speaker 0 nowhere.
     const turns = activityTurns(result)
     expect(turns).toEqual([{ start: 0, end: 60.01, speaker: 1 }])
+  })
+})
+
+describe('activityReader', () => {
+  it('settles the same answers for a recording read as it grows as for one read whole', async () => {
+    // 70 s of features: 7001 frames. Band 0 of each frame says who speaks (speaker 0 or 1), and
+    // speaker 2 is on whenever the step had cached frames to read with, so the answers depend on
+    // the cache being carried the same way.
+    const frames = 7001
+    const data = new Float32Array(frames * 128)
+    for (let frame = 0; frame < frames; frame++) data[frame * 128] = Math.floor(frame / 250) % 2 === 0 ? 1 : -1
+    const run = (step: ActivityStep) => {
+      const stacked = Math.ceil(step.featureFrames / 8)
+      const logits = new Float32Array((step.cached.length + stacked) * 8 * ACTIVITY_SPEAKERS).fill(-10)
+      for (let i = 0; i < step.featureFrames; i++) {
+        const at = (step.cached.length * 8 + i) * ACTIVITY_SPEAKERS
+        logits[at + ((step.features[i * 128] ?? 0) > 0 ? 0 : 1)] = 10
+        if (step.cached.length > 0) logits[at + 2] = 10
+      }
+      return Promise.resolve({
+        logits,
+        frames: new Float32Array(stacked * ACTIVITY_HIDDEN),
+        silence: new Float32Array(ACTIVITY_HIDDEN)
+      })
+    }
+    const whole = await activityReader().advance({ data, frames }, run, true)
+
+    // Growing: first 40 s (4001 frames, the last not yet a frame), then the rest.
+    const reader = activityReader()
+    const early = await reader.advance({ data: data.subarray(0, 4001 * 128), frames: 4001 }, run, false)
+    // One whole step fits in 4000 frames (340 + 40 ahead = 380 model frames = 3040), so 340
+    // model frames are settled: 27.2 s. The other 12.8 s are answered provisionally.
+    expect(reader.settledFrames()).toBe(2720)
+    expect(early.frames).toBe(4000)
+    const settled = reader.settledFrames()
+    const late = await reader.advance({ data: data.subarray(settled * 128), frames: frames - settled }, run, true)
+    expect(late.frames).toBe(whole.frames)
+    expect(Array.from(late.probabilities)).toEqual(Array.from(whole.probabilities))
+    // And the provisional answers for the middle were the first speaker's turn pattern too.
+    expect(activityTurns(early).filter((turn) => turn.speaker < 2).length).toBeGreaterThan(0)
   })
 })

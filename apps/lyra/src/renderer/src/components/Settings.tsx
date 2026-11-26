@@ -436,7 +436,7 @@ function RecordingSection({
       {mac && window.api.arch === 'x64' ? null : (
         <Row
           label="Larger speaker model"
-          hint="Tells people apart more reliably once a session ends, most of all in a room with several people. A 121 MB download the first time, and labeling takes longer on slower computers."
+          hint="Tells people apart more reliably, most of all in a room with several people. A 121 MB download the first time, and labeling takes longer on slower computers."
         >
           <Switch
             label="Larger speaker model"

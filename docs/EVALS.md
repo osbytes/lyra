@@ -66,7 +66,7 @@ the number of sessions or scenarios. Sessions WER is driven by overlapping speec
 | 2026-11-25 | before turn edges | calls (macOS voices) | live | 8 | 3.3% | 6.5% | 6.8% |
 | 2026-11-25 | turn edges (`turnEdges.ts`) | calls (macOS voices) | live | 8 | 3.3% | 6.7% | 7.0% |
 | 2026-11-25 | before the larger speaker model | AMI far-field (ES2004a, IS1009a, TS3003a, EN2002a; 10 min each) | live | 4 (40 min) | 39.2% | 47.6% | 31.1% |
-| 2026-11-25 | larger speaker model on (`--larger-speaker-model`) | AMI far-field, the same four | live | 4 (40 min) | 39.4% | 42.7% | 25.2% |
+| 2026-11-25 | larger speaker model on (`--larger-speaker-model`) | AMI far-field, the same four | live | 4 (40 min) | 39.3% | 42.6% | 25.1% |
 | 2026-11-25 | larger speaker model on | sessions v2 mini, quick | live | 5 | 20.5% | 26.5% | 17.3% |
 
 ## The larger speaker model
@@ -75,7 +75,7 @@ the number of sessions or scenarios. Sessions WER is driven by overlapping speec
 Nemotron 3 Diarization (`src/main/meeting/speakerActivity.ts`): one network that reads the audio
 and says, for each 10 ms, which of up to eight people are speaking, instead of voiceprints of
 short windows clustered. `--larger-speaker-model` turns it on for an eval run. Voiceprints still
-name the people it finds, and the labels shown while recording still come from the rolling rounds.
+name the people it finds.
 
 - **Real meetings: clearly better.** On the four AMI far-field excerpts (four people each, one
   table mic) it found 4, 4, 3 and 4 people where the standard path found 6, 6, 4 and 7; speaker
@@ -95,9 +95,12 @@ name the people it finds, and the labels shown while recording still come from t
 - **Cost.** About 25 ms per second of audio on four threads (Apple M-series, 8-bit weights),
   against about 58 for the standard path; a 121 MB model and ONNX Runtime (about 90 MB in the
   macOS build). ONNX Runtime has no build for Intel Macs, where the setting is hidden.
-- **Not yet:** labels while recording still use the standard path, so more of them change after
-  the stop when this is on (`relabeled` 12.1% → 16.1% on AMI). The model can stream; that is the
-  next step.
+- **While recording.** The model reads audio in fixed half-minute steps, each with what it kept
+  of the steps before, so a step's answer never changes. The rounds while recording read on from
+  the last settled step, and the pass after the stop reads the same steps again: on AMI
+  `relabeled` is 0.1% with this on (12.1% on the standard path), and the labels as shown while
+  recording (`--pipeline stream`) score cpWER 48.2% against 53.9%. What is newer than the last
+  whole step is answered provisionally and read again next round.
 
 ## Where the speaker errors are
 

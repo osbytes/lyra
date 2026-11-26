@@ -90,8 +90,8 @@ export const SettingsSchema = z.object({
   /** Search by meaning as well as by words, with a model on this computer (~146 MB). */
   semanticSearch: z.boolean(),
   /**
-   * Tell speakers apart with a larger model once a recording ends (a 121 MB download; slower
-   * computers take longer to label a session).
+   * Tell speakers apart with a larger model (a 121 MB download; slower computers take longer
+   * to label a session).
    */
   largerSpeakerModel: z.boolean()
 })

@@ -8,7 +8,7 @@
  * This file is the part without the model runtime: feeding a recording through in chunks, and
  * turning the probabilities into turns. `activityModel.ts` runs the network.
  */
-import { MEL_BANDS, MEL_HOP, MEL_SAMPLE_RATE, logMel } from './melFeatures'
+import { MEL_BANDS, MEL_HOP, MEL_SAMPLE_RATE, logMel, type MelFeatures } from './melFeatures'
 import { WHOLE_RECORDING, speakerCache } from './speakerCache'
 
 /** The model reads eight 10 ms frames as one. */
@@ -48,50 +48,108 @@ export type Activity = {
 
 const sigmoid = (x: number): number => 1 / (1 + Math.exp(-x))
 
-/** Reads a whole recording, half a minute at a step, carrying the speaker cache between steps. */
-export async function readActivity(audio: Float32Array, run: RunStep): Promise<Activity> {
-  const mel = logMel(audio)
-  const stacked = Math.ceil(mel.frames / STACK)
+/**
+ * Reads a recording as it grows. The model works through audio in fixed steps from the start,
+ * each read with what the speaker cache kept of the steps before, so a step's answer never
+ * changes once given: what is read while recording is what the pass after the stop reads too,
+ * and a voice keeps its channel from one round to the next.
+ */
+export type ActivityReader = {
+  /** 10 ms frames whose answer is final. */
+  settledFrames: () => number
+  /**
+   * Takes the features from `settledFrames()` on. Every whole step in them is settled; what is
+   * left over (under half a minute) is read too, but provisionally: it is read again, with more
+   * audio after it, next time. `last` settles everything: the recording has ended.
+   */
+  advance: (features: MelFeatures, run: RunStep, last: boolean) => Promise<Activity>
+}
+
+export function activityReader(): ActivityReader {
   const cache = speakerCache()
-  const probabilities = new Float32Array(mel.frames * ACTIVITY_SPEAKERS)
-  for (let start = 0; start < stacked; start += CHUNK_FRAMES) {
-    const end = Math.min(start + CHUNK_FRAMES, stacked)
-    const ahead = Math.min(end + LOOK_AHEAD_FRAMES, stacked)
+  let settled = new Float32Array(0)
+  const settledFrames = (): number => settled.length / ACTIVITY_SPEAKERS
+
+  /** One step over model frames [start, end) of `mel`, looking ahead to `ahead`. */
+  async function step(
+    mel: MelFeatures,
+    run: RunStep,
+    span: { start: number; end: number; ahead: number },
+    keep: boolean
+  ): Promise<Float32Array> {
     const cached = cache.frames()
-    const from = start * STACK
-    const to = Math.min(ahead * STACK, mel.frames)
+    const from = span.start * STACK
+    const to = Math.min(span.ahead * STACK, mel.frames)
     const result = await run({
       features: mel.data.subarray(from * MEL_BANDS, to * MEL_BANDS),
       featureFrames: to - from,
       cached
     })
-    const seen = [
-      ...cached,
-      ...Array.from({ length: ahead - start }, (_, i) =>
-        result.frames.slice(i * ACTIVITY_HIDDEN, (i + 1) * ACTIVITY_HIDDEN)
-      )
-    ]
-    // The cache scores frames at the model's own rate: the mean over each stack of eight.
-    const perFrame = seen.map((_, index) => {
-      const row = new Float32Array(ACTIVITY_SPEAKERS)
-      for (let k = 0; k < STACK; k++) {
-        for (let speaker = 0; speaker < ACTIVITY_SPEAKERS; speaker++) {
-          const logit = result.logits[(index * STACK + k) * ACTIVITY_SPEAKERS + speaker]
-          row[speaker] = (row[speaker] ?? 0) + (logit === undefined ? 0 : sigmoid(logit) / STACK)
+    if (keep) {
+      const seen = [
+        ...cached,
+        ...Array.from({ length: span.ahead - span.start }, (_, i) =>
+          result.frames.slice(i * ACTIVITY_HIDDEN, (i + 1) * ACTIVITY_HIDDEN)
+        )
+      ]
+      // The cache scores frames at the model's own rate: the mean over each stack of eight.
+      const perFrame = seen.map((_, index) => {
+        const row = new Float32Array(ACTIVITY_SPEAKERS)
+        for (let k = 0; k < STACK; k++) {
+          for (let speaker = 0; speaker < ACTIVITY_SPEAKERS; speaker++) {
+            const logit = result.logits[(index * STACK + k) * ACTIVITY_SPEAKERS + speaker]
+            row[speaker] = (row[speaker] ?? 0) + (logit === undefined ? 0 : sigmoid(logit) / STACK)
+          }
         }
+        return row
+      })
+      cache.update(seen, perFrame, result.silence, span.end - span.start)
+    }
+    const frames = Math.min(span.end * STACK, mel.frames) - from
+    const probabilities = new Float32Array(frames * ACTIVITY_SPEAKERS)
+    const offset = cached.length * STACK
+    for (let i = 0; i < probabilities.length; i++) {
+      const logit = result.logits[offset * ACTIVITY_SPEAKERS + i]
+      if (logit !== undefined) probabilities[i] = sigmoid(logit)
+    }
+    return probabilities
+  }
+
+  return {
+    settledFrames,
+    async advance(mel, run, last) {
+      // Until the recording ends, the frame that reaches past the audio isn't one yet.
+      const usable = last ? mel.frames : Math.floor((mel.frames - 1) / STACK) * STACK
+      const stacked = Math.ceil(usable / STACK)
+      const view = { data: mel.data, frames: usable }
+      let start = 0
+      const parts: Float32Array[] = [settled]
+      while (last ? start < stacked : start + CHUNK_FRAMES + LOOK_AHEAD_FRAMES <= stacked) {
+        const end = Math.min(start + CHUNK_FRAMES, stacked)
+        parts.push(await step(view, run, { start, end, ahead: Math.min(end + LOOK_AHEAD_FRAMES, stacked) }, true))
+        start = end
       }
-      return row
-    })
-    cache.update(seen, perFrame, result.silence, end - start)
-    const offset = cached.length * STACK - from
-    for (let frame = from; frame < Math.min(end * STACK, mel.frames); frame++) {
-      for (let speaker = 0; speaker < ACTIVITY_SPEAKERS; speaker++) {
-        const logit = result.logits[(offset + frame) * ACTIVITY_SPEAKERS + speaker]
-        if (logit !== undefined) probabilities[frame * ACTIVITY_SPEAKERS + speaker] = sigmoid(logit)
+      const next = new Float32Array(parts.reduce((sum, part) => sum + part.length, 0))
+      let at = 0
+      for (const part of parts) {
+        next.set(part, at)
+        at += part.length
       }
+      settled = next
+      if (start >= stacked) return { probabilities: settled, frames: settledFrames() }
+      // What is left over: read with the cache as it stands, and not kept.
+      const tail = await step(view, run, { start, end: stacked, ahead: stacked }, false)
+      const all = new Float32Array(settled.length + tail.length)
+      all.set(settled)
+      all.set(tail, settled.length)
+      return { probabilities: all, frames: all.length / ACTIVITY_SPEAKERS }
     }
   }
-  return { probabilities, frames: mel.frames }
+}
+
+/** Reads a whole, finished recording. */
+export function readActivity(audio: Float32Array, run: RunStep): Promise<Activity> {
+  return activityReader().advance(logMel(audio), run, true)
 }
 
 export type Turn = { start: number; end: number; speaker: number }
