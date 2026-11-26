@@ -281,21 +281,43 @@ const hasEdits = (segment: TranscriptSegment): boolean => segment.edited || segm
 const overlap = (a: { start: number; end: number }, b: { start: number; end: number }): number =>
   Math.max(0, Math.min(a.end, b.end) - Math.max(a.start, b.start))
 
+/** Whether a pass's line is the one already in the transcript, down to its words and speaker. */
+function unchanged(old: TranscriptSegment, segment: NewSegment): boolean {
+  return (
+    old.id === segment.id &&
+    old.rawId === segment.rawId &&
+    old.start === segment.start &&
+    old.end === segment.end &&
+    old.cluster === segment.cluster &&
+    old.userCluster === (segment.userCluster === true) &&
+    old.confidence === segment.confidence &&
+    old.original === segment.text
+  )
+}
+
 /**
  * Replaces the transcript with a new pass. A line the user edited keeps their text, and a line
  * whose speaker the user chose keeps that speaker (while it still exists), when the new pass has
  * a line over the same stretch of audio, so re-labeling never undoes either.
+ *
+ * Lines at the start that the pass leaves exactly as they are stay in place: while recording the
+ * speakers are settled again every half minute, mostly changing only the newest lines, and a
+ * line that is rewritten loses the cursor of whoever is editing it.
  */
 export function replaceTranscript(doc: Y.Doc, segments: NewSegment[], origin: unknown): void {
   doc.transact(() => {
     const transcript = docTranscript(doc)
     const speakers = speakersOf(doc)
-    const kept = transcript
-      .toArray()
-      .map(readSegment)
-      .filter((segment) => hasEdits(segment) || segment.userCluster)
+    const existing = transcript.toArray().map(readSegment)
+    let same = 0
+    for (const segment of segments) {
+      const old = existing[same]
+      if (!old || !unchanged(old, segment)) break
+      same++
+    }
+    const kept = existing.slice(same).filter((segment) => hasEdits(segment) || segment.userCluster)
     const used = new Set<string>()
-    const entries = segments.map((segment) => {
+    const entries = segments.slice(same).map((segment) => {
       const keep = kept
         .filter((old) => !used.has(old.id))
         .map((old) => ({ old, shared: overlap(old, segment) }))
@@ -309,8 +331,8 @@ export function replaceTranscript(doc: Y.Doc, segments: NewSegment[], origin: un
           : undefined
       return segmentMap(segment, { text: hasEdits(keep) ? keep : undefined, cluster })
     })
-    transcript.delete(0, transcript.length)
-    transcript.insert(0, entries)
+    if (transcript.length > same) transcript.delete(same, transcript.length - same)
+    if (entries.length) transcript.insert(same, entries)
   }, origin)
 }
 

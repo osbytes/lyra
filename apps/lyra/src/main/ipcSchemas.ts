@@ -59,7 +59,8 @@ const SettingsPatchSchema = z
     sidebarWidth: field.sidebarWidth.exactOptional(),
     detailsWidth: field.detailsWidth.exactOptional(),
     meetingNoticeSeen: field.meetingNoticeSeen.exactOptional(),
-    semanticSearch: field.semanticSearch.exactOptional()
+    semanticSearch: field.semanticSearch.exactOptional(),
+    largerSpeakerModel: field.largerSpeakerModel.exactOptional()
   })
   .strict()
 
@@ -106,6 +107,9 @@ export const ModelNameArg = z
   .string()
   .max(200)
   .regex(/^[\w][\w.-]*$/, 'not a model file name')
+
+/** `models:retry`: which feature's model to fetch again. */
+export const ModelFeatureArg = z.enum(['semanticSearch', 'localNotes'])
 
 /** `permissions:openSettings`. Main maps each to a fixed system settings page. */
 export const PermissionKindArg = z.enum(['microphone', 'screen'])

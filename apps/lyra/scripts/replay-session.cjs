@@ -5,7 +5,7 @@
 //   pnpm replay:session C:\notes\.sessions\2026-11-23_15-44-01.txt   # or its folder
 //   pnpm replay:session <session> --pipelines live,stream,offline --reference ref.json
 //
-// For each pipeline (live: what the app runs; stream: track labels before relabel; offline:
+// For each pipeline (live: what the app runs; stream: the labels given while recording; offline:
 // diarize then transcribe) it prints who spoke each line and how long each speaker talked,
 // next to what the session got when it was recorded. With --reference (the run-eval format:
 // { segments: [{ speaker, start, end, text }] }) each run is also scored. Hypotheses go to

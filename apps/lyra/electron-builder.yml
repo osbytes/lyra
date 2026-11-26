@@ -20,12 +20,16 @@ asarUnpack:
   - '**/*.so.*'
   - node_modules/@kutalia/whisper-node-addon/**
   - node_modules/sherpa-onnx-*/**
+  - node_modules/onnxruntime-node/**
 # node-llama-cpp ships as its own npm install (see scripts/prepare-llama.cjs).
 extraResources:
   - from: build/llama/node_modules
     to: llama/node_modules
+# onnxruntime-node carries every platform's runtime; each build keeps its own.
 win:
   icon: build/icon.png
+  files:
+    - '!node_modules/onnxruntime-node/bin/*/{darwin,linux}/**'
   executableName: Lyra
   target:
     - nsis
@@ -36,6 +40,8 @@ nsis:
   createDesktopShortcut: always
 mac:
   icon: build/icon.png
+  files:
+    - '!node_modules/onnxruntime-node/bin/*/{win32,linux}/**'
   extraResources:
     - from: build/helpers/micwatch
       to: micwatch
@@ -53,6 +59,8 @@ dmg:
   artifactName: ${name}-${version}-${arch}.${ext}
 linux:
   icon: build/icon.png
+  files:
+    - '!node_modules/onnxruntime-node/bin/*/{darwin,win32}/**'
   target:
     - AppImage
     - deb

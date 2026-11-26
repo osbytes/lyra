@@ -1,10 +1,13 @@
 import { app, powerMonitor } from 'electron'
+import { metricsReader } from './appMetrics'
 import { statfs } from 'node:fs/promises'
 import { cpus, freemem, loadavg, totalmem } from 'node:os'
+import { z } from 'zod'
+import type { MachineInfo, ResourceSample } from '../shared/types'
 import { log } from './log'
 import { isRelabeling } from './meeting/relabel'
 import { notesDir } from './pages'
-import { pressure, summarizeProcesses } from './resourceUsage'
+import { gpuLabel, pressure, summarizeProcesses } from './resourceUsage'
 import { onSessionState } from './session'
 
 /**
@@ -19,6 +22,7 @@ const IDLE_MS = 10 * 60_000
 let recording = false
 let lastAt = 0
 let lastPressure = ''
+const readMetrics = metricsReader()
 
 function thermalState(): string | null {
   // macOS only; elsewhere Electron reports 'unknown'.
@@ -39,7 +43,25 @@ async function diskFreeGb(): Promise<number | null> {
   return null
 }
 
-async function sample(why: string): Promise<void> {
+const GpuInfo = z.object({
+  gpuDevice: z.array(z.object({ active: z.boolean().optional(), vendorId: z.number(), deviceId: z.number() }))
+})
+
+/** The hardware, which doesn't change while the app runs: logged at startup and shown in About. */
+export async function machineInfo(): Promise<MachineInfo> {
+  const processors = cpus()
+  // Not every system answers (a headless run, a blocked GPU process); the rest still stands.
+  const gpu = GpuInfo.safeParse(await app.getGPUInfo('basic').catch(() => null))
+  return {
+    cpu: processors[0]?.model.trim() ?? 'unknown',
+    cores: processors.length,
+    memoryGb: Math.round(totalmem() / 1024 ** 3),
+    gpu: gpu.success ? gpuLabel(gpu.data.gpuDevice) : null
+  }
+}
+
+/** Samples now, logs it and returns it (About's "Copy diagnostics" shows the same numbers). */
+export async function sampleResources(why: string): Promise<ResourceSample> {
   lastAt = Date.now()
   const machine = {
     freeMb: Math.round(freemem() / 1024 ** 2),
@@ -49,12 +71,13 @@ async function sample(why: string): Promise<void> {
     diskFreeGb: await diskFreeGb(),
     thermal: thermalState()
   }
-  log('resources', why, {
+  const taken = {
     // CPU is since the previous sample: Electron measures between calls.
-    processes: summarizeProcesses(app.getAppMetrics()),
+    processes: summarizeProcesses(readMetrics()),
     ...machine,
     onBattery: powerMonitor.isOnBatteryPower()
-  })
+  }
+  log('resources', why, taken)
   // macOS counts only untouched pages as free: a healthy Mac reads a few percent free while
   // most of its memory is reclaimable cache, so the number is logged but not judged there.
   const short = pressure({ ...machine, freeMb: process.platform === 'darwin' ? null : machine.freeMb })
@@ -65,10 +88,11 @@ async function sample(why: string): Promise<void> {
     if (short.length) log('resources', 'the machine is short of resources', { short })
     else log('resources', 'resources recovered')
   }
+  return { at: new Date(lastAt).toISOString(), ...taken }
 }
 
 function sampleQuietly(why: string): void {
-  sample(why).catch((error: unknown) => {
+  sampleResources(why).catch((error: unknown) => {
     log('resources', 'could not sample', { error: String(error) })
   })
 }
@@ -76,7 +100,7 @@ function sampleQuietly(why: string): void {
 /** Starts the periodic samples; call once the app is ready. */
 export function startResourceLog(): void {
   // The first call only starts Electron's CPU measurement; its numbers cover nothing yet.
-  app.getAppMetrics()
+  readMetrics()
   onSessionState((state) => {
     const now = state.phase !== 'idle'
     if (now === recording) return
@@ -92,5 +116,13 @@ export function startResourceLog(): void {
   }, BUSY_MS)
   // Never the reason the app stays alive.
   timer.unref()
+  machineInfo().then(
+    (machine) => {
+      log('resources', 'machine', { ...machine, os: `${process.platform} ${process.getSystemVersion()}`, arch: process.arch })
+    },
+    (error: unknown) => {
+      log('resources', 'could not read the machine', { error: String(error) })
+    }
+  )
   sampleQuietly('started')
 }

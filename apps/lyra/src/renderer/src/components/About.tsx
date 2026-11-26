@@ -84,8 +84,15 @@ export function AboutSettings() {
           </button>
         </Row>
         <p className="settings-notice is-footnote">
-          Versions, folders, sizes and engines only: never your notes, transcripts, names or keys.
+          Versions, this computer and its load, folders, sizes and engines only: never your notes, transcripts,
+          names or keys.
         </p>
+        <Row
+          label="This computer"
+          hint={`${info.machine.cpu} · ${String(info.machine.cores)} cores · ${String(info.machine.memoryGb)} GB memory`}
+        >
+          {null}
+        </Row>
         <Row label="Transcription" hint={`${info.whisper.model} · ${backendText(info.whisper.backend)}`}>
           {null}
         </Row>

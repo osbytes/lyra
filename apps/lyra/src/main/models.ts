@@ -31,7 +31,11 @@ export type ModelFile = {
 
 export type DownloadProgress = (received: number, total: number) => void
 
-const inFlight = new Map<string, Promise<string>>()
+/** A download under way, and everyone who asked for it, so each caller sees its progress. */
+const inFlight = new Map<string, { task: Promise<string>; listeners: Set<DownloadProgress> }>()
+
+/** Thrown when the user stops a download (`cancelModelDownload`), as opposed to it failing. */
+export class DownloadCancelledError extends Error {}
 
 /** A sidecar holding the verified hash, so a file is hashed once rather than on every start. */
 function verifiedMarker(path: string): string {
@@ -256,7 +260,7 @@ async function download(model: ModelFile, dest: string, onProgress?: DownloadPro
         }
         break
       } catch (error) {
-        if (attempt.cancelled) throw new Error(`Download of ${model.name} was cancelled`, { cause: error })
+        if (attempt.cancelled) throw new DownloadCancelledError(`Download of ${model.name} was cancelled`, { cause: error })
         if (error instanceof CorruptPartError) await unlink(temp).catch(() => undefined)
         if (error instanceof FatalDownloadError) throw error
         if (isDiskFull(error)) {
@@ -272,7 +276,7 @@ async function download(model: ModelFile, dest: string, onProgress?: DownloadPro
         })
         // Cancelling during the pause ends it at once rather than after the wait.
         await sleep(wait, undefined, { signal: attempt.controller.signal }).catch((abort: unknown) => {
-          throw new Error(`Download of ${model.name} was cancelled`, { cause: abort })
+          throw new DownloadCancelledError(`Download of ${model.name} was cancelled`, { cause: abort })
         })
       }
     }
@@ -291,20 +295,27 @@ export async function hasModelFile(model: ModelFile): Promise<boolean> {
 /**
  * Returns the path of `model`, downloading it first unless a verified copy is already there. A
  * copy that fails verification (a partial file, an older revision) is replaced. Concurrent calls
- * share one download.
+ * share one download, and each one's `onProgress` hears it.
  */
 export function ensureModelFile(model: ModelFile, onProgress?: DownloadProgress): Promise<string> {
   const existing = inFlight.get(model.name)
-  if (existing) return existing
+  if (existing) {
+    if (onProgress) existing.listeners.add(onProgress)
+    return existing.task
+  }
+  const listeners = new Set<DownloadProgress>(onProgress ? [onProgress] : [])
   const dest = join(modelsDir(), model.name)
   const task = (async () => {
     if (await isVerified(dest, model)) return dest
-    await mkdir(modelsDir(), { recursive: true })
+    // A model made of several files keeps them in a folder of its own (`name` is then a path).
+    await mkdir(dirname(dest), { recursive: true })
     log('models', 'downloading', { name: model.name, url: hubUrl(model.url) })
-    await download(model, dest, onProgress)
+    await download(model, dest, (received, total) => {
+      for (const listener of listeners) listener(received, total)
+    })
     log('models', 'downloaded', { name: model.name })
     return dest
   })().finally(() => inFlight.delete(model.name))
-  inFlight.set(model.name, task)
+  inFlight.set(model.name, { task, listeners })
   return task
 }

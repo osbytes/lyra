@@ -1,6 +1,8 @@
 import { memo, useMemo } from 'react'
-import type { PageSummary, UpdateStatus } from '../../../shared/types'
+import type { MeetingStatus, PageSummary, UpdateStatus } from '../../../shared/types'
+import { useMeetingStatuses } from '../hooks/useMeetingStatus'
 import { dayGroup, keyLabel, shortcutLabel } from '../lib/format'
+import { processingActivity, statusBusy } from '../lib/status'
 import { useContextMenu } from './ContextMenu'
 import { ScrollArea } from './Controls'
 import { FolderIcon, GearIcon, PeopleIcon, PlusIcon, SearchIcon, TrashIcon } from './Icons'
@@ -57,6 +59,13 @@ function groupByDay(pages: PageSummary[]): Group[] {
 }
 
 /** Memoized: the notes re-render the window on every keystroke, and the list hasn't changed. */
+/** A spinner on a session still being processed after recording (speakers, summary). */
+function ProcessingMark({ status }: { status: MeetingStatus | undefined }) {
+  if (!status || !statusBusy(status)) return null
+  const label = processingActivity(status, Date.now()).text
+  return <span className="page-processing" role="img" aria-label={label} {...tip(label)} />
+}
+
 export const Sidebar = memo(function Sidebar({
   pages,
   activeId,
@@ -73,6 +82,7 @@ export const Sidebar = memo(function Sidebar({
   onTagFilter
 }: Props) {
   const menu = useContextMenu()
+  const statuses = useMeetingStatuses()
 
   const groups = useMemo(
     () => groupByDay(pages.filter((page) => !tagFilter || page.tags.includes(tagFilter))),
@@ -123,7 +133,9 @@ export const Sidebar = memo(function Sidebar({
         <span className="page-title">
           {page.id === recordingId ? (
             <span className="rec-dot" role="img" aria-label="Recording" {...tip('Recording')} />
-          ) : null}
+          ) : (
+            <ProcessingMark status={statuses.get(page.id)} />
+          )}
           {page.title || 'Untitled'}
         </span>
         <span className="page-preview">

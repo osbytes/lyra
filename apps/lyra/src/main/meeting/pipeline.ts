@@ -49,6 +49,7 @@ import type { DiarizeResult, DiarizedSegment, SpeakerModels } from './protocol'
 import { notifyLabeled } from './events'
 import { sessionVoiceprints, type WrittenPass } from './voiceprints'
 import { diarize, embedVoice, ensureSpeakerModels } from './speakers'
+import { startEstimate } from './estimate'
 import { SPEAKER_EMBEDDING } from './speakerModel'
 import { couldBeOnePerson, differentVoices, micShareOf, pickSelfSpeaker } from './speakerRules'
 import {
@@ -218,7 +219,8 @@ export async function learnSamples(samples: readonly LearnedSample[]): Promise<v
  */
 export async function nameSpeakers(
   result: DiarizeResult,
-  context: { pageId: string; hasSystemTrack: boolean }
+  /** `quiet`: no log line per speaker (a pass that runs again every half minute). */
+  context: { pageId: string; hasSystemTrack: boolean; quiet?: boolean }
 ): Promise<{ speakers: NamedSpeaker[]; learn: LearnedSample[] }> {
   const { pageId, hasSystemTrack } = context
   const me = await selfPerson()
@@ -244,7 +246,7 @@ export async function nameSpeakers(
     assigned.set(speaker, match)
     taken.add(match.person.id)
   }
-  for (const { speaker, scores } of scored) {
+  for (const { speaker, scores } of context.quiet ? [] : scored) {
     const best = scores[0]
     log('meeting', 'voice match', {
       speaker,
@@ -409,7 +411,8 @@ export async function processMeeting(recording: MeetingRecording): Promise<void>
     status('downloading', total ? received / total : 0)
   })
 
-  status('diarizing', 0)
+  const timing = startEstimate(recording.seconds)
+  broadcast({ pageId, task: 'speakers', state: 'diarizing', progress: 0, estimate: timing.estimate })
   const started = Date.now()
   const result = await diarize({
     micPath: recording.micPath,
@@ -419,6 +422,7 @@ export async function processMeeting(recording: MeetingRecording): Promise<void>
     // Diarization comes first here, so there are no words yet.
     words: null
   })
+  timing.finish()
   log('meeting', 'diarized', {
     pageId,
     speakers: result.clusters.length,

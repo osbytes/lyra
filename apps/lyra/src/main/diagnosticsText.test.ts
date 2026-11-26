@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { formatBytes } from '../shared/bytes'
 import type { Settings } from '../shared/settings'
-import { diagnosticsText, notesEngineLabel, shortenHome } from './diagnosticsText'
+import { diagnosticsText, machineLabel, notesEngineLabel, resourceLines, shortenHome } from './diagnosticsText'
 
 const settings: Settings = {
   notesDir: '/Users/ana/.lyra',
@@ -24,7 +24,8 @@ const settings: Settings = {
   sidebarWidth: 260,
   detailsWidth: 300,
   meetingNoticeSeen: true,
-  semanticSearch: false
+  semanticSearch: false,
+  largerSpeakerModel: false
 }
 
 describe('shortenHome', () => {
@@ -75,12 +76,42 @@ describe('diagnosticsText', () => {
       node: '24.0.0',
       whisper: { model: 'whisper large-v3-turbo q5 (chunked)', backend: null },
       notesEngine: notesEngineLabel(settings),
+      machine: { cpu: 'Apple M3 Pro', cores: 12, memoryGb: 36, gpu: null },
+      resources: null,
       places: [{ id: 'models', label: 'Models', path: '~/Library/Lyra/models', bytes: 2048, complete: false }]
     })
     expect(text).toContain('Lyra 0.4.0')
     expect(text).toContain('not used yet')
+    expect(text).toContain('Computer: Apple M3 Pro, 12 cores, 36 GB memory')
+    expect(text).not.toContain('Right now')
     expect(text).toContain('Models: ~/Library/Lyra/models (2.0 KB+, not fully counted)')
     expect(text).not.toContain('Secret Project')
     expect(text).not.toContain('localhost')
+  })
+})
+
+describe('machineLabel and resourceLines', () => {
+  it('names the graphics adapter only when the system gave one', () => {
+    expect(machineLabel({ cpu: 'Intel Core i7', cores: 8, memoryGb: 16, gpu: 'NVIDIA 0x2684' })).toBe(
+      'Intel Core i7, 8 cores, 16 GB memory, GPU NVIDIA 0x2684'
+    )
+  })
+
+  it('writes the machine\'s headroom and each kind of process, leaving out what is unknown', () => {
+    const lines = resourceLines({
+      at: '2026-01-05T09:30:00.000Z',
+      processes: { main: { cpu: 120, mb: 300 }, 'speaker-worker': { cpu: 95, mb: 400 } },
+      freeMb: 900,
+      totalMb: 16384,
+      load1: 3.5,
+      cores: 8,
+      diskFreeGb: null,
+      thermal: null,
+      onBattery: true
+    })
+    expect(lines).toEqual([
+      'Right now: 900 of 16384 MB memory free, load 3.5 on 8 cores, on battery',
+      "Lyra's processes: main 120% CPU 300 MB; speaker-worker 95% CPU 400 MB"
+    ])
   })
 })

@@ -145,6 +145,10 @@ function checkSettingsSchema(): void {
   // Files from before the meeting prompt get its default, and keep their mic prompt choices.
   const before = parseSettings({ micPrompt: { enabled: true, ignoredApps: ['obs64'] } }, { ...base, meetingPrompt: true })
   if (!before.meetingPrompt || before.micPrompt.ignoredApps.join() !== 'obs64') throw new Error('settings: meeting prompt default')
+  // The larger speaker model is a download and extra work: off unless turned on, and a bad value stays off.
+  if (base.largerSpeakerModel || parseSettings({ largerSpeakerModel: 'yes' }, base).largerSpeakerModel) {
+    throw new Error('settings: larger speaker model default')
+  }
 }
 
 /**
@@ -1330,6 +1334,19 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
     const result: unknown = await win.webContents.executeJavaScript(`
       (async () => {
         const fail = (message) => { throw new Error(message) }
+        // The sampler keeps a reading every intervalMs from launch; wait for the first one.
+        let usage = await window.api.getAppUsage()
+        for (let tries = 0; !usage.samples.length && tries < 40; tries++) {
+          await new Promise((resolve) => setTimeout(resolve, 250))
+          usage = await window.api.getAppUsage()
+        }
+        const reading = usage.samples.at(-1)
+        if (!reading) fail('getAppUsage kept no sample within ' + usage.intervalMs * 2 + 'ms')
+        if (!(reading.memoryBytes > 0) || !(usage.totalMemoryBytes >= reading.memoryBytes)) fail('getAppUsage reported no memory')
+        if (!reading.processes.some((entry) => entry.kind === 'main') || !reading.processes.some((entry) => entry.kind === 'windows')) {
+          fail('getAppUsage is missing the main process or the window: ' + JSON.stringify(reading.processes.map((entry) => entry.kind)))
+        }
+        if (!(reading.cpuPercent >= 0 && reading.cpuPercent <= 100)) fail('getAppUsage CPU out of range: ' + reading.cpuPercent)
         // The list's file dialogs can't run headless; the main-side work is checked directly.
         if (typeof window.api.exportIgnoredApps !== 'function' || typeof window.api.importIgnoredApps !== 'function') {
           fail('ignored-app import/export missing from the bridge')
@@ -1447,6 +1464,19 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
         if (!perms.microphone || !perms.screen) fail('permission status: ' + JSON.stringify(perms))
         if ((await window.api.cancelModelDownload('no-such-model.bin')) !== false) fail('cancelled a download that was not running')
         if (!(await refuses(() => window.api.cancelModelDownload('../settings.json')))) fail('models:cancel took a path')
+        // Model status: a list of known features, a subscription, and Retry only for real features.
+        const modelStates = await window.api.modelStatus()
+        if (!Array.isArray(modelStates) || modelStates.some((entry) => !['semanticSearch', 'localNotes'].includes(entry.feature) || typeof entry.model !== 'string')) {
+          fail('model status: ' + JSON.stringify(modelStates))
+        }
+        const stopModelStatus = window.api.onModelStatus(() => {})
+        if (typeof stopModelStatus !== 'function') fail('onModelStatus returned no unsubscribe')
+        stopModelStatus()
+        if (!(await refuses(() => window.api.retryModel('whisper')))) fail('models:retry took an unknown feature')
+        // Both features are off here, so Retry has nothing to fetch and must not start a download.
+        await window.api.retryModel('semanticSearch')
+        await window.api.retryModel('localNotes')
+        if ((await window.api.modelStatus()).some((entry) => entry.state === 'downloading')) fail('Retry with the feature off started a download')
         if (!(await refuses(() => window.api.listServerModels('http://192.168.1.5:11434/v1')))) fail('listModels took http to another computer')
         if (!(await refuses(() => window.api.revealFolder('/')))) fail('diagnostics:reveal took a path')
         if (!(await refuses(() => window.api.openPermissionSettings('camera')))) fail('openSettings took an unknown kind')

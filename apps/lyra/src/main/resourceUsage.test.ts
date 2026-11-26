@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { pressure, summarizeProcesses } from './resourceUsage'
+import { gpuLabel, pressure, summarizeProcesses } from './resourceUsage'
 
 const mb = (value: number): { workingSetSize: number } => ({ workingSetSize: value * 1024 })
 
@@ -53,5 +53,23 @@ describe('pressure', () => {
 
   it('ignores what it has no reading for', () => {
     expect(pressure({ ...calm, freeMb: null, load1: 0, diskFreeGb: null, thermal: null })).toEqual([])
+  })
+})
+
+describe('gpuLabel', () => {
+  it('names the active adapter by maker and device id', () => {
+    // 0x8086 = 32902 (Intel), 0x10de = 4318 (NVIDIA); 9860 = 0x2684
+    expect(
+      gpuLabel([
+        { active: false, vendorId: 32902, deviceId: 42912 },
+        { active: true, vendorId: 4318, deviceId: 9860 }
+      ])
+    ).toBe('NVIDIA 0x2684')
+    expect(gpuLabel([{ vendorId: 4660, deviceId: 5 }])).toBe('vendor 0x1234 0x0005')
+  })
+
+  it('has nothing to say without an adapter or its ids', () => {
+    expect(gpuLabel([])).toBeNull()
+    expect(gpuLabel([{ active: true, vendorId: 0, deviceId: 0 }])).toBeNull()
   })
 })

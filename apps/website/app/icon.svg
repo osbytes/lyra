@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Lyra's mark: one bright star (Vega) with diffraction spikes on the night sky.
+       Source for build/icon.png (1024px). -->
+  <defs>
+    <radialGradient id="sky" cx="0.6" cy="0.3" r="1">
+      <stop offset="0" stop-color="#22203f" />
+      <stop offset="0.55" stop-color="#12121d" />
+      <stop offset="1" stop-color="#07070c" />
+    </radialGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#b4b0ff" stop-opacity="0.75" />
+      <stop offset="0.45" stop-color="#6158f0" stop-opacity="0.35" />
+      <stop offset="1" stop-color="#6158f0" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+  <rect x="0.5" y="0.5" width="63" height="63" rx="13.5" fill="url(#sky)" stroke="#b4b0ff" stroke-opacity="0.22" />
+  <circle cx="32" cy="32" r="24" fill="url(#glow)" />
+  <g fill="#ffffff">
+    <path d="M32 5 L33.3 32 L32 59 L30.7 32 Z" />
+    <path d="M5 32 L32 30.7 L59 32 L32 33.3 Z" />
+    <g transform="rotate(45 32 32)" opacity="0.8">
+      <path d="M32 18 L32.9 32 L32 46 L31.1 32 Z" />
+      <path d="M18 32 L32 31.1 L46 32 L32 32.9 Z" />
+    </g>
+    <circle cx="32" cy="32" r="5.5" />
+  </g>
+</svg>

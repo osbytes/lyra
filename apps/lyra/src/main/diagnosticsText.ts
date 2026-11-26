@@ -1,11 +1,11 @@
 import { PROVIDERS } from '../shared/ai'
 import { formatBytes } from '../shared/bytes'
 import { isLoopbackUrl, type Settings } from '../shared/settings'
-import type { Diagnostics } from '../shared/types'
+import type { Diagnostics, MachineInfo, ResourceSample } from '../shared/types'
 
 /**
  * The pure half of Settings → About: labels and the "Copy diagnostics" text. Only versions,
- * folders, sizes and which engine is chosen: never note content, names, keys, server addresses
+ * the machine and its load, folders, sizes and which engine is chosen: never note content, names, keys, server addresses
  * or search queries, so the text is safe to paste into a public issue.
  */
 
@@ -56,12 +56,34 @@ export function backendLabel(backend: Diagnostics['whisper']['backend']): string
   }
 }
 
+export function machineLabel(machine: MachineInfo): string {
+  const parts = [machine.cpu, `${String(machine.cores)} cores`, `${String(machine.memoryGb)} GB memory`]
+  return (machine.gpu ? [...parts, `GPU ${machine.gpu}`] : parts).join(', ')
+}
+
+/** A resource sample as two lines: the machine's headroom, then each kind of Lyra process. */
+export function resourceLines(sample: ResourceSample): string[] {
+  const machine = [
+    `${String(sample.freeMb)} of ${String(sample.totalMb)} MB memory free`,
+    `load ${String(sample.load1)} on ${String(sample.cores)} cores`,
+    ...(sample.diskFreeGb === null ? [] : [`${String(sample.diskFreeGb)} GB disk free`]),
+    ...(sample.thermal === null ? [] : [`thermal ${sample.thermal}`]),
+    sample.onBattery ? 'on battery' : 'on mains power'
+  ]
+  const processes = Object.entries(sample.processes).map(
+    ([name, usage]) => `${name} ${String(usage.cpu)}% CPU ${String(usage.mb)} MB`
+  )
+  return [`Right now: ${machine.join(', ')}`, `Lyra's processes: ${processes.join('; ')}`]
+}
+
 /** The plain text "Copy diagnostics" puts on the clipboard. */
 export function diagnosticsText(info: Omit<Diagnostics, 'text'>): string {
   const lines = [
     `Lyra ${info.version}`,
     `OS: ${info.os} (${info.arch})`,
     `Electron ${info.electron}, Chromium ${info.chrome}, Node ${info.node}`,
+    `Computer: ${machineLabel(info.machine)}`,
+    ...(info.resources ? resourceLines(info.resources) : []),
     `Transcription: ${info.whisper.model}, ${backendLabel(info.whisper.backend)}`,
     `Summaries: ${info.notesEngine}`,
     ...info.places.map(

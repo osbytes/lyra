@@ -13,6 +13,32 @@ export type { KeySource, ProviderId } from './ai'
 
 export type MoveNotesResult = { moved: number; skipped: number }
 
+/** One group of Lyra's processes: the main process (with Whisper), the windows, each worker. */
+export type ProcessUsage = {
+  kind: 'main' | 'windows' | 'speakers' | 'notes' | 'search' | 'graphics' | 'other'
+  /** Share of the whole computer's CPU since the last reading, 0–100. */
+  cpuPercent: number
+  memoryBytes: number
+}
+
+/** One reading of Lyra's processes (`app.getAppMetrics`). */
+export type UsageSample = {
+  /** Epoch ms. */
+  at: number
+  cpuPercent: number
+  memoryBytes: number
+  processes: ProcessUsage[]
+}
+
+/** How much of the computer Lyra has used lately. */
+export type AppUsage = {
+  intervalMs: number
+  /** The computer's total memory, so the UI can show Lyra's share of it. */
+  totalMemoryBytes: number
+  /** Oldest first; up to 30 minutes. Empty until the first interval has passed. */
+  samples: UsageSample[]
+}
+
 export type SessionPhase = 'idle' | 'starting' | 'listening' | 'finishing'
 
 /** What the main window's recorder is doing; mirrored to the tray and the overlay. */
@@ -111,6 +137,11 @@ export type MeetingStatus = {
   /** 0–1 within the current state. */
   progress: number
   message?: string
+  /**
+   * For a step that can't count its own progress (finding who spoke when): when it began and how
+   * long it's expected to take, from the audio's length, so the UI can say how long is left.
+   */
+  estimate?: { startedAt: number; expectedMs: number }
 }
 
 export type PageSummary = {
@@ -202,6 +233,31 @@ export type DiagnosticsPlace = {
   complete: boolean
 }
 
+/** The computer Lyra runs on: what a slow or failed session is first checked against. */
+export type MachineInfo = {
+  cpu: string
+  cores: number
+  memoryGb: number
+  /** The active graphics adapter, when the system names one. */
+  gpu: string | null
+}
+
+/** CPU (percent of one core) and memory in MB of one kind of Lyra process, as the log has them. */
+export type ProcessLoad = { cpu: number; mb: number }
+
+/** One sample of what Lyra and the machine were using (`resources.ts`). Numbers only. */
+export type ResourceSample = {
+  at: string
+  processes: Record<string, ProcessLoad>
+  freeMb: number
+  totalMb: number
+  load1: number
+  cores: number
+  diskFreeGb: number | null
+  thermal: string | null
+  onBattery: boolean
+}
+
 /** Settings → About. No note content, names, keys, addresses or queries. */
 export type Diagnostics = {
   version: string
@@ -213,6 +269,9 @@ export type Diagnostics = {
   /** `backend` is null until Whisper has run since launch. */
   whisper: { model: string; backend: 'gpu' | 'cpu' | null }
   notesEngine: string
+  machine: MachineInfo
+  /** What Lyra and the machine are using right now; null if it couldn't be measured. */
+  resources: ResourceSample | null
   places: DiagnosticsPlace[]
   /** All of the above as plain text, for "Copy diagnostics". */
   text: string
@@ -224,6 +283,24 @@ export type UpdateStatus =
   | { state: 'downloading'; percent: number }
   | { state: 'ready'; version: string }
   | { state: 'error'; message: string }
+
+/** A setting whose model downloads on first use, so Settings shows how that is going. */
+export type ModelFeature = 'semanticSearch' | 'localNotes'
+
+/**
+ * Where a feature's model stands, keyed by `model` (its file name, which `cancelModelDownload`
+ * takes). `reading` is semantic search embedding sessions after the download: `done` of `total`
+ * passages. `missing` means it downloads on first use; nothing has asked for it yet.
+ */
+export type ModelStatus = { feature: ModelFeature; model: string } & (
+  | { state: 'missing' }
+  | { state: 'downloading'; received: number; total: number }
+  /** `pausedFor`: embedding waits while recording and on battery, so the count holds still. */
+  | { state: 'reading'; done: number; total: number; pausedFor: 'recording' | 'battery' | null }
+  | { state: 'ready' }
+  | { state: 'cancelled' }
+  | { state: 'error'; message: string }
+)
 
 /** A Yjs update to an open session, made outside this window. */
 /** Who a speaker turned out to be (`resolveSpeaker`). */
@@ -274,6 +351,8 @@ export type VoicePagesApi = {
   moveNotes: () => Promise<MoveNotesResult>
   /** Main window only. Opens the notes folder in the file manager. */
   revealNotesFolder: () => Promise<void>
+  /** CPU and memory Lyra's processes used over the last 30 minutes, sampled in main. */
+  getAppUsage: () => Promise<AppUsage>
   /** Main window only. Saves the "Don't ask" app list to a file the user picks. */
   exportIgnoredApps: () => Promise<ExportIgnoredResult>
   /** Main window only. Adds the apps in a file the user picks to the "Don't ask" list. */
@@ -378,6 +457,12 @@ export type VoicePagesApi = {
   revealFolder: (target: RevealTarget) => Promise<void>
   /** Main window only. Stops a model download in progress; resolves to whether one was. */
   cancelModelDownload: (name: string) => Promise<boolean>
+  /** Main window only. Where each feature's model stands now; one entry per feature that has one. */
+  modelStatus: () => Promise<ModelStatus[]>
+  /** Main window only. Downloads (or loads) a feature's model again, after a failure or cancel. */
+  retryModel: (feature: ModelFeature) => Promise<void>
+  /** A feature's model changed state: downloading, reading sessions, ready, failed. */
+  onModelStatus: (callback: (status: ModelStatus) => void) => () => void
   /** Whether the OS lets Lyra use the microphone and capture the screen. */
   permissionStatus: () => Promise<PermissionStatus>
   /** Main window only. Opens the system settings page for a permission; false if there is none. */
@@ -385,6 +470,8 @@ export type VoicePagesApi = {
   /** Puts plain text on the system clipboard. */
   copyText: (text: string) => void
   platform: string
+  /** The processor Lyra was built for (`arm64`, `x64`): some models have no build for every one. */
+  arch: string
   /** Downloads the model if needed and loads it into memory. */
   warmUp: () => Promise<void>
   /** Appends a line to the app log (terminal + userData/logs/lyra.log). */

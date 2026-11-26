@@ -11,6 +11,7 @@ import { ConfigError } from '../config'
  *     [--offline] [--no-relabel] [--output <file.json>] [--notes local|cloud] [--enroll <owner.wav>]
  *     [--asr whisper|parakeet] [--no-context]   eval experiments: the speech model, and Whisper
  *                                               without the earlier text as its prompt
+ *     [--larger-speaker-model]                  label with the opt-in speaker-activity model
  *     [--capture]                               play mic.wav as a fake microphone through the
  *                                               window's real capture path, in real time
  *
@@ -53,6 +54,7 @@ const Meeting = z
     '--enroll': absolutePath.optional(),
     '--asr': z.enum(['whisper', 'parakeet']).optional(),
     '--no-context': z.literal(true).optional(),
+    '--larger-speaker-model': z.literal(true).optional(),
     '--capture': z.literal(true).optional()
   })
   .strict()
@@ -73,6 +75,8 @@ const Meeting = z
     asr: args['--asr'] ?? 'whisper',
     /** Whether Whisper gets a track's earlier text as its prompt. */
     context: !args['--no-context'],
+    /** The "Larger speaker model" setting, on for this run. */
+    largerSpeakerModel: args['--larger-speaker-model'] === true,
     /**
      * Record through the window (getUserMedia, the AudioContext, the worklet) from a fake
      * microphone playing the WAV, instead of feeding main directly. Mic only: loopback can't be

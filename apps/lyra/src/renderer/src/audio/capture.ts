@@ -194,6 +194,29 @@ async function defaultOutput(): Promise<string | null> {
   }
 }
 
+/**
+ * What is plugged in, for the log: a session that came out wrong is often the hardware (a
+ * headset that switched to its narrowband call profile, speakers where headphones were
+ * expected, a dock's microphone taking over as the default). Counts and the default devices'
+ * labels; a label is the device's name, never anything said into it.
+ */
+async function logDevices(why: string): Promise<void> {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    const named = (kind: MediaDeviceKind): string | null =>
+      devices.find((device) => device.kind === kind && device.deviceId === 'default')?.label ?? null
+    log('capture', 'devices', {
+      why,
+      inputs: devices.filter((device) => device.kind === 'audioinput').length,
+      outputs: devices.filter((device) => device.kind === 'audiooutput').length,
+      defaultInput: named('audioinput'),
+      defaultOutput: named('audiooutput')
+    })
+  } catch (error) {
+    log('capture', 'could not list devices', String(error))
+  }
+}
+
 function labelOf(track: MediaStreamTrack | undefined): string {
   return track?.label ? track.label : 'Microphone'
 }
@@ -330,11 +353,15 @@ export async function startCapture(
     void rememberOutput()
   }
   let deviceTimer: ReturnType<typeof setTimeout> | null = null
-  /** Any device plugged in or out lands here; only a moved default output matters. */
+  /** Any device plugged in or out lands here: logged, and system audio follows a moved default output. */
   const onDeviceChange = (): void => {
     if (deviceTimer) clearTimeout(deviceTimer)
     deviceTimer = setTimeout(() => {
       deviceTimer = null
+      if (isStopped()) return
+      void logDevices('changed')
+      // Only system audio follows the default output; a recording without it has nothing to move.
+      if (!system) return
       void defaultOutput().then((after) => {
         if (isStopped()) return
         const trackEnded = systemStream?.getAudioTracks()[0]?.readyState !== 'live'
@@ -344,7 +371,7 @@ export async function startCapture(
       })
     }, DEVICE_CHANGE_DEBOUNCE_MS)
   }
-  if (system) navigator.mediaDevices.addEventListener('devicechange', onDeviceChange)
+  navigator.mediaDevices.addEventListener('devicechange', onDeviceChange)
 
   const resumeContext = (): void => {
     if (stopped || context.state === 'running' || context.state === 'closed') return
@@ -422,7 +449,7 @@ export async function startCapture(
       micName = labelOf(micTrack)
       watchMic(micTrack)
       micReopens++
-      log('capture', 'microphone reopened', { micName, attempt: result.attempt })
+      log('capture', 'microphone reopened', { micName, attempt: result.attempt, settings: micTrack?.getSettings() })
       onEvent?.({ type: 'mic-restored', micName })
     } finally {
       micReopening = false
@@ -433,8 +460,10 @@ export async function startCapture(
     micName,
     contextRate: context.sampleRate,
     narrowband,
-    settings: micTrack?.getSettings()
+    settings: micTrack?.getSettings(),
+    system: system?.getAudioTracks()[0]?.getSettings() ?? null
   })
+  void logDevices('started')
 
   return {
     micName,

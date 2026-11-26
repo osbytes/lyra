@@ -22,6 +22,7 @@ import { checkConfig, config, ConfigError, configSummary } from './config'
 import { attachEditMenu } from './editMenu'
 import {
   CreatePageArg,
+  ModelFeatureArg,
   ModelNameArg,
   PageIdArg,
   parseSettingsPatch,
@@ -72,8 +73,9 @@ import { getSettings, onSettingsChanged, updateSettings } from './settings'
 import { registerMeetingPipeline } from './meeting/pipeline'
 import { registerKeyIpc } from './secrets'
 import { createServices, type Services } from './services'
-import { releaseNotesModel, stopNotesWorker } from './meeting/notesLocal'
+import { prefetchNotesModel, releaseNotesModel, reportNotesModel, stopNotesWorker } from './meeting/notesLocal'
 import { stopSpeakerWorker } from './meeting/speakers'
+import { startLiveLabels } from './meeting/liveLabels'
 import { relabelSession } from './meeting/relabel'
 import {
   finishRecordingForQuit,
@@ -85,6 +87,7 @@ import {
 import { previewAudioSweep, startAudioRetention } from './audioRetention'
 import { getDiagnostics, noteWhisperUsed, revealFolder } from './diagnostics'
 import { cancelModelDownload } from './models'
+import { modelStatuses, onModelRetry, retryModel } from './modelStatus'
 import { detectServers, listServerModels, testWriter } from './notesServers'
 import { openPermissionSettings, permissionStatus } from './permissions'
 import { createTray } from './tray'
@@ -92,6 +95,7 @@ import { registerUpdater } from './updater'
 import { broadcastStatus, warmUp } from './whisper'
 import { log, logPath } from './log'
 import { searchSessions } from './search'
+import { appUsage, startUsageSampler } from './usage'
 import { closeSearchIndex, setIndexBusy, startSearchIndex } from './searchIndex/service'
 import type { Task } from './tasks/args'
 import { isTaskLaunch, prepareTaskProfile, runTaskIn, taskFromArgv } from './tasks/run'
@@ -334,6 +338,7 @@ function registerIpc(): void {
   ipcMain.handle('pages:search', (_event, query: unknown) =>
     typeof query === 'string' ? searchSessions(query.slice(0, 200)) : []
   )
+  ipcMain.handle('app:usage', () => appUsage())
   ipcMain.handle('pages:get', (_event, id: unknown) => getPage(PageIdArg.parse(id)))
   ipcMain.handle('pages:create', (_event, options: unknown) => createPage(CreatePageArg.parse(options)))
   ipcMain.handle('settings:get', () => getSettings())
@@ -423,6 +428,14 @@ function registerSettingsToolsIpc(): void {
     const cancelled = cancelModelDownload(ModelNameArg.parse(name))
     if (cancelled) log('models', 'download cancelled from the window')
     return cancelled
+  })
+  ipcMain.handle('models:status:get', (event) => {
+    requireMainWindow(event)
+    return modelStatuses()
+  })
+  ipcMain.handle('models:retry', (event, feature: unknown) => {
+    requireMainWindow(event)
+    retryModel(ModelFeatureArg.parse(feature))
   })
   ipcMain.handle('permissions:status', () => permissionStatus())
   ipcMain.handle('permissions:openSettings', (event, kind: unknown) => {
@@ -555,11 +568,13 @@ void app.whenReady().then(() => {
   })
 
   registerIpc()
+  startUsageSampler()
   registerSessionIpc()
   // A capture replay records through the window, so it needs the real recorder.
   const recordsForReal = !isTestRun || (task.kind === 'meeting' && task.capture)
   registerRecorderIpc({ identifySpeakers: recordsForReal, transcribe: recordsForReal })
-  // Evals pass --no-relabel to score the track-labeled lines on their own.
+  startLiveLabels()
+  // Evals pass --no-relabel to score the lines as they stood when the recording stopped.
   if (task?.kind !== 'meeting' || task.relabel) {
     onRecordingFinished((recording) => {
       if (identifiesSpeakers()) void relabelSession(recording.pageId)
@@ -598,7 +613,12 @@ void app.whenReady().then(() => {
     applyLoginItem(getSettings().launchAtLogin)
     onSettingsChanged((next, prev) => {
       if (next.launchAtLogin !== prev.launchAtLogin) applyLoginItem(next.launchAtLogin)
+      if (next.notesEngine === 'local' && prev.notesEngine !== 'local') prefetchNotesModel()
     })
+    onModelRetry('localNotes', () => {
+      if (getSettings().notesEngine === 'local') prefetchNotesModel()
+    })
+    if (getSettings().notesEngine === 'local') void reportNotesModel()
   }
   void migrateLegacyPages().finally(async () => {
     // A crash mid-recording leaves WAV headers that say "no audio"; fix them before anything reads.
