@@ -1,7 +1,4 @@
-/*
- * Site tokens. The live demo uses the desktop app's own tokens instead, scoped to `.lyra-ui`
- * (components/demo/app-styles.generated.css). Light and dark follow the OS, like the app.
- */
+/* Site tokens. Light and dark follow the OS, like the app. */
 :root {
   --paper: #f7f7fa;
   --paper-2: #f0f0f4;

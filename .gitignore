@@ -25,5 +25,4 @@ eval-data/
 .next
 next-env.d.ts
 .vercel
-apps/website/components/demo/app-styles.generated.css
 *.tsbuildinfo

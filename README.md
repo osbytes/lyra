@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>A local voice notebook for desktop.</strong><br />
-  Talk onto pages. Edit, copy, autosave — all on your machine.
+  Talk, meet, think out loud. Lyra writes it all down, on your machine.
 </p>
 
 <p align="center">

@@ -18,7 +18,7 @@ Lyra media comes from two places, and each has one way to shoot it:
 | Subject | How |
 |---|---|
 | **The desktop app**, stills | `pnpm screenshot` (in `apps/lyra`). It launches Electron in a throwaway profile, seeds demo pages and a labeled meeting, and saves `webContents.capturePage()` PNGs. A new shot is a new state in `captureScreenshot` (`src/main/tasks/screenshot.ts`), so it can be retaken after every UI change |
-| **The website**, stills and video, including its live demo (drawn with the app's real stylesheet) | The user's Chrome through the **Claude in Chrome extension** (`mcp__claude-in-chrome__*`), [scripts/camera.js](scripts/camera.js), and macOS `screencapture` |
+| **The website**, stills and video | The user's Chrome through the **Claude in Chrome extension** (`mcp__claude-in-chrome__*`), [scripts/camera.js](scripts/camera.js), and macOS `screencapture` |
 
 Read the `chrome-browser` skill before the first Chrome step. Do not use the
 built-in browser pane for media, and do not use the extension's GIF recorder
@@ -28,7 +28,7 @@ stamps click dots and a watermark on the frame.
 **Video of the desktop app itself has no scripted path yet.** Never record
 `pnpm dev` with the user's own profile: it opens their real notes folder and
 people. If a piece needs real-app video, say so and ask the user how to
-proceed (for a flow the website demo also shows, the demo is usually enough).
+proceed.
 
 The website tools:
 
@@ -50,7 +50,7 @@ The website tools:
 |---|---|
 | Frame | Website: **1280×720 CSS px (16:9) at 2x**, so stills are 2560×1440 and video masters 2560×1440. App: the task window (1080×720), at the display's density |
 | Theme | Light. Dark only when the piece is about dark mode, and then shot as a pair (`pnpm screenshot --review` already shoots both) |
-| Data | The seeded demo pages and meeting (Design review, Team sync notes, Morning journal, Product ideas; Dana, Sam, Alex) or the website demo's script. Never the user's notes, transcripts, voices or audio |
+| Data | The seeded demo pages and meeting (Design review, Team sync notes, Morning journal, Product ideas; Dana, Sam, Alex). Never the user's notes, transcripts, voices or audio |
 | Cursor | camera.js cursor (32 px arrow), visible in videos, hidden in stills. It fades out with the content on every zoom and fades back in on the next cursor move, click, or press |
 | Camera | Starts on the full frame, zooms to what changes, ends on the full frame |
 | Zoom | Eased 900 ms, at most 2x, held at least 1.2 s so it can be read |
@@ -124,8 +124,8 @@ group, and every take is recorded there.
 3. `left_click` anywhere on the page with the extension. Chrome only lets a click open a pop-up, and the armed click opens the stage instead of reaching the page.
 4. Read `__cam.stageResult`: `ok` must be `true` and `dpr` must be `2`. An error string that says the pop-up was blocked means the user must allow pop-ups for the site. On a 1x external display, ask the user to drag the stage to the built-in screen and call `__cam.stage.__cam.viewport()` again.
 5. From now on, work in the stage through the tab: `const S = __cam.stage` and `S.__cam`, `S.document`. Client-side navigation keeps the camera; after a full page load (`S.location.href = ...`, the way to reset a shot) wait for it and call `__cam.reinstallStage()`.
-6. Find targets. Camera targets take `text=Label` (the last visible control whose text starts with Label, so an open menu wins over the page), a CSS selector, an element, or a `{x, y, w, h}` viewport rectangle for zoom. The demo is marked up with the app's class names (`.sidebar`, `.page-item`, `.details`), so the selectors in `screenshot.ts` usually work there too. To pin one control, tag it first: `el.dataset.cam = 'rec'`, then target `[data-cam=rec]`. `S.__cam.find(target)` shows what a target resolves to. Keep `javascript_tool` results short: a result that looks like a URL query string is blocked.
-7. The demo plays scripted dictation on its own (`useScriptedDictation`). Scroll the stage to the section, then wait for the moment you want, or reload to restart it, before the take.
+6. Find targets. Camera targets take `text=Label` (the last visible control whose text starts with Label, so an open menu wins over the page), a CSS selector, an element, or a `{x, y, w, h}` viewport rectangle for zoom. To pin one control, tag it first: `el.dataset.cam = 'rec'`, then target `[data-cam=rec]`. `S.__cam.find(target)` shows what a target resolves to. Keep `javascript_tool` results short: a result that looks like a URL query string is blocked.
+7. The hero animation loops on its own. Scroll the stage to the section, then wait for the moment you want, or reload to restart it, before the take.
 8. Close toasts and popovers in the stage. `S.__cam.hide('<selector>')` hides a stray overlay, including the Next.js dev indicator.
 9. Rehearse the flow once with `S.__cam.play(steps, { delay: 0 })` and check `S.__cam.scene`, so the take has no wrong turns.
 10. Tell the user a take is starting and to leave the computer alone. `screencapture` records the real screen, so the stage must be in front and uncovered. Before every capture, check that Chrome is frontmost (`osascript -e 'tell application "System Events" to name of first process whose frontmost is true'`); if not, `osascript -e 'tell application "Google Chrome" to activate'` and `__cam.stage.focus()`. macOS needs Screen Recording permission for Claude; if a capture is blank or shows another app, ask the user to grant it or bring the stage forward. Never change the setting yourself, and delete any capture that shows anything but the page.
