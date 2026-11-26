@@ -21,8 +21,10 @@ type Props = {
 export function SummaryButton({ pageId, hasSummary, className, icon }: Props) {
   const status = useMeetingStatus(pageId)
   // Covers the gap between the click and main's first status, so a double click can't start two.
-  const [starting, setStarting] = useState(false)
-  const [asking, setAsking] = useState(false)
+  // It names the session that was clicked: the button is reused as the user moves between
+  // sessions, and a run in one must not show as running in all of them.
+  const [starting, setStarting] = useState<string | null>(null)
+  const [asking, setAsking] = useState<string | null>(null)
   const mounted = useRef(true)
   useEffect(() => {
     mounted.current = true
@@ -31,28 +33,29 @@ export function SummaryButton({ pageId, hasSummary, className, icon }: Props) {
     }
   }, [])
 
-  const writing = starting || writingNotes(status)
+  const writing = starting === pageId || writingNotes(status)
   const outdated = useNotesState(pageId, hasSummary, status) === 'outdated'
   const otherJob = !!status && status.task !== 'notes' && status.state !== 'done' && status.state !== 'error'
 
-  const write = (): void => {
-    setStarting(true)
+  const write = (id: string): void => {
+    setStarting(id)
     window.api
-      .generateNotes(pageId)
+      .generateNotes(id)
       .catch(() => {
         // Shown through the meeting status line.
       })
       .finally(() => {
-        if (mounted.current) setStarting(false)
+        if (mounted.current) setStarting((current) => (current === id ? null : current))
       })
   }
 
   const onWrite = async (): Promise<void> => {
-    setStarting(true)
+    const id = pageId
+    setStarting(id)
     let edited = false
     if (hasSummary) {
       try {
-        edited = await window.api.summaryEdited(pageId)
+        edited = await window.api.summaryEdited(id)
       } catch (error) {
         // Unknown counts as edited: asking once too often beats losing the user's words.
         log('notes', 'could not check the summary', String(error))
@@ -61,11 +64,11 @@ export function SummaryButton({ pageId, hasSummary, className, icon }: Props) {
     }
     if (!mounted.current) return
     if (edited) {
-      setStarting(false)
-      setAsking(true)
+      setStarting((current) => (current === id ? null : current))
+      setAsking(id)
       return
     }
-    write()
+    write(id)
   }
 
   const onStop = (): void => {
@@ -94,15 +97,15 @@ export function SummaryButton({ pageId, hasSummary, className, icon }: Props) {
         {icon}
         {writing ? 'Stop summary' : outdated ? 'Update summary' : hasSummary ? 'Rewrite summary' : 'Write summary'}
       </button>
-      {asking ? (
+      {asking === pageId ? (
         <ConfirmDialog
           title="Replace your edited summary?"
           confirm="Replace summary"
           danger
-          onCancel={() => setAsking(false)}
+          onCancel={() => setAsking(null)}
           onConfirm={() => {
-            setAsking(false)
-            write()
+            setAsking(null)
+            write(pageId)
           }}
         >
           You changed this summary since Lyra wrote it. Rewriting it replaces your changes, and
