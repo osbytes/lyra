@@ -108,7 +108,7 @@ the server only).
   (`test-audio/meeting.wav`), comparing output to the known script. Smoke tests alone don't count.
   Speaker or diarization changes also run `pnpm eval:sessions` and `pnpm eval:calls` and report the
   tables before and after. `LYRA_SESSIONS_CORPUS=mini pnpm eval:sessions --quick --check` is the
-  gate CI runs on them (docs/EVALS.md); run it, and `pnpm eval:local --check` when you have cases.
+  gate for them (docs/EVALS.md; too slow for hosted CI, so it is yours to run); run it, and `pnpm eval:local --check` when you have cases.
 - UI changes: launch `pnpm dev` and look at the change; say so if you couldn't.
 
 ## Commits and PRs

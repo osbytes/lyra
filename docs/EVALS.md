@@ -34,10 +34,12 @@ than 2 points, an item's by more than 6, or an item of the baseline did not run
 hence the tolerances. `--update-baseline` stores a run as the baseline; commit it only with a
 change that is meant to move the numbers, and say why in the pull request.
 
-`.github/workflows/evals.yml` runs `LYRA_SESSIONS_CORPUS=mini pnpm eval:sessions --quick --check`
-on pull requests that touch the recording or speaker code. The same command before a commit is
-the local gate, with `pnpm eval:local --check` for the recordings no generated session stands in
-for.
+Run `LYRA_SESSIONS_CORPUS=mini pnpm eval:sessions --quick --check` on your own machine before a
+pull request that touches the recording or speaker code. It is not a pull-request check:
+GitHub's hosted macOS runners give Whisper a paravirtual GPU on which one four-minute session
+takes about 35 minutes, so `.github/workflows/evals.yml` is started by hand, for a self-hosted
+Apple-silicon runner. `pnpm eval:local --check` does the same for the recordings no generated
+session stands in for.
 
 Every run uses the same model files: they are pinned by revision and sha256
 ([THIRD_PARTY.md](../THIRD_PARTY.md)), so a change in a score comes from a change in Lyra.
