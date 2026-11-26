@@ -32,6 +32,7 @@ import { movedLines, pinnedSpeakers } from './speakerRules'
 import { DIARIZE_THRESHOLD } from './thresholds'
 import { snapTurns } from './turnEdges'
 import { passClusters, type WrittenPass } from './voiceprints'
+import { reportMeetingStatus } from './meetingActivity'
 
 /**
  * Speaker labels settled once a recording stops. The track a line was heard on can't tell apart
@@ -287,6 +288,7 @@ export function writeLines(
 }
 
 function broadcast(status: MeetingStatus): void {
+  reportMeetingStatus(status)
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send('meeting:status', status)
 }
 

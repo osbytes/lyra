@@ -1,8 +1,10 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { ActivityItem } from '../shared/activity'
 import type {
   HotkeyStatus,
   MeetingStatus,
   MicPrompt,
+  ModelStatus,
   OverlayFrame,
   Person,
   Page,
@@ -113,6 +115,14 @@ const api: VoicePagesApi = {
   getDiagnostics: () => ipcRenderer.invoke('diagnostics:get'),
   revealFolder: (target) => ipcRenderer.invoke('diagnostics:reveal', target),
   cancelModelDownload: (name) => ipcRenderer.invoke('models:cancel', name),
+  modelStatus: () => ipcRenderer.invoke('models:status:get'),
+  retryModel: (feature) => ipcRenderer.invoke('models:retry', feature),
+  onModelStatus: (callback) => subscribe<ModelStatus>('models:status', callback),
+  activityList: () => ipcRenderer.invoke('activity:list'),
+  onActivity: (callback) => subscribe<ActivityItem[]>('activity:changed', callback),
+  activityAct: (id, action) => ipcRenderer.invoke('activity:act', id, action),
+  dismissActivity: (id) => ipcRenderer.invoke('activity:dismiss', id),
+  markActivitySeen: (ids) => ipcRenderer.invoke('activity:seen', ids),
   permissionStatus: () => ipcRenderer.invoke('permissions:status'),
   openPermissionSettings: (kind) => ipcRenderer.invoke('permissions:openSettings', kind),
   copyText: (text) => ipcRenderer.send('clipboard:write', text),

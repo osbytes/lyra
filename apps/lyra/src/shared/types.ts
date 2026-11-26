@@ -1,5 +1,6 @@
 import type { Settings } from './settings'
 import type { KeySource, ProviderId } from './ai'
+import type { ActivityAction, ActivityItem } from './activity'
 
 export type Page = {
   id: string
@@ -284,6 +285,24 @@ export type UpdateStatus =
   | { state: 'ready'; version: string }
   | { state: 'error'; message: string }
 
+/** A setting whose model downloads on first use, so Settings shows how that is going. */
+export type ModelFeature = 'semanticSearch' | 'localNotes'
+
+/**
+ * Where a feature's model stands, keyed by `model` (its file name, which `cancelModelDownload`
+ * takes). `reading` is semantic search embedding sessions after the download: `done` of `total`
+ * passages. `missing` means it downloads on first use; nothing has asked for it yet.
+ */
+export type ModelStatus = { feature: ModelFeature; model: string } & (
+  | { state: 'missing' }
+  | { state: 'downloading'; received: number; total: number }
+  /** `pausedFor`: embedding waits while recording and on battery, so the count holds still. */
+  | { state: 'reading'; done: number; total: number; pausedFor: 'recording' | 'battery' | null }
+  | { state: 'ready' }
+  | { state: 'cancelled' }
+  | { state: 'error'; message: string }
+)
+
 /** A Yjs update to an open session, made outside this window. */
 /** Who a speaker turned out to be (`resolveSpeaker`). */
 export type SpeakerIdentity = { name: string; personId: string | null }
@@ -439,6 +458,22 @@ export type VoicePagesApi = {
   revealFolder: (target: RevealTarget) => Promise<void>
   /** Main window only. Stops a model download in progress; resolves to whether one was. */
   cancelModelDownload: (name: string) => Promise<boolean>
+  /** Main window only. Where each feature's model stands now; one entry per feature that has one. */
+  modelStatus: () => Promise<ModelStatus[]>
+  /** Main window only. Downloads (or loads) a feature's model again, after a failure or cancel. */
+  retryModel: (feature: ModelFeature) => Promise<void>
+  /** A feature's model changed state: downloading, reading sessions, ready, failed. */
+  onModelStatus: (callback: (status: ModelStatus) => void) => () => void
+  /** Every long-running task's progress, ending or error (docs/STATES.md). */
+  activityList: () => Promise<ActivityItem[]>
+  /** Activity changed: the whole list, as main holds it. */
+  onActivity: (callback: (items: ActivityItem[]) => void) => () => void
+  /** Cancel, Retry or Install on an Activity row (Open is the window's own). */
+  activityAct: (id: string, action: Exclude<ActivityAction, 'open'>) => Promise<void>
+  /** Removes an ended Activity row; resolves to whether there was one. */
+  dismissActivity: (id: string) => Promise<boolean>
+  /** Endings the person has now seen (their screen is open, or a toast announced them). */
+  markActivitySeen: (ids: string[]) => Promise<void>
   /** Whether the OS lets Lyra use the microphone and capture the screen. */
   permissionStatus: () => Promise<PermissionStatus>
   /** Main window only. Opens the system settings page for a permission; false if there is none. */

@@ -52,6 +52,9 @@ self-hosted; GitHub is called from the server only).
   `utilityProcess` (`worker.ts`); `service.ts` keeps it in step through the session store's
   change events. Use `@libsql/client` only: libsql's sync API aborts the process on a binary
   parameter. Design: [docs/SEARCH-INDEX.md](docs/SEARCH-INDEX.md) (repo root).
+- `src/main/activity.ts` + `src/shared/activity.ts` — Activity: every long-running task's
+  progress, ending and error, kept in main and shown in the sidebar (or the top bar when it's
+  hidden). Rules for every loading, progress, success and error state: [docs/STATES.md](docs/STATES.md).
 - `src/main/config.ts` + `src/main/envSpec.ts` — the environment, parsed once at startup. Standard
   names (the AI SDK providers' `*_API_KEY` / `*_BASE_URL`, `HF_ENDPOINT`) where one exists, `LYRA_` only for Lyra's own.
 - `src/main/tasks/` — one-off tasks the app binary runs from its command line (`smoke`,

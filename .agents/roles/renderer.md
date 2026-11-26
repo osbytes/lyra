@@ -27,6 +27,10 @@ You own `src/renderer/src/` except `audio/` (see the audio-pipeline role).
 - Progress and processing states (spinners, "still processing" notices) go in fixed chrome that
   stays on screen, like the transcript's header bar, never inside a scroller where they can sit
   past the fold. See "Interface" in [docs/PRINCIPLES.md](../../docs/PRINCIPLES.md).
+- Loading, progress, endings and errors follow [docs/STATES.md](../../docs/STATES.md): pick the
+  rung, use its wording, and never keep the outcome of long work in component state alone
+  (it reports to Activity, and the screen reads it back). Check every layout with the sidebar
+  hidden as well as open.
 - Accessibility: buttons have `type="button"` and an `aria-label` when icon-only; dialogs have
   `role="dialog"` and close on Escape.
 

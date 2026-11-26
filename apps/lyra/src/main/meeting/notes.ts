@@ -28,6 +28,8 @@ import {
 import { NOTES_PIPELINE } from './notesPipeline'
 import type { NotesWriter } from './notesWriter'
 import { onMeetingLabeled } from './events'
+import { reportMeetingStatus, SUMMARY_KEPT, SUMMARY_STOPPED } from './meetingActivity'
+import { clear as clearActivity, end as endActivity, onActivityAction, report as reportActivity } from '../activity'
 
 const ORIGIN_NOTES = 'notes'
 
@@ -35,8 +37,9 @@ const ORIGIN_NOTES = 'notes'
  * Notes share the meeting status channel with speaker labeling. When `MeetingStatus` gains a
  * `task` field, it is set here (`task: 'notes'`) and nowhere else.
  */
-function broadcast(pageId: string, state: MeetingStatus['state'], progress: number, message?: string): void {
+function broadcast(pageId: string, state: MeetingStatus['state'], progress: number, message?: string, announce = false): void {
   const status: MeetingStatus = { pageId, task: 'notes', state, progress, ...(message ? { message } : {}) }
+  reportMeetingStatus(status, announce)
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send('meeting:status', status)
 }
 
@@ -108,6 +111,14 @@ async function survey(): Promise<Record<NotesState, string[]>> {
   return found
 }
 
+/** The bulk run's one Activity row, read back by Settings so its result outlives the dialog. */
+export const BACKFILL_ACTIVITY = 'backfill'
+
+const BACKFILL_WORDS: Record<NotesBackfillKind, { running: string; done: string; failed: string }> = {
+  outdated: { running: 'Rewriting older summaries', done: 'Rewrote', failed: "Couldn't rewrite summaries" },
+  missing: { running: 'Writing missing summaries', done: 'Wrote', failed: "Couldn't write summaries" }
+}
+
 /** `writer` is the one the user chose, or null when summaries are off (writers.ts). */
 export function createMeetingNotes(deps: { writer: () => Promise<NotesWriter | null> }): MeetingNotesService {
   const jobs = createJobs()
@@ -133,7 +144,7 @@ export function createMeetingNotes(deps: { writer: () => Promise<NotesWriter | n
       const notes = await writer.notes(before.lines, {
         signal: job.signal,
         onProgress: (done, total) => {
-          broadcast(pageId, 'summarizing', total ? done / total : 0)
+          broadcast(pageId, 'summarizing', total ? done / total : 0, total > 1 ? `step ${String(done)} of ${String(total)}` : undefined)
         },
         onDownload: (received, total) => {
           broadcast(pageId, 'downloading', total ? received / total : 0, 'notes model')
@@ -161,8 +172,8 @@ export function createMeetingNotes(deps: { writer: () => Promise<NotesWriter | n
         sections: notes.sections.length,
         ms: Date.now() - started
       })
-      if (written || trigger === 'auto') broadcast(pageId, 'done', 1)
-      else broadcast(pageId, 'error', 0, 'The summary was edited while it was being written, so it was kept')
+      if (written || trigger === 'auto') broadcast(pageId, 'done', 1, undefined, trigger === 'manual')
+      else broadcast(pageId, 'error', 0, SUMMARY_KEPT)
       return written
     } catch (error) {
       // A newer request took over; it reports its own status.
@@ -206,24 +217,50 @@ export function createMeetingNotes(deps: { writer: () => Promise<NotesWriter | n
     // A function, not the field: TypeScript would keep the value it narrowed before an await.
     const stopped = (): boolean => run.stop.signal.aborted
     const result: NotesBackfillResult = { written: 0, failed: 0, stopped: false }
+    const words = BACKFILL_WORDS[kind]
+    const base = { id: BACKFILL_ACTIVITY, kind: 'backfill' as const, origin: 'settings' as const }
     try {
-      if (!(await deps.writer())) throw new Error('Summaries are turned off in Settings → Sessions')
+      if (!(await deps.writer())) throw new Error('Summaries are turned off in Settings → Summaries')
       const ids = (await survey())[kind]
+      const titles = new Map((await listSessions()).map((page) => [page.id, page.title]))
+      const failed: string[] = []
       log('notes', 'backfill started', { kind, sessions: ids.length })
-      for (const pageId of ids) {
+      for (const [index, pageId] of ids.entries()) {
         if (stopped()) break
         run.pageId = pageId
+        reportActivity({
+          ...base,
+          title: words.running,
+          detail: `${String(index + 1)} of ${String(ids.length)} sessions`,
+          progress: index / ids.length,
+          actions: ['cancel']
+        })
         try {
           // `auto`: a summary edited since the survey is kept, as after a recording.
           if (await generateNotes(pageId, 'auto')) result.written++
         } catch {
           // Already logged and shown on the session; a stop isn't a failure.
-          if (!stopped()) result.failed++
+          if (!stopped()) {
+            result.failed++
+            failed.push(titles.get(pageId) ?? 'Untitled')
+          }
         }
       }
       result.stopped = stopped()
       log('notes', 'backfill finished', { kind, ...result })
+      const done = `${words.done} ${String(result.written)} ${result.written === 1 ? 'summary' : 'summaries'}`
+      if (!ids.length) clearActivity(BACKFILL_ACTIVITY)
+      else if (result.failed) {
+        endActivity(
+          { ...base, title: `${done}; ${String(result.failed)} couldn't be written`, detail: `Couldn't write: ${failed.join(', ')}` },
+          'partial'
+        )
+      } else endActivity({ ...base, title: result.stopped ? `Stopped. ${done}` : done }, 'done')
       return result
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      endActivity({ ...base, title: words.failed, detail: message }, 'failed')
+      throw error
     } finally {
       backfilling = null
     }
@@ -232,7 +269,7 @@ export function createMeetingNotes(deps: { writer: () => Promise<NotesWriter | n
   function stopBackfill(): boolean {
     if (!backfilling) return false
     backfilling.stop.abort()
-    if (backfilling.pageId) jobs.cancel(backfilling.pageId, new Error('Summary stopped'))
+    if (backfilling.pageId) jobs.cancel(backfilling.pageId, new Error(SUMMARY_STOPPED))
     return true
   }
 
@@ -244,8 +281,20 @@ export function createMeetingNotes(deps: { writer: () => Promise<NotesWriter | n
     backfillStatus,
     backfill,
     stopBackfill,
-    cancel: (pageId) => jobs.cancel(pageId, new Error('Summary stopped')),
+    cancel: (pageId) => jobs.cancel(pageId, new Error(SUMMARY_STOPPED)),
     register() {
+      onActivityAction('notes', (item, action) => {
+        if (!item.pageId) return
+        if (action === 'cancel') jobs.cancel(item.pageId, new Error(SUMMARY_STOPPED))
+        if (action === 'retry') {
+          generateNotes(item.pageId, 'manual').catch(() => {
+            // Reported through meeting:status, Activity and the log.
+          })
+        }
+      })
+      onActivityAction('backfill', (_item, action) => {
+        if (action === 'cancel') stopBackfill()
+      })
       onMeetingLabeled((pageId) => {
         void deps.writer().then(
           (writer) => {
@@ -266,7 +315,7 @@ export function createMeetingNotes(deps: { writer: () => Promise<NotesWriter | n
       ipcMain.handle('notes:backfillStatus', () => backfillStatus())
       ipcMain.handle('notes:backfill', (_event, kind: unknown) => backfill(z.enum(['outdated', 'missing']).parse(kind)))
       ipcMain.handle('notes:stopBackfill', () => stopBackfill())
-      ipcMain.handle('notes:cancel', (_event, pageId: unknown) => jobs.cancel(z.string().parse(pageId), new Error('Summary stopped')))
+      ipcMain.handle('notes:cancel', (_event, pageId: unknown) => jobs.cancel(z.string().parse(pageId), new Error(SUMMARY_STOPPED)))
     }
   }
 }

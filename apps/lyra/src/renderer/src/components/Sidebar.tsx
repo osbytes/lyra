@@ -1,8 +1,10 @@
 import { memo, useMemo } from 'react'
-import type { MeetingStatus, PageSummary, UpdateStatus } from '../../../shared/types'
+import type { MeetingStatus, PageSummary } from '../../../shared/types'
+import { useActivity } from '../hooks/useActivity'
 import { useMeetingStatuses } from '../hooks/useMeetingStatus'
 import { dayGroup, keyLabel, shortcutLabel } from '../lib/format'
 import { processingActivity, statusBusy } from '../lib/status'
+import { ActivityFooter } from './Activity'
 import { useContextMenu } from './ContextMenu'
 import { ScrollArea } from './Controls'
 import { FolderIcon, GearIcon, PeopleIcon, PlusIcon, SearchIcon, TrashIcon } from './Icons'
@@ -13,7 +15,6 @@ type Props = {
   activeId: string | undefined
   /** The session being recorded, marked in the list (and pinned on top when it's further down). */
   recordingId: string | null
-  update: UpdateStatus
   onOpen: (id: string) => void
   onCreate: () => void
   onDelete: (page: PageSummary) => void
@@ -26,21 +27,6 @@ type Props = {
   tags: readonly (readonly [string, number])[]
   tagFilter: string | null
   onTagFilter: (tag: string | null) => void
-}
-
-function updateLabel(status: UpdateStatus): string | null {
-  switch (status.state) {
-    case 'available':
-      return `Update to ${status.version}`
-    case 'downloading':
-      return status.percent > 0 ? `Downloading… ${status.percent}%` : 'Downloading…'
-    case 'ready':
-      return 'Restart to update'
-    case 'error':
-      return 'Update failed. Retry'
-    case 'idle':
-      return null
-  }
 }
 
 type Group = { label: string; pages: PageSummary[] }
@@ -60,7 +46,11 @@ function groupByDay(pages: PageSummary[]): Group[] {
 
 /** Memoized: the notes re-render the window on every keystroke, and the list hasn't changed. */
 /** A spinner on a session still being processed after recording (speakers, summary). */
-function ProcessingMark({ status }: { status: MeetingStatus | undefined }) {
+function ProcessingMark({ status, failed }: { status: MeetingStatus | undefined; failed: string | null }) {
+  // A failure outlasts the status line, which clears; Activity keeps it until it's dealt with.
+  if (failed && (!status || !statusBusy(status))) {
+    return <span className="page-failed" role="img" aria-label={failed} {...tip(failed)} />
+  }
   if (!status || !statusBusy(status)) return null
   const label = processingActivity(status, Date.now()).text
   return <span className="page-processing" role="img" aria-label={label} {...tip(label)} />
@@ -70,7 +60,6 @@ export const Sidebar = memo(function Sidebar({
   pages,
   activeId,
   recordingId,
-  update,
   onOpen,
   onCreate,
   onDelete,
@@ -83,6 +72,15 @@ export const Sidebar = memo(function Sidebar({
 }: Props) {
   const menu = useContextMenu()
   const statuses = useMeetingStatuses()
+  const { visible } = useActivity()
+  const titles = useMemo(() => new Map(pages.map((page) => [page.id, page.title || 'Untitled'])), [pages])
+  const failures = useMemo(() => {
+    const byPage = new Map<string, string>()
+    for (const item of visible) {
+      if (item.pageId && (item.state === 'failed' || item.state === 'partial')) byPage.set(item.pageId, item.title)
+    }
+    return byPage
+  }, [visible])
 
   const groups = useMemo(
     () => groupByDay(pages.filter((page) => !tagFilter || page.tags.includes(tagFilter))),
@@ -134,7 +132,7 @@ export const Sidebar = memo(function Sidebar({
           {page.id === recordingId ? (
             <span className="rec-dot" role="img" aria-label="Recording" {...tip('Recording')} />
           ) : (
-            <ProcessingMark status={statuses.get(page.id)} />
+            <ProcessingMark status={statuses.get(page.id)} failed={failures.get(page.id) ?? null} />
           )}
           {page.title || 'Untitled'}
         </span>
@@ -162,12 +160,6 @@ export const Sidebar = memo(function Sidebar({
       </button>
     </div>
   )
-
-  const label = updateLabel(update)
-  const onUpdate = (): void => {
-    if (update.state === 'ready') void window.api.installUpdate()
-    else if (update.state !== 'downloading') void window.api.startUpdate()
-  }
 
   return (
     <aside className="sidebar">
@@ -251,6 +243,7 @@ export const Sidebar = memo(function Sidebar({
         )}
       </ScrollArea>
 
+      <ActivityFooter visible={visible} pageTitle={(id) => titles.get(id) ?? null} onOpen={onOpen} />
       <div className="sidebar-footer">
         <button
           className="ghost-btn"
@@ -265,18 +258,6 @@ export const Sidebar = memo(function Sidebar({
           </span>
           Settings
         </button>
-        {label ? (
-          <button
-            className="update-chip"
-            type="button"
-            disabled={update.state === 'downloading'}
-            onClick={onUpdate}
-            {...tip(label)}
-          >
-            <span className="update-dot" />
-            <span className="update-label">{label}</span>
-          </button>
-        ) : null}
       </div>
       {menu.element}
     </aside>

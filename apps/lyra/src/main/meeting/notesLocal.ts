@@ -1,7 +1,8 @@
 import { app, utilityProcess, type UtilityProcess } from 'electron'
 import { join } from 'node:path'
 import { log } from '../log'
-import { ensureModelFile, hasModelFile, type ModelFile } from '../models'
+import { ensureModelFile, hasModelFile, type DownloadProgress, type ModelFile } from '../models'
+import { downloadReporter, reportModelFailure, setModelStatus } from '../modelStatus'
 import { cleanTitle, PACKAGED_FLAG, TitleSuggestion, WrittenNotes, type NotesLine } from './notesFormat'
 import { NotesWorkerResponse, type NotesWorkerRequest } from './notesProtocol'
 import type { NotesWriter } from './notesWriter'
@@ -11,6 +12,38 @@ const MODEL: ModelFile = {
   url: 'https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/7dabda4d13d513e3e842b20f0d435c732f172cbe/qwen2.5-3b-instruct-q4_k_m.gguf',
   bytes: 2_104_932_768,
   sha256: '626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d'
+}
+
+/** The model's path, downloading it first if needed; Settings sees how it goes. */
+async function fetchModel(onDownload?: DownloadProgress): Promise<string> {
+  const report = downloadReporter('localNotes', MODEL)
+  try {
+    const path = await ensureModelFile(MODEL, (received, total) => {
+      report(received, total)
+      onDownload?.(received, total)
+    })
+    setModelStatus({ feature: 'localNotes', model: MODEL.name, state: 'ready' })
+    return path
+  } catch (error) {
+    reportModelFailure('localNotes', MODEL, error)
+    throw error
+  }
+}
+
+/**
+ * Starts the ~2 GB download in the background when local summaries are picked, so the first
+ * summary doesn't wait for it. A failure shows in Settings (with Retry) and is logged.
+ */
+export function prefetchNotesModel(): void {
+  fetchModel().catch((error: unknown) => {
+    log('notes', 'could not download the local model', { error: error instanceof Error ? error.message : String(error) })
+  })
+}
+
+/** Tells Settings whether the model is already here, without downloading or hashing it. */
+export async function reportNotesModel(): Promise<void> {
+  const present = await hasModelFile(MODEL)
+  setModelStatus({ feature: 'localNotes', model: MODEL.name, state: present ? 'ready' : 'missing' })
 }
 
 let worker: UtilityProcess | null = null
@@ -103,7 +136,7 @@ export function createLocalNotesWriter(): NotesWriter {
     name: 'local',
     onDevice: true,
     async notes(lines, { onDownload, signal, onProgress } = {}) {
-      const modelPath = await ensureModelFile(MODEL, onDownload)
+      const modelPath = await fetchModel(onDownload)
       // The worker's pipeline already tidied the notes; this checks what crossed the boundary.
       return WrittenNotes.parse(await ask({ kind: 'notes', modelPath, lines }, signal, onProgress))
     },

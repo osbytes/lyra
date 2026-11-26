@@ -90,7 +90,11 @@ function setPaused(next: boolean): void {
 async function setEmbedder(choice: Extract<IndexRequest, { type: 'setEmbedder' }>['embedder']): Promise<void> {
   embedError = null
   // Already loaded: loading it again would hold two copies, since neither can be disposed.
-  if (choice?.kind === 'llama' && embedder?.space === embeddingSpace(choice.sha256)) return
+  // Asked again (Settings' Retry after embedding failed): pick the backlog back up.
+  if (choice?.kind === 'llama' && embedder?.space === embeddingSpace(choice.sha256)) {
+    schedulePump(0)
+    return
+  }
   embedder = null
   if (!choice) return
   const next = choice.kind === 'hash' ? createHashEmbedder() : await createLlamaEmbedder(choice.modelPath, choice.sha256)

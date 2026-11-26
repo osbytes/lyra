@@ -83,6 +83,7 @@ import { MockLanguageModelV4 } from 'ai/test'
 import type { ProviderId } from '../../shared/ai'
 import { parseSettings, type Settings } from '../../shared/settings'
 import { createMeetingNotes } from '../meeting/notes'
+import { activityItem, markSeen } from '../activity'
 import { NOTES_RUN_KEY, NotesRun } from '../meeting/notesJobs'
 import { NOTES_PIPELINE } from '../meeting/notesPipeline'
 import { createFakeNotesWriter, createModelNotesWriter } from '../meeting/notesWriter'
@@ -258,6 +259,11 @@ async function checkNotesWriters(): Promise<void> {
     fail(`backfill: ${JSON.stringify([backfilled, after])}`)
   }
   if (service.stopBackfill()) fail('stopped a backfill that was not running')
+  // The bulk run's result lives in Activity, so it outlives the Settings dialog that started it.
+  const row = activityItem('backfill')
+  if (row?.state !== 'done' || !row.title.startsWith('Rewrote')) fail(`backfill activity: ${JSON.stringify(row)}`)
+  markSeen(['backfill'])
+  if (activityItem('backfill')?.seenAt === null) fail('backfill activity was not marked seen')
   await deletePage(page.id)
 }
 
@@ -1464,6 +1470,19 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
         if (!perms.microphone || !perms.screen) fail('permission status: ' + JSON.stringify(perms))
         if ((await window.api.cancelModelDownload('no-such-model.bin')) !== false) fail('cancelled a download that was not running')
         if (!(await refuses(() => window.api.cancelModelDownload('../settings.json')))) fail('models:cancel took a path')
+        // Model status: a list of known features, a subscription, and Retry only for real features.
+        const modelStates = await window.api.modelStatus()
+        if (!Array.isArray(modelStates) || modelStates.some((entry) => !['semanticSearch', 'localNotes'].includes(entry.feature) || typeof entry.model !== 'string')) {
+          fail('model status: ' + JSON.stringify(modelStates))
+        }
+        const stopModelStatus = window.api.onModelStatus(() => {})
+        if (typeof stopModelStatus !== 'function') fail('onModelStatus returned no unsubscribe')
+        stopModelStatus()
+        if (!(await refuses(() => window.api.retryModel('whisper')))) fail('models:retry took an unknown feature')
+        // Both features are off here, so Retry has nothing to fetch and must not start a download.
+        await window.api.retryModel('semanticSearch')
+        await window.api.retryModel('localNotes')
+        if ((await window.api.modelStatus()).some((entry) => entry.state === 'downloading')) fail('Retry with the feature off started a download')
         if (!(await refuses(() => window.api.listServerModels('http://192.168.1.5:11434/v1')))) fail('listModels took http to another computer')
         if (!(await refuses(() => window.api.revealFolder('/')))) fail('diagnostics:reveal took a path')
         if (!(await refuses(() => window.api.openPermissionSettings('camera')))) fail('openSettings took an unknown kind')
@@ -1479,6 +1498,12 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
         const backfillStatus = await window.api.notesBackfillStatus()
         if (typeof backfillStatus.outdated !== 'number' || backfillStatus.running) fail('backfill status: ' + JSON.stringify(backfillStatus))
         if ((await window.api.stopBackfillNotes()) !== false) fail('stopped a backfill that was not running')
+        const activity = await window.api.activityList()
+        if (!Array.isArray(activity)) fail('activity list: ' + JSON.stringify(activity))
+        if (!(await refuses(() => window.api.activityAct('backfill', 'open')))) fail('activity:act took the window-only open')
+        if (!(await refuses(() => window.api.activityAct('backfill', 'explode')))) fail('activity:act took an unknown action')
+        if ((await window.api.dismissActivity('no-such-task')) !== false) fail('dismissed a task that did not exist')
+        if (!(await refuses(() => window.api.markActivitySeen('x')))) fail('activity:seen took a string')
         await window.api.updateSettings({ notesEngine: engineBefore })
         const vocab = await window.api.updateSettings({ vocabulary: [' Acme', 'acme', 'Siobhan'] })
         if (JSON.stringify(vocab.vocabulary) !== '["Acme","Siobhan"]') fail('vocabulary not cleaned: ' + JSON.stringify(vocab.vocabulary))

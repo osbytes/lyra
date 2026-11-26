@@ -63,6 +63,7 @@ import {
   SELF_MIC_SHARE
 } from './thresholds'
 import { mixTracks, readWav } from './wav'
+import { reportMeetingStatus } from './meetingActivity'
 
 /** Merge a speaker's segments separated by less than this into one turn. */
 const MERGE_GAP_SECONDS = 1
@@ -95,6 +96,7 @@ type NamedSpeaker = {
 const speakerId = (cluster: number): string => `c${String(cluster)}`
 
 function broadcast(status: MeetingStatus): void {
+  reportMeetingStatus(status)
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send('meeting:status', status)
 }
 

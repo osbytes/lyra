@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { PANEL_WIDTHS } from '../../shared/settings'
-import type { PageSummary, UpdateStatus, WhisperStatus } from '../../shared/types'
+import type { PageSummary, WhisperStatus } from '../../shared/types'
 import type { TranscriptSegment } from '../../shared/sessionDoc'
 import { DetailsPanel } from './components/DetailsPanel'
 import { DictationDock, DictationMessage } from './components/DictationDock'
@@ -31,6 +31,8 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import { FindBar } from './components/FindBar'
 import { PanelResizer, type PanelLayout } from './components/PanelResizer'
 import { TooltipLayer } from './components/Tooltip'
+import { useActivity } from './hooks/useActivity'
+import { useActivityEndings } from './hooks/useActivityEndings'
 import { useDictation, type StartResult } from './hooks/useDictation'
 import { sessionCommandAction } from './hooks/sessionCommands'
 import { usePages, type OpenPage } from './hooks/usePages'
@@ -49,6 +51,7 @@ import { scrollBehavior } from './lib/motion'
 import { behindLabel, dockActivity } from './lib/status'
 import { notify, onToast, replacesToast, type ToastMessage } from './lib/toast'
 import { tip } from './components/Tooltip'
+import { ActivityButton } from './components/Activity'
 import lyraIcon from './assets/lyra-icon.png'
 
 /** The overlay pill doesn't need every audio frame; ~12 updates a second look smooth. */
@@ -164,7 +167,6 @@ export default function App(): React.JSX.Element {
     flush
   } = usePages()
   const [status, setStatus] = useState<WhisperStatus>({ state: 'idle' })
-  const [update, setUpdate] = useState<UpdateStatus>({ state: 'idle' })
   const [copied, setCopied] = useState(false)
   const { settings, update: updateSettings } = useSettings()
   const settingsIssues = useSettingsIssues(settings)
@@ -185,12 +187,7 @@ export default function App(): React.JSX.Element {
   const [paneMode, setPaneMode] = useState<PaneMode>('split')
 
   useEffect(() => {
-    const stopStatus = window.api.onStatus(setStatus)
-    const stopUpdate = window.api.onUpdateStatus(setUpdate)
-    return () => {
-      stopStatus()
-      stopUpdate()
-    }
+    return window.api.onStatus(setStatus)
   }, [])
 
   const getDeviceId = useCallback(() => settingsRef.current?.micDeviceId ?? null, [])
@@ -349,6 +346,27 @@ export default function App(): React.JSX.Element {
   openPageRef.current = openPage
   const openFromSidebar = useCallback((id: string) => void openPageRef.current(id), [])
   const openSettings = useCallback(() => setShowSettings(true), [])
+
+  const tasks = useActivity()
+  const pageTitle = useCallback(
+    (id: string): string | null => {
+      const page = pages.find((entry) => entry.id === id)
+      return page ? page.title || 'Untitled' : null
+    },
+    [pages]
+  )
+  useActivityEndings(
+    tasks.items,
+    (item) => (item.origin === 'settings' ? showSettings : item.origin === 'session' && item.pageId === current?.id),
+    (item) => {
+      const session = item.pageId ? pageTitle(item.pageId) : null
+      const text = session ? `${item.title}: ${session}` : item.title
+      const { pageId } = item
+      if (pageId) notify(text, { label: 'Open', run: () => void openPageRef.current(pageId) })
+      else if (item.origin === 'settings') notify(text, { label: 'Open Settings', run: () => setShowSettings(true) })
+      else notify(text)
+    }
+  )
   const openSearch = useCallback(() => setShowSearch(true), [])
 
   const [toast, setToast] = useState<ToastMessage | null>(null)
@@ -653,7 +671,6 @@ export default function App(): React.JSX.Element {
           pages={pages}
           activeId={current?.id}
           recordingId={recordingId}
-          update={update}
           onOpen={openFromSidebar}
           onCreate={newSession}
           onDelete={setConfirmDelete}
@@ -704,6 +721,13 @@ export default function App(): React.JSX.Element {
             >
               <SidebarIcon />
             </button>
+          )}
+          {sidebarOpen ? null : (
+            <ActivityButton
+              visible={tasks.visible}
+              pageTitle={pageTitle}
+              onOpen={(id) => void openPageRef.current(id)}
+            />
           )}
           <div className="brand">
             <img src={lyraIcon} alt="" width={24} height={24} />
