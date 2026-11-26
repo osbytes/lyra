@@ -3,6 +3,8 @@
  * session, time limits on model calls, and whether the summary is still the one Lyra wrote.
  */
 import { createHash } from 'node:crypto'
+import { z } from 'zod'
+import type { NotesState } from '../../shared/types'
 
 /** A model call that hasn't answered in this long is treated as hung. */
 export const CALL_TIMEOUT_MS = 5 * 60_000
@@ -105,4 +107,29 @@ export function mayWriteSummary(
     case 'manual':
       return now.summary === atStart || !summaryEdited(now.summary, now.fingerprint)
   }
+}
+
+/** Where the record of how a session's notes were made lives in the session doc's meta map. */
+export const NOTES_RUN_KEY = 'notesRun'
+
+/**
+ * How a session's notes were made: the pipeline's version (`NOTES_PIPELINE`), the writer that
+ * ran it, and when. Kept beside the summary so notes made by an older pipeline can be found and
+ * rewritten later.
+ */
+export const NotesRun = z.strictObject({ pipeline: z.number().int(), writer: z.string(), at: z.string() })
+export type NotesRun = z.infer<typeof NotesRun>
+
+/** Notes written before Lyra kept a record were made by the first pipeline. */
+const UNRECORDED_PIPELINE = 1
+
+/** Where a session's notes stand against the current pipeline; see `NotesState`. */
+export function notesState(
+  session: { summary: string; fingerprint: unknown; run: unknown; meeting: boolean },
+  pipeline: number
+): NotesState {
+  if (!session.summary.trim()) return session.meeting ? 'missing' : 'none'
+  if (summaryEdited(session.summary, session.fingerprint)) return 'edited'
+  const run = NotesRun.safeParse(session.run)
+  return (run.success ? run.data.pipeline : UNRECORDED_PIPELINE) < pipeline ? 'outdated' : 'current'
 }

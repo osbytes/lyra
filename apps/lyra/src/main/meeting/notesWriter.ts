@@ -7,20 +7,24 @@ import {
   type LanguageModel
 } from 'ai'
 import type { DownloadProgress } from '../models'
-import { estimateTokens, fitText, mapReduceNotes, titlePrompt, type TokenCounter } from './notesChunks'
+import { estimateTokens, fitText, lineText, titlePrompt, type TokenCounter } from './notesChunks'
 import { CALL_TIMEOUT_MS, callSignal, isAbort } from './notesJobs'
 import {
   cleanTitle,
-  MeetingNotes,
-  NOTES_SYSTEM_PROMPT,
   TITLE_SYSTEM_PROMPT,
-  TitleSuggestion
+  TitleSuggestion,
+  type MeetingNotes,
+  type NotesLine,
+  type WrittenNotes
 } from './notesFormat'
+import { writeNotes } from './notesPipeline'
 
 export type NotesOptions = {
   onDownload?: DownloadProgress | undefined
   /** Aborts the run: the job was replaced, cancelled, or the app is quitting. */
   signal?: AbortSignal | undefined
+  /** Model calls done of those planned; a long meeting takes one per section. */
+  onProgress?: ((done: number, total: number) => void) | undefined
 }
 
 /**
@@ -38,7 +42,7 @@ export type NotesWriter = {
    * loopback address. Decides whether the user's typed notes may go along with a title request.
    */
   readonly onDevice: boolean
-  notes(transcript: string, options?: NotesOptions): Promise<MeetingNotes>
+  notes(lines: NotesLine[], options?: NotesOptions): Promise<WrittenNotes>
   /** A short heading, or null when the model gave nothing usable. */
   title(text: string, signal?: AbortSignal): Promise<string | null>
   /**
@@ -80,7 +84,7 @@ export type ModelWriterOptions = {
   /** See `NotesWriter.onDevice`; false unless the caller knows the server is on this machine. */
   onDevice?: boolean
   /**
-   * Tokens of transcript one call may carry; a longer meeting is summarized in parts and merged.
+   * Tokens of transcript one call may carry; a longer meeting is cut into more sections.
    * Hosted models take a large budget; an unknown server gets a small one, since servers like
    * Ollama's `/v1` cut a long prompt silently instead of failing.
    */
@@ -105,19 +109,20 @@ export function createModelNotesWriter(model: LanguageModel, name: string, optio
   return {
     name,
     onDevice: options.onDevice ?? false,
-    async notes(transcript, { signal } = {}) {
+    async notes(lines, { signal, onProgress } = {}) {
       try {
-        return await mapReduceNotes({
-          transcript,
+        return await writeNotes({
+          lines,
           budget,
           count,
           signal,
-          ask: async (prompt) => {
+          onProgress,
+          ask: async (call) => {
             const { output } = await generateText({
               model,
-              instructions: NOTES_SYSTEM_PROMPT,
-              prompt,
-              output: Output.object({ schema: MeetingNotes, name: 'meeting_notes' }),
+              instructions: call.system,
+              prompt: call.prompt,
+              output: Output.object({ schema: call.schema, name: call.name }),
               maxOutputTokens: outputTokens,
               abortSignal: callSignal(signal, timeoutMs)
             })
@@ -178,9 +183,9 @@ export function createFakeNotesWriter(answer: { notes: MeetingNotes; title: stri
     name: 'fake',
     onDevice: true,
     asked,
-    notes(transcript) {
-      asked.push(transcript)
-      return Promise.resolve(answer.notes)
+    notes(lines) {
+      asked.push(lines.map(lineText).join('\n'))
+      return Promise.resolve({ ...answer.notes, sections: [] })
     },
     title(text) {
       asked.push(text)

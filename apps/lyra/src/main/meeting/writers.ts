@@ -2,8 +2,8 @@ import type { LanguageModel } from 'ai'
 import { PROVIDERS, type ProviderId } from '../../shared/ai'
 import { isLoopbackUrl, type Settings } from '../../shared/settings'
 import type { Config } from '../config'
-import { estimateTokens } from './notesChunks'
-import { NOTES_SYSTEM_PROMPT } from './notesFormat'
+import { estimateTokens, promptTokens } from './notesChunks'
+import { NOTES_SYSTEM_PROMPTS } from './notesFormat'
 import { createModelNotesWriter, type NotesWriter } from './notesWriter'
 import { createOllamaNotesWriter, isOllama, type Fetch } from './ollama'
 
@@ -28,7 +28,7 @@ export type WriterDeps = {
  */
 const COMPATIBLE_CONTEXT = 4_096
 const COMPATIBLE_OUTPUT = 1_024
-const COMPATIBLE_BUDGET = COMPATIBLE_CONTEXT - COMPATIBLE_OUTPUT - estimateTokens(NOTES_SYSTEM_PROMPT) - 64
+const COMPATIBLE_BUDGET = COMPATIBLE_CONTEXT - COMPATIBLE_OUTPUT - promptTokens(NOTES_SYSTEM_PROMPTS, estimateTokens) - 64
 /** A local server on a CPU is slow; this only catches one that hung. */
 const COMPATIBLE_CALL_TIMEOUT_MS = 10 * 60_000
 

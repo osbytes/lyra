@@ -6,15 +6,10 @@
  * it is unit-tested with a fake `fetch`.
  */
 import { z } from 'zod'
-import { estimateTokens, fitText, mapReduceNotes, titlePrompt } from './notesChunks'
+import { estimateTokens, fitText, promptTokens, titlePrompt } from './notesChunks'
 import { callSignal } from './notesJobs'
-import {
-  cleanTitle,
-  MeetingNotes,
-  NOTES_SYSTEM_PROMPT,
-  TITLE_SYSTEM_PROMPT,
-  TitleSuggestion
-} from './notesFormat'
+import { cleanTitle, NOTES_SYSTEM_PROMPTS, TITLE_SYSTEM_PROMPT, TitleSuggestion } from './notesFormat'
+import { writeNotes } from './notesPipeline'
 import type { NotesWriter } from './notesWriter'
 
 export type Fetch = typeof fetch
@@ -232,7 +227,7 @@ export function createOllamaNotesWriter(options: OllamaWriterOptions): NotesWrit
   const root = serverRoot(options.baseUrl)
   const { model, apiKey } = options
   const name = `Ollama (${model})`
-  const systemTokens = estimateTokens(NOTES_SYSTEM_PROMPT)
+  const systemTokens = promptTokens(NOTES_SYSTEM_PROMPTS, estimateTokens)
 
   async function chat<T>(
     chatOptions: Omit<OllamaChatOptions, 'model'>,
@@ -251,19 +246,21 @@ export function createOllamaNotesWriter(options: OllamaWriterOptions): NotesWrit
   return {
     name,
     onDevice: options.onDevice,
-    async notes(transcript, { signal } = {}) {
+    async notes(lines, { signal, onProgress } = {}) {
       try {
         const numCtx = await contextFor(fetchFn, root, model, apiKey)
         const numPredict = Math.min(2048, Math.floor(numCtx / 4))
-        return await mapReduceNotes({
-          transcript,
+        return await writeNotes({
+          lines,
           budget: numCtx - numPredict - systemTokens - 64,
           count: estimateTokens,
           signal,
-          ask: (prompt, { final }) =>
+          onProgress,
+          // The pipeline checks the answer against the call's schema; this checks it's JSON.
+          ask: (call) =>
             chat(
-              { system: NOTES_SYSTEM_PROMPT, prompt, schema: MeetingNotes, numCtx, numPredict, unload: final },
-              MeetingNotes,
+              { system: call.system, prompt: call.prompt, schema: call.schema, numCtx, numPredict, unload: call.final },
+              call.schema,
               signal
             )
         })

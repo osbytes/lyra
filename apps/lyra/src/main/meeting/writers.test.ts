@@ -1,7 +1,7 @@
 import { MockLanguageModelV4 } from 'ai/test'
 import { describe, expect, it, vi } from 'vitest'
 import type { Settings } from '../../shared/settings'
-import type { MeetingNotes } from './notesFormat'
+import type { MeetingNotes, NotesLine } from './notesFormat'
 import { createFakeNotesWriter, createModelNotesWriter, testNotesWriter } from './notesWriter'
 import { forgetProbes, type Fetch } from './ollama'
 import { chooseWriter } from './writers'
@@ -14,13 +14,31 @@ vi.hoisted(() => {
 })
 
 const notes: MeetingNotes = { decisions: [], actionItems: [], openQuestions: [], summary: 'Done.' }
+const draft = { decisions: [], openQuestions: [], summary: 'Done.' }
 
-function mockModel(prompts: string[], text: string = JSON.stringify(notes)): MockLanguageModelV4 {
+/** `Name: text` lines as the notes pipeline gets them, `seconds` apart. */
+function linesOf(transcript: string, seconds = 5): NotesLine[] {
+  return transcript.split('\n').map((line, index) => {
+    const at = line.indexOf(': ')
+    return { speaker: line.slice(0, at), text: line.slice(at + 2), start: index * seconds, end: index * seconds + seconds }
+  })
+}
+
+/** Answers each call in the shape it asks for (`text` when given): notes, a section's, or a summary. */
+function mockModel(prompts: string[], text?: string): MockLanguageModelV4 {
   return new MockLanguageModelV4({
     doGenerate: (options) => {
-      prompts.push(JSON.stringify(options.prompt))
+      const prompt = JSON.stringify(options.prompt)
+      prompts.push(prompt)
+      const answer = prompt.includes('<parts>')
+        ? { summary: 'Done.' }
+        : prompt.includes('You find the action items')
+          ? { actionItems: [] }
+          : prompt.includes('This is part ')
+            ? { ...draft, title: 'Budget' }
+            : draft
       return Promise.resolve({
-        content: [{ type: 'text', text }],
+        content: [{ type: 'text', text: text ?? JSON.stringify(answer) }],
         finishReason: { unified: 'stop', raw: 'stop' },
         usage: {
           inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
@@ -32,19 +50,25 @@ function mockModel(prompts: string[], text: string = JSON.stringify(notes)): Moc
   })
 }
 
-const longTranscript = Array.from({ length: 2000 }, (_, i) => `Sam: point number ${String(i)} about the budget`).join('\n')
+const longTranscript = linesOf(
+  Array.from({ length: 2000 }, (_, i) => `Sam: point number ${String(i)} about the budget`).join('\n'),
+  0
+)
 
 describe('createModelNotesWriter', () => {
-  it('sends a hosted model the whole meeting in one call', async () => {
+  it('sends a hosted model the whole meeting at once: its notes, then its action items', async () => {
     const prompts: string[] = []
-    await createModelNotesWriter(mockModel(prompts), 'hosted').notes(longTranscript)
-    expect(prompts).toHaveLength(1)
+    expect(await createModelNotesWriter(mockModel(prompts), 'hosted').notes(longTranscript)).toEqual({ ...notes, sections: [] })
+    expect(prompts).toHaveLength(2)
   })
 
-  it('splits for a small budget (an OpenAI-compatible server) and merges', async () => {
+  it('cuts sections for a small budget (an OpenAI-compatible server) and sums them up', async () => {
     const prompts: string[] = []
-    await createModelNotesWriter(mockModel(prompts), 'compatible', { budget: 2500 }).notes(longTranscript)
+    const written = await createModelNotesWriter(mockModel(prompts), 'compatible', { budget: 2500 }).notes(longTranscript)
     expect(prompts.length).toBeGreaterThan(3)
+    // Notes and action items for each section, then the summary.
+    expect(written.sections.length).toBe((prompts.length - 1) / 2)
+    expect(written.sections.every((section) => section.title === 'Budget')).toBe(true)
   })
 })
 

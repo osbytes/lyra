@@ -167,6 +167,20 @@ export type NotesServer = { kind: 'ollama' | 'lm-studio'; baseUrl: string }
 export type ServerModels = { models: string[]; kind: 'ollama' | 'other' }
 
 /** A Settings "Test" of the summary engine: how long one tiny request took, or why it failed. */
+/**
+ * Sessions whose notes a bulk run would write: `outdated`, made by an older notes pipeline and
+ * untouched since; `missing`, meetings without notes. `edited` notes are never rewritten in bulk.
+ */
+export type NotesBackfill = { outdated: number; missing: number; edited: number; running: boolean }
+export type NotesBackfillKind = 'outdated' | 'missing'
+/**
+ * Where a session's notes stand against the current notes pipeline: `current`, written by it;
+ * `outdated`, by an older one and untouched since; `edited`, changed by the user; `missing`, a
+ * meeting with no notes yet; `none`, no notes and nothing that would get them.
+ */
+export type NotesState = 'current' | 'outdated' | 'edited' | 'missing' | 'none'
+export type NotesBackfillResult = { written: number; failed: number; stopped: boolean }
+
 export type NotesTestResult = { ok: true; ms: number; onDevice: boolean } | { ok: false; error: string }
 
 /** A permission the OS asks the user for. */
@@ -332,6 +346,14 @@ export type VoicePagesApi = {
   summaryEdited: (pageId: string) => Promise<boolean>
   /** Stops a summary being written; resolves to whether one was running. */
   cancelNotes: (pageId: string) => Promise<boolean>
+  /** Where a session's notes stand: an `outdated` summary is worth rewriting. */
+  notesState: (pageId: string) => Promise<NotesState>
+  /** How many sessions' notes are out of date or missing (Settings → Sessions). */
+  notesBackfillStatus: () => Promise<NotesBackfill>
+  /** Writes those notes, one session at a time; resolves when done or stopped. */
+  backfillNotes: (kind: NotesBackfillKind) => Promise<NotesBackfillResult>
+  /** Stops `backfillNotes`; resolves to whether it was running. */
+  stopBackfillNotes: () => Promise<boolean>
   /** Main window only. Where a provider's API key comes from, or null when there is none. */
   keySource: (provider: ProviderId) => Promise<KeySource | null>
   /**

@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { createJobs, mayWriteSummary, SupersededError, summaryEdited, summaryFingerprint } from './notesJobs'
+import {
+  createJobs,
+  mayWriteSummary,
+  notesState,
+  SupersededError,
+  summaryEdited,
+  summaryFingerprint
+} from './notesJobs'
 
 describe('createJobs', () => {
   it('lets a newer job for the same session replace the one in flight', () => {
@@ -52,5 +59,32 @@ describe('summary edits', () => {
     const edited = `${generated} edited`
     expect(mayWriteSummary('manual', { summary: edited, fingerprint }, edited)).toBe(true)
     expect(mayWriteSummary('manual', { summary: `${edited} more`, fingerprint }, edited)).toBe(false)
+  })
+})
+
+describe('notesState', () => {
+  const summary = 'Summary\nWe shipped.'
+  const fingerprint = summaryFingerprint(summary)
+  const run = (pipeline: number): unknown => ({ pipeline, writer: 'local', at: '2026-11-01T00:00:00.000Z' })
+
+  it('finds notes from an older pipeline that nobody changed', () => {
+    expect(notesState({ summary, fingerprint, run: run(1), meeting: true }, 2)).toBe('outdated')
+    expect(notesState({ summary, fingerprint, run: run(2), meeting: true }, 2)).toBe('current')
+  })
+
+  it('counts notes written before the record as the first pipeline', () => {
+    expect(notesState({ summary, fingerprint, run: undefined, meeting: true }, 2)).toBe('outdated')
+    expect(notesState({ summary, fingerprint, run: { pipeline: 'x' }, meeting: true }, 2)).toBe('outdated')
+    expect(notesState({ summary, fingerprint, run: undefined, meeting: true }, 1)).toBe('current')
+  })
+
+  it('never offers to rewrite edited notes', () => {
+    expect(notesState({ summary: `${summary} Edited.`, fingerprint, run: run(1), meeting: true }, 2)).toBe('edited')
+    expect(notesState({ summary, fingerprint: undefined, run: undefined, meeting: true }, 2)).toBe('edited')
+  })
+
+  it('tells a meeting without notes from a note that never gets them', () => {
+    expect(notesState({ summary: ' ', fingerprint: undefined, run: undefined, meeting: true }, 2)).toBe('missing')
+    expect(notesState({ summary: '', fingerprint: undefined, run: undefined, meeting: false }, 2)).toBe('none')
   })
 })

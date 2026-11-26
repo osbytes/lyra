@@ -2,7 +2,7 @@ import { app, utilityProcess, type UtilityProcess } from 'electron'
 import { join } from 'node:path'
 import { log } from '../log'
 import { ensureModelFile, hasModelFile, type ModelFile } from '../models'
-import { cleanTitle, MeetingNotes, PACKAGED_FLAG, tidyNotes, TitleSuggestion } from './notesFormat'
+import { cleanTitle, PACKAGED_FLAG, TitleSuggestion, WrittenNotes, type NotesLine } from './notesFormat'
 import { NotesWorkerResponse, type NotesWorkerRequest } from './notesProtocol'
 import type { NotesWriter } from './notesWriter'
 
@@ -15,7 +15,12 @@ const MODEL: ModelFile = {
 
 let worker: UtilityProcess | null = null
 let nextId = 1
-const pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>()
+type Pending = {
+  resolve: (value: unknown) => void
+  reject: (error: Error) => void
+  onProgress?: ((done: number, total: number) => void) | undefined
+}
+const pending = new Map<number, Pending>()
 
 function getWorker(): UtilityProcess {
   if (worker) return worker
@@ -29,9 +34,19 @@ function getWorker(): UtilityProcess {
     const message = parsed.data
     const entry = pending.get(message.id)
     if (!entry) return
-    pending.delete(message.id)
-    if (message.ok) entry.resolve(message.result)
-    else entry.reject(new Error(message.error))
+    switch (message.kind) {
+      case 'progress':
+        entry.onProgress?.(message.done, message.total)
+        return
+      case 'result':
+        pending.delete(message.id)
+        entry.resolve(message.result)
+        return
+      case 'error':
+        pending.delete(message.id)
+        entry.reject(new Error(message.error))
+        return
+    }
   })
   child.on('exit', (code) => {
     log('notes', 'local worker exited', { code })
@@ -43,10 +58,14 @@ function getWorker(): UtilityProcess {
   return child
 }
 
-type Work = { kind: 'notes'; modelPath: string; transcript: string } | { kind: 'title'; modelPath: string; text: string }
+type Work = { kind: 'notes'; modelPath: string; lines: NotesLine[] } | { kind: 'title'; modelPath: string; text: string }
 
 /** Sends one request to the worker; aborting `signal` stops it there too. */
-function ask(work: Work, signal?: AbortSignal): Promise<unknown> {
+function ask(
+  work: Work,
+  signal?: AbortSignal,
+  onProgress?: (done: number, total: number) => void
+): Promise<unknown> {
   signal?.throwIfAborted()
   const id = nextId++
   const child = getWorker()
@@ -59,6 +78,7 @@ function ask(work: Work, signal?: AbortSignal): Promise<unknown> {
     }
     signal?.addEventListener('abort', onAbort, { once: true })
     pending.set(id, {
+      onProgress,
       resolve: (value) => {
         signal?.removeEventListener('abort', onAbort)
         resolve(value)
@@ -75,17 +95,17 @@ function ask(work: Work, signal?: AbortSignal): Promise<unknown> {
 
 /**
  * The NotesWriter for the on-device model (~2 GB, downloaded on first use); it never sends
- * anything off this computer. The worker splits a long meeting to fit the model's context,
- * measured with its own tokenizer, and merges the partial notes.
+ * anything off this computer. The worker cuts a long meeting into sections that fit the model's
+ * context, measured with its own tokenizer (notesPipeline.ts).
  */
 export function createLocalNotesWriter(): NotesWriter {
   return {
     name: 'local',
     onDevice: true,
-    async notes(transcript, { onDownload, signal } = {}) {
+    async notes(lines, { onDownload, signal, onProgress } = {}) {
       const modelPath = await ensureModelFile(MODEL, onDownload)
-      // The grammar makes the model emit this shape; parsing is the check, not a hope.
-      return tidyNotes(MeetingNotes.parse(await ask({ kind: 'notes', modelPath, transcript }, signal)))
+      // The worker's pipeline already tidied the notes; this checks what crossed the boundary.
+      return WrittenNotes.parse(await ask({ kind: 'notes', modelPath, lines }, signal, onProgress))
     },
     async title(text, signal) {
       const modelPath = await ensureModelFile(MODEL)

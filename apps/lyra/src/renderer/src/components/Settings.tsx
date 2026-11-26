@@ -4,7 +4,13 @@ import { formatBytes } from '../../../shared/bytes'
 import { WHISPER_LANGUAGES } from '../../../shared/languages'
 import { mergeIgnoredApps } from '../../../shared/ignoredApps'
 import { isStricterRetention } from '../../../shared/retention'
-import type { NotesTestResult, Settings as SettingsValue } from '../../../shared/types'
+import type {
+  NotesBackfill,
+  NotesBackfillKind,
+  NotesBackfillResult,
+  NotesTestResult,
+  Settings as SettingsValue
+} from '../../../shared/types'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { usePermissions } from '../hooks/usePermissions'
 import {
@@ -551,6 +557,86 @@ function TestHosted() {
   )
 }
 
+function plural(count: number, one: string, many: string): string {
+  return `${String(count)} ${count === 1 ? one : many}`
+}
+
+function backfillText(kind: NotesBackfillKind, result: NotesBackfillResult): string {
+  const done = `${kind === 'outdated' ? 'Rewrote' : 'Wrote'} ${plural(result.written, 'summary', 'summaries')}`
+  const failed = result.failed ? `; ${plural(result.failed, 'session', 'sessions')} failed (each one shows why)` : ''
+  return `${result.stopped ? 'Stopped. ' : ''}${done}${failed}.`
+}
+
+/**
+ * Notes for sessions recorded before the current notes pipeline, or before summaries were on.
+ * Each session's notes record the pipeline that made them, so this finds the ones worth
+ * redoing; a summary the user edited is never touched.
+ */
+function NotesBackfillRows() {
+  const [status, setStatus] = useState<NotesBackfill | null>(null)
+  const [busy, setBusy] = useState<NotesBackfillKind | null>(null)
+  const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null)
+  const refresh = useCallback(() => {
+    window.api.notesBackfillStatus().then(setStatus, (caught: unknown) => {
+      setNotice({ text: ipcErrorMessage(caught), error: true })
+    })
+  }, [])
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  const run = async (kind: NotesBackfillKind): Promise<void> => {
+    setBusy(kind)
+    setNotice(null)
+    try {
+      const result = await window.api.backfillNotes(kind)
+      setNotice({ text: backfillText(kind, result), error: result.failed > 0 })
+    } catch (caught) {
+      setNotice({ text: ipcErrorMessage(caught), error: true })
+    } finally {
+      setBusy(null)
+      refresh()
+    }
+  }
+  const button = (kind: NotesBackfillKind, label: string) =>
+    busy === kind ? (
+      <button className="btn" type="button" onClick={() => void window.api.stopBackfillNotes()}>
+        Stop
+      </button>
+    ) : (
+      <button className="btn" type="button" disabled={busy !== null || status?.running} onClick={() => void run(kind)}>
+        {label}
+      </button>
+    )
+
+  const edited = status?.edited ? ` ${plural(status.edited, 'summary', 'summaries')} you edited stay as they are.` : ''
+  return (
+    <>
+      {status?.outdated || busy === 'outdated' ? (
+        <Row
+          label="Older summaries"
+          hint={`${plural(status?.outdated ?? 0, 'summary was', 'summaries were')} written by an earlier version of Lyra. Rewriting gives them sections and better action items.${edited}`}
+        >
+          {button('outdated', 'Rewrite')}
+        </Row>
+      ) : null}
+      {status?.missing || busy === 'missing' ? (
+        <Row
+          label="Meetings without a summary"
+          hint={`${plural(status?.missing ?? 0, 'meeting has', 'meetings have')} no summary yet, from before summaries were on.`}
+        >
+          {button('missing', 'Write')}
+        </Row>
+      ) : null}
+      {notice ? (
+        <p className={notice.error ? 'settings-notice is-error' : 'settings-notice'} role="status">
+          {notice.text}
+        </p>
+      ) : null}
+    </>
+  )
+}
+
 function SummarySection({ settings, update }: SectionProps) {
   const choice = summaryChoice(settings)
   const info = PROVIDERS[settings.cloudProvider]
@@ -615,6 +701,7 @@ function SummarySection({ settings, update }: SectionProps) {
           <TestHosted />
         </>
       ) : null}
+      {choice !== 'off' ? <NotesBackfillRows /> : null}
     </Section>
   )
 }

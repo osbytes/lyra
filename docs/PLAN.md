@@ -200,7 +200,7 @@ Generate notes from the labeled transcript, saved as `<timestamp>.notes.txt` nex
 - Open questions
 
 **Model options**, chosen in Settings and off until the user picks one:
-- **Local (default):** llama.cpp via `node-llama-cpp` with a small instruct model (3–8B, 2–5 GB download). Fully private, but slower and lower quality on long meetings. Split long transcripts into chunks: summarize each, then summarize the summaries.
+- **Local (default):** llama.cpp via `node-llama-cpp` with a small instruct model (3–8B, 2–5 GB download). Fully private, but slower and lower quality on long meetings. A meeting over 20 minutes (or too big for one call) is cut into sections where the topic changes (`meeting/notesSections.ts`), each section is summarized with a recap of the ones before it, items are combined in code, and only the overall summary is written from the sections' summaries (`meeting/notesPipeline.ts`). The summary lists the sections with their start times. Action items get a call of their own per section (the model quotes the words that commit to each, and an item it can't quote is dropped): asked for alongside everything else, a 3B model leaves the list empty. Each session's notes record the pipeline version that made them (`notesRun` in the doc's meta, `NOTES_PIPELINE`), so Settings → Summaries can rewrite untouched notes from an older version, or write notes for meetings that have none.
 - **Cloud (opt-in):** Claude API with the user's own API key, stored in the OS keychain via `safeStorage`. Much better notes. Show a clear "this sends the transcript to Anthropic" warning.
 
 Notes can be regenerated, and editing the transcript (e.g. fixing a name) offers to regenerate them.
