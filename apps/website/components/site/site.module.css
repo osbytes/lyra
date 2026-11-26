@@ -411,6 +411,11 @@
     gap: 24px;
   }
 
+  /* Stacked, the headline and lede read as one block; the copy's own gap is space enough. */
+  .lede {
+    margin-top: 0;
+  }
+
   .section {
     padding-block: 72px;
   }
