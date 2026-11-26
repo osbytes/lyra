@@ -21,6 +21,7 @@
     "eval:calls": "node scripts/run-eval.cjs --dataset calls",
     "eval:sessions": "node scripts/run-eval.cjs --dataset sessions",
     "eval:ami": "node scripts/run-eval.cjs --dataset ami",
+    "eval:local": "node scripts/run-eval.cjs --dataset local",
     "replay:session": "node scripts/replay-session.cjs",
     "screenshot": "electron-vite build && node scripts/capture-screenshot.cjs",
     "build:unpack": "pnpm build && pnpm prepare:llama && electron-builder --dir --publish never",

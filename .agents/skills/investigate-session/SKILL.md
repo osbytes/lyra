@@ -93,6 +93,13 @@ of the real people is kept:
 5. Run the case on the old code and the new: `pnpm eval:sessions --sessions case-<shape>`
    (sessions are cached under `eval-data/`; delete the case's folder after changing its entry).
    It must fail before the fix the same way the real session did, and pass after.
+6. Keep the real session as a private case too, when the generated one can't stand in for it
+   (it often can't: real rooms, microphones and Whisper's timing on real speech differ). Once
+   the session's speakers are right in the app (the fix relabeled it, or the user corrected
+   it), `node scripts/eval/local.cjs add <id> --name <shape>` copies its audio and transcript
+   to `eval-data/local/` and `pnpm eval:local --check` replays it from then on. Name it by its
+   shape ("desk-two-voices"), not by what or who it was. It stays on this machine: the folder
+   is git-ignored, and neither the case nor its scores' text go in a commit or a report.
 
 ## De-identify
 

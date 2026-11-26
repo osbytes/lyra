@@ -11,7 +11,8 @@ import { embedVoice, ensureSpeakerModels } from '../meeting/speakers'
 import { readWav } from '../meeting/wav'
 import type { Services } from '../services'
 import { replayRecording } from '../meeting/replay'
-import { relabeled } from '../meeting/relabel'
+import { labelStability } from '../meeting/labelChanges'
+import { liveWords, relabeled } from '../meeting/relabel'
 import { onRecordingFinished, recordingPageId, trackPath } from '../recorder'
 import { toggleSession } from '../session'
 import { log } from '../log'
@@ -102,7 +103,11 @@ export async function runMeetingFixture(task: MeetingTask, services: Services): 
         end,
         text
       }))
-      await writeFile(output, JSON.stringify({ seconds: +took, segments }, null, 2), 'utf8')
+      const labels = labelStability(page.id)
+      // The words as transcribed, with their times: the scorer uses them to tell words given to
+      // the wrong speaker by diarization from words whose times put them in the wrong turn.
+      const words = (await liveWords(page.id)).map(({ text, start, end, track }) => ({ text, start, end, track }))
+      await writeFile(output, JSON.stringify({ seconds: +took, labels, segments, words }, null, 2), 'utf8')
     }
 
     // Name the first speaker and save their voice, as the speaker picker does.

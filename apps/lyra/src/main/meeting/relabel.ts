@@ -21,6 +21,7 @@ import { deleteSessionAudio, recordingPageId, trackPath } from '../recorder'
 import { editSession, readSession, sessionRawDir, updateManifest } from '../sessionStore'
 import { getSettings } from '../settings'
 import { notifyLabeled } from './events'
+import { changedLabels, noteSettled } from './labelChanges'
 import { learnSamples, mergeSamePerson, mergeTinySpeakers, nameSpeakers, nextPassId } from './pipeline'
 import type { DiarizedSegment } from './protocol'
 import { audioSeconds, diarize, ensureSpeakerModels } from './speakers'
@@ -355,8 +356,8 @@ async function relabel(pageId: string): Promise<void> {
   // Lines whose speaker the user chose (marked, or moved since an earlier pass): their words keep
   // that speaker, live lines from a take never relabeled included.
   const moved = movedLines(before.transcript, await passClusters(pageId))
-  const speakers = assignWords(words, result.segments)
   const pins = pinnedSpeakers(words, moved)
+  const speakers = assignWords(words, result.segments)
   const lines = buildLines(words, speakers, pins)
   // Diarized speakers left with words of their own; one whose words were all moved isn't named.
   const voices = new Set(speakers.filter((_, index) => pins[index] === null))
@@ -451,6 +452,16 @@ async function relabel(pageId: string): Promise<void> {
   }))
   timing.finish()
   broadcast({ pageId, task: 'speakers', state: 'done', progress: 1 })
-  log('relabel', 'labeled', { pageId, pass: passId, speakers: fields.size, lines: segments.length })
+  // How much of what was labeled while recording this pass changed (`labelChanges.ts`).
+  const stability = changedLabels(before.transcript, segments)
+  noteSettled(pageId, stability.labeled, stability.changed)
+  log('relabel', 'labeled', {
+    pageId,
+    pass: passId,
+    speakers: fields.size,
+    lines: segments.length,
+    liveLabeledSeconds: +stability.labeled.toFixed(1),
+    changedSeconds: +stability.changed.toFixed(1)
+  })
   if (fields.size >= 2) notifyLabeled(pageId)
 }

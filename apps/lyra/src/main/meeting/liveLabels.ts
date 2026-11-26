@@ -3,6 +3,7 @@ import type { AudioTrack } from '../../shared/types'
 import { log } from '../log'
 import { identifiesSpeakers, onLiveChunk, recordingPageId, type LiveTake } from '../recorder'
 import type { TakeWord } from '../takeWriter'
+import { changedLabels, noteRound } from './labelChanges'
 import { mergeSamePerson, mergeTinySpeakers, nameSpeakers } from './pipeline'
 import { assignWords, buildLines, liveWords, matchSpeakers, writeLines, type HeardWord } from './relabel'
 import { ensureSpeakerModels, rollDiarize } from './speakers'
@@ -92,9 +93,9 @@ async function label(take: LiveTake): Promise<void> {
     if (recordingPageId() !== pageId) return null
     const { transcript, speakers: known } = snapshotOf(doc)
     const words: HeardWord[] = [...earlier, ...own]
-    const speakers = liveSpeakers(words, merged.segments, merged.seconds)
     const moved = movedLines(transcript, origins)
     const pins = pinnedSpeakers(words, moved)
+    const speakers = liveSpeakers(words, merged.segments, merged.seconds)
     const lines = buildLines(words, speakers, pins)
     // The lines hold these same word objects; this gets back the track each was heard on.
     const heardAs = new Map<object, HeardWord>(words.map((word) => [word, word]))
@@ -111,9 +112,17 @@ async function label(take: LiveTake): Promise<void> {
       lineId: (_index, line) => lineId(heardAs.get(line.words[0] ?? {})),
       raw: false
     })
-    return { words: words.length, waiting: speakers.filter((speaker) => speaker < 0).length, lines: lines.length }
+    // Labels a reader already saw that this round took back: the cost of labeling early.
+    const { changed } = changedLabels(transcript, snapshotOf(doc).transcript)
+    return {
+      words: words.length,
+      waiting: speakers.filter((speaker) => speaker < 0).length,
+      lines: lines.length,
+      changedSeconds: +changed.toFixed(1)
+    }
   })
   if (!written) return
+  noteRound(pageId, written.changedSeconds)
   log('relabel', 'labeled so far', {
     pageId,
     audioSeconds: +merged.seconds.toFixed(1),
