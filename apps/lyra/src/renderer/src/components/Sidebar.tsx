@@ -1,4 +1,4 @@
-import { memo, useMemo } from 'react'
+import { memo, useMemo, useState } from 'react'
 import type { MeetingStatus, PageSummary } from '../../../shared/types'
 import { useActivity } from '../hooks/useActivity'
 import { useMeetingStatuses } from '../hooks/useMeetingStatus'
@@ -7,7 +7,7 @@ import { processingActivity, statusBusy } from '../lib/status'
 import { ActivityFooter } from './Activity'
 import { useContextMenu } from './ContextMenu'
 import { ScrollArea } from './Controls'
-import { FolderIcon, GearIcon, PeopleIcon, PlusIcon, SearchIcon, TrashIcon } from './Icons'
+import { CheckIcon, FolderIcon, GearIcon, PeopleIcon, PlusIcon, SearchIcon, SortIcon, TrashIcon } from './Icons'
 import { tip } from './Tooltip'
 
 type Props = {
@@ -31,12 +31,31 @@ type Props = {
 
 type Group = { label: string; pages: PageSummary[] }
 
-/** Pages arrive newest first, so consecutive pages share a heading. */
-function groupByDay(pages: PageSummary[]): Group[] {
+/** Which date orders and groups the list: when a session started, or when it last changed. */
+type SortBy = 'created' | 'updated'
+
+const SORT_KEY = 'lyra.sessionSort'
+const SORT_LABEL: Record<SortBy, string> = { created: 'Date created', updated: 'Last updated' }
+
+function readSort(): SortBy {
+  try {
+    return localStorage.getItem(SORT_KEY) === 'updated' ? 'updated' : 'created'
+  } catch {
+    return 'created'
+  }
+}
+
+function dateOf(page: PageSummary, sort: SortBy): string {
+  return sort === 'created' ? page.startedAt : page.updatedAt
+}
+
+/** Newest first by the chosen date, so consecutive pages share a heading. */
+function groupByDay(pages: PageSummary[], sort: SortBy): Group[] {
   const now = new Date()
   const groups: Group[] = []
-  for (const page of pages) {
-    const label = dayGroup(page.updatedAt, now)
+  const sorted = pages.toSorted((a, b) => dateOf(b, sort).localeCompare(dateOf(a, sort)))
+  for (const page of sorted) {
+    const label = dayGroup(dateOf(page, sort), now)
     const last = groups.at(-1)
     if (last?.label === label) last.pages.push(page)
     else groups.push({ label, pages: [page] })
@@ -82,9 +101,18 @@ export const Sidebar = memo(function Sidebar({
     return byPage
   }, [visible])
 
+  const [sort, setSort] = useState(readSort)
+  const chooseSort = (next: SortBy): void => {
+    setSort(next)
+    try {
+      localStorage.setItem(SORT_KEY, next)
+    } catch {
+      // Storage can be unavailable; the order still applies until the window closes.
+    }
+  }
   const groups = useMemo(
-    () => groupByDay(pages.filter((page) => !tagFilter || page.tags.includes(tagFilter))),
-    [pages, tagFilter]
+    () => groupByDay(pages.filter((page) => !tagFilter || page.tags.includes(tagFilter)), sort),
+    [pages, tagFilter, sort]
   )
   // A recording that isn't in the first group (an older session continued, or one filtered out)
   // is pinned above the list, so it's always in view.
@@ -175,6 +203,28 @@ export const Sidebar = memo(function Sidebar({
           <SearchIcon />
           <span className="search-placeholder">Search</span>
           <kbd className="search-kbd">{shortcutLabel('K')}</kbd>
+        </button>
+        <button
+          className="new-page-btn no-drag"
+          type="button"
+          aria-label={`Sort sessions: ${SORT_LABEL[sort]}`}
+          aria-haspopup="menu"
+          {...tip(`Sorted by ${SORT_LABEL[sort].toLowerCase()}`)}
+          onClick={(event) => {
+            const rect = event.currentTarget.getBoundingClientRect()
+            menu.openAt({
+              x: rect.left,
+              y: rect.bottom + 4,
+              label: 'Sort sessions',
+              items: (['created', 'updated'] as const).map((by) => ({
+                label: SORT_LABEL[by],
+                icon: by === sort ? <CheckIcon /> : <span aria-hidden="true" />,
+                run: () => chooseSort(by)
+              }))
+            })
+          }}
+        >
+          <SortIcon />
         </button>
         <button
           className="new-page-btn no-drag"

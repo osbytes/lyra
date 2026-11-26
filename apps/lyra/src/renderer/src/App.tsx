@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { PANEL_WIDTHS } from '../../shared/settings'
+import { summarySections } from '../../shared/summarySections'
 import type { PageSummary, WhisperStatus } from '../../shared/types'
 import type { TranscriptSegment } from '../../shared/sessionDoc'
 import { DetailsPanel } from './components/DetailsPanel'
@@ -10,6 +11,7 @@ import { NotesEditor, type NotesHandle } from './components/NotesEditor'
 import { TagRow } from './components/TagRow'
 import { ScrollArea } from './components/Controls'
 import { Transcript } from './components/Transcript'
+import { SectionsMenu, SectionsRail, useSectionsNav } from './components/TranscriptSections'
 import {
   CheckIcon,
   ChevronDownIcon,
@@ -129,6 +131,14 @@ function revealLine(lineId: string, frame = 0): void {
   line.scrollIntoView({ block: 'center', behavior: scrollBehavior() })
   line.classList.add('search-flash')
   line.addEventListener('animationend', () => line.classList.remove('search-flash'), { once: true })
+}
+
+/** "Nov 20, 3:04 PM", with the year only when it isn't this one. */
+function startedLabel(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const year = date.getFullYear() === new Date().getFullYear() ? undefined : 'numeric'
+  return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', ...(year ? { year } : {}) })
 }
 
 function toMarkdown(page: OpenPage): string {
@@ -605,6 +615,7 @@ export default function App(): React.JSX.Element {
   const words = current ? wordCount(`${current.summary} ${current.body}`) + transcriptWords : 0
   const summary = current ? pages.find((page) => page.id === current.id) : undefined
   const editedAt = summary?.updatedAt
+  const startedAt = summary?.startedAt
   const systemAudio = settings?.captureSystemAudio ?? true
   const listening = dictation.phase === 'listening'
   const recordingHere = !!current && current.id === recordingId && (listening || dictation.phase === 'finishing')
@@ -619,6 +630,10 @@ export default function App(): React.JSX.Element {
       : null
   const pending = recordingHere ? { working: transcribing, finishing: dictation.phase === 'finishing' } : null
   const hasTranscript = !!current && (current.transcript.length > 0 || pending !== null)
+  const summaryText = current?.summary ?? ''
+  const sections = useMemo(() => summarySections(summaryText), [summaryText])
+  const transcriptLines = useMemo(() => current?.transcript ?? [], [current?.transcript])
+  const sectionsNav = useSectionsNav(sections, transcriptLines, scroller)
 
   const quote = (line: TranscriptSegment, text: string): void => {
     const page = currentRef.current
@@ -773,19 +788,9 @@ export default function App(): React.JSX.Element {
               hasTranscript && paneMode === 'notes' ? 'workspace-column transcript-collapsed' : 'workspace-column'
             }
           >
-            <div className="panes" ref={column}>
-            <ErrorBoundary scope="session" variant="pane" resetKey={current.id}>
-            <ScrollArea
-              className={
-                !hasTranscript || paneMode === 'notes'
-                  ? 'scroller notes-pane is-alone'
-                  : paneMode === 'transcript'
-                    ? 'scroller notes-pane is-collapsed'
-                    : 'scroller notes-pane'
-              }
-              style={hasTranscript && paneMode === 'split' ? { flexBasis: `${String(split * 100)}%` } : undefined}
-            >
-              <article className="page">
+            {/* Above both panes, so the title stays in view however the notes or transcript scroll. */}
+            <div className="session-head">
+              <div className="page">
                 {/* A textarea so a long title wraps; Enter moves on to the notes instead. */}
                 <textarea
                   className="title-input"
@@ -801,6 +806,21 @@ export default function App(): React.JSX.Element {
                   aria-label="Session title"
                   spellCheck={false}
                 />
+              </div>
+            </div>
+            <div className="panes" ref={column}>
+            <ErrorBoundary scope="session" variant="pane" resetKey={current.id}>
+            <ScrollArea
+              className={
+                !hasTranscript || paneMode === 'notes'
+                  ? 'scroller notes-pane is-alone'
+                  : paneMode === 'transcript'
+                    ? 'scroller notes-pane is-collapsed'
+                    : 'scroller notes-pane'
+              }
+              style={hasTranscript && paneMode === 'split' ? { flexBasis: `${String(split * 100)}%` } : undefined}
+            >
+              <article className="page">
                 {panel ? null : (
                   <>
                     <p className="page-stats">
@@ -808,13 +828,21 @@ export default function App(): React.JSX.Element {
                         {words} {words === 1 ? 'word' : 'words'}
                       </span>
                       {words > 0 ? <span>{readingMinutes(words)} min read</span> : null}
+                      {/* When it started and when it last changed are different facts; both are shown. */}
+                      {startedAt ? <span>Started {startedLabel(startedAt)}</span> : null}
                       {editedAt ? <span>Edited {relativeTime(editedAt).toLowerCase()}</span> : null}
                     </p>
                     <TagRow tags={current.tags} known={knownTags} onAdd={tag} onRemove={untag} />
                   </>
                 )}
                 {current.summary.trim() ? (
-                  <Summary key={`summary-${current.id}`} value={current.summary} onChange={editSummary} />
+                  <Summary
+                    key={`summary-${current.id}`}
+                    pageId={current.id}
+                    value={current.summary}
+                    onChange={editSummary}
+                    canRewrite={(settings?.notesEngine ?? 'off') !== 'off'}
+                  />
                 ) : null}
                 <NotesEditor
                   key={current.id}
@@ -864,6 +892,7 @@ export default function App(): React.JSX.Element {
                       {current.transcript.length} {current.transcript.length === 1 ? 'line' : 'lines'}
                     </span>
                   )}
+                  <SectionsMenu nav={sectionsNav} />
                   <span className="transcript-bar-tools">
                     {PANE_UP[paneMode] ? (
                       <button
@@ -894,6 +923,7 @@ export default function App(): React.JSX.Element {
                   ref={scroller}
                 >
                   <div className="page transcript-page">
+                    <SectionsRail nav={sectionsNav} />
                     <Transcript
                       pageId={current.id}
                       transcript={current.transcript}
