@@ -20,6 +20,10 @@ page records the decisions behind them, including where Lyra departs from the os
   sits in fixed chrome such as a header bar, never in content that scrolls or collapses away.
   Results may still change until it finishes, so the user must be able to tell at a glance
   wherever they are on the page.
+- **Work that outlives its screen stays findable.** Anything long-running reports to Activity
+  (sidebar footer, or a top-bar button when the sidebar is hidden), so closing Settings or
+  leaving a session never hides its progress, its ending or its error. Success is quiet;
+  failure stays until it's dealt with. The full rules: [STATES.md](STATES.md).
 
 ## Twelve factors, for a desktop app
 

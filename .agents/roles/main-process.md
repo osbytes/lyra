@@ -23,6 +23,10 @@ You own `src/main/`, `src/preload/`, and `src/shared/types.ts`.
 - Heavy or blocking native work goes off the main thread (`utilityProcess`) or behind a serial
   queue like `runSerial` in `whisper.ts`.
 - Broadcast state changes to all windows with `webContents.send`, following `broadcastStatus`.
+- Work that can take over a second and outlive the screen that started it (downloads, model
+  runs, bulk jobs, folder moves) reports to Activity (`src/main/activity.ts`): `report()` while it
+  runs, `end()` with its result or a plain-words reason, `onActivityAction()` for Cancel and
+  Retry. See [docs/STATES.md](../../docs/STATES.md).
 - Log with `log(scope, …)`; include enough context to debug from a user's `lyra.log`.
 - Keep Windows and macOS working equally: path separators, file-name rules (no `:`), and text
   read from disk may still be CRLF (a user's notes, an old checkout): normalise before parsing.

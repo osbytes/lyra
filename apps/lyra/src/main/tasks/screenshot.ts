@@ -11,6 +11,7 @@ import { editDoc, replaceTranscript, addTag, upsertSpeaker } from '../../shared/
 import { addPerson } from '../voices'
 import { log } from '../log'
 import type { MeetingStatus } from '../../shared/types'
+import { clear as clearActivity, end as endActivity, report as reportActivity } from '../activity'
 
 /** A labeled meeting, as the speaker pipeline would leave it, for reviewing the transcript UI. */
 async function seedScreenshotMeeting(): Promise<string> {
@@ -383,6 +384,48 @@ export async function captureScreenshot(win: BrowserWindow, reviewDir: string | 
           await settle()
           await save(reviewDir, `processing-${theme}.png`)
           win.webContents.send('meeting:status', { ...busy, state: 'done', progress: 1 })
+        }
+        // Activity: a download still going and a failed summary, then the same with the sidebar
+        // hidden (the top-bar button and its popover).
+        if (meetingId) {
+          reportActivity({
+            id: 'model:semanticSearch',
+            kind: 'model',
+            origin: 'settings',
+            title: 'Downloading the search model',
+            detail: '63 of 150 MB',
+            progress: 0.42,
+            actions: ['cancel']
+          })
+          endActivity(
+            {
+              id: `notes:${meetingId}`,
+              kind: 'notes',
+              origin: 'session',
+              pageId: meetingId,
+              title: "Couldn't write the summary",
+              detail: "The model didn't answer within 5 minutes.",
+              actions: ['open', 'retry']
+            },
+            'failed'
+          )
+          // Past the 3 s a running task waits before it joins Activity.
+          await new Promise((done) => setTimeout(done, 3200))
+          await settle()
+          await save(reviewDir, `activity-${theme}.png`)
+          await pressShortcut('\\')
+          await settle()
+          await save(reviewDir, `activity-collapsed-${theme}.png`)
+          await click('.activity-button')
+          await settle()
+          await save(reviewDir, `activity-popover-${theme}.png`)
+          await win.webContents.executeJavaScript(
+            `document.querySelector('.picker-layer')?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`
+          )
+          await pressShortcut('\\')
+          clearActivity('model:semanticSearch')
+          clearActivity(`notes:${meetingId}`)
+          await settle()
         }
         // The transcript bar's layouts: collapsed to the bar, then the transcript alone.
         const pane = async (label: string): Promise<void> => {

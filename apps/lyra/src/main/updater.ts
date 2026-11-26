@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { autoUpdater } from 'electron-updater'
 import type { UpdateStatus } from '../shared/types'
+import { clear, end, onActivityAction, report, waiting } from './activity'
 
 const RELEASES_URL = 'https://github.com/osbytes/lyra/releases'
 const CHECK_EVERY_MS = 4 * 60 * 60 * 1000
@@ -32,8 +33,36 @@ function canInstallInPlace(): boolean {
   return text.includes('Authority=Developer ID Application')
 }
 
+/** The update as an Activity row: the one place it shows, sidebar open or not. */
+function reportActivity(status: UpdateStatus): void {
+  const base = { id: 'update', kind: 'update' as const, origin: 'app' as const }
+  switch (status.state) {
+    case 'idle':
+      clear(base.id)
+      return
+    case 'available':
+      waiting({ ...base, title: `Update to ${status.version}`, detail: 'Download and install the new version', actions: ['install'] })
+      return
+    case 'downloading':
+      report({ ...base, title: 'Downloading the update', progress: status.percent > 0 ? status.percent / 100 : null })
+      return
+    case 'ready':
+      waiting({ ...base, title: 'Restart to update', detail: `Version ${status.version} is ready`, actions: ['install'] })
+      return
+    case 'error':
+      end({ ...base, title: "Couldn't update", detail: status.message, actions: ['retry'] }, 'failed')
+      return
+  }
+}
+
+onActivityAction('update', async (_item, action) => {
+  if (action === 'install' && current.state === 'ready') await installUpdate()
+  else if (action === 'install' || action === 'retry') await startUpdate()
+})
+
 function broadcast(status: UpdateStatus): void {
   current = status
+  reportActivity(status)
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send('updater:status', status)
   }

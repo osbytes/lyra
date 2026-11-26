@@ -11,7 +11,7 @@ export function statusLabel(status: MeetingStatus): string {
     case 'transcribing':
       return `Transcribing each speaker… ${pct}`
     case 'summarizing':
-      return 'Writing the summary…'
+      return status.message ? `Writing the summary · ${status.message}…` : 'Writing the summary…'
     case 'error':
       return `${status.task === 'notes' ? 'Couldn’t write the summary' : 'Couldn’t label speakers'}: ${status.message ?? 'unknown error'}`
     case 'done':

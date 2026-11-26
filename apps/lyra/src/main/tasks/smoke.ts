@@ -83,6 +83,7 @@ import { MockLanguageModelV4 } from 'ai/test'
 import type { ProviderId } from '../../shared/ai'
 import { parseSettings, type Settings } from '../../shared/settings'
 import { createMeetingNotes } from '../meeting/notes'
+import { activityItem, markSeen } from '../activity'
 import { NOTES_RUN_KEY, NotesRun } from '../meeting/notesJobs'
 import { NOTES_PIPELINE } from '../meeting/notesPipeline'
 import { createFakeNotesWriter, createModelNotesWriter } from '../meeting/notesWriter'
@@ -258,6 +259,11 @@ async function checkNotesWriters(): Promise<void> {
     fail(`backfill: ${JSON.stringify([backfilled, after])}`)
   }
   if (service.stopBackfill()) fail('stopped a backfill that was not running')
+  // The bulk run's result lives in Activity, so it outlives the Settings dialog that started it.
+  const row = activityItem('backfill')
+  if (row?.state !== 'done' || !row.title.startsWith('Rewrote')) fail(`backfill activity: ${JSON.stringify(row)}`)
+  markSeen(['backfill'])
+  if (activityItem('backfill')?.seenAt === null) fail('backfill activity was not marked seen')
   await deletePage(page.id)
 }
 
@@ -1492,6 +1498,12 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
         const backfillStatus = await window.api.notesBackfillStatus()
         if (typeof backfillStatus.outdated !== 'number' || backfillStatus.running) fail('backfill status: ' + JSON.stringify(backfillStatus))
         if ((await window.api.stopBackfillNotes()) !== false) fail('stopped a backfill that was not running')
+        const activity = await window.api.activityList()
+        if (!Array.isArray(activity)) fail('activity list: ' + JSON.stringify(activity))
+        if (!(await refuses(() => window.api.activityAct('backfill', 'open')))) fail('activity:act took the window-only open')
+        if (!(await refuses(() => window.api.activityAct('backfill', 'explode')))) fail('activity:act took an unknown action')
+        if ((await window.api.dismissActivity('no-such-task')) !== false) fail('dismissed a task that did not exist')
+        if (!(await refuses(() => window.api.markActivitySeen('x')))) fail('activity:seen took a string')
         await window.api.updateSettings({ notesEngine: engineBefore })
         const vocab = await window.api.updateSettings({ vocabulary: [' Acme', 'acme', 'Siobhan'] })
         if (JSON.stringify(vocab.vocabulary) !== '["Acme","Siobhan"]') fail('vocabulary not cleaned: ' + JSON.stringify(vocab.vocabulary))

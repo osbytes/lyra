@@ -1,5 +1,6 @@
 import type { Settings } from './settings'
 import type { KeySource, ProviderId } from './ai'
+import type { ActivityAction, ActivityItem } from './activity'
 
 export type Page = {
   id: string
@@ -463,6 +464,16 @@ export type VoicePagesApi = {
   retryModel: (feature: ModelFeature) => Promise<void>
   /** A feature's model changed state: downloading, reading sessions, ready, failed. */
   onModelStatus: (callback: (status: ModelStatus) => void) => () => void
+  /** Every long-running task's progress, ending or error (docs/STATES.md). */
+  activityList: () => Promise<ActivityItem[]>
+  /** Activity changed: the whole list, as main holds it. */
+  onActivity: (callback: (items: ActivityItem[]) => void) => () => void
+  /** Cancel, Retry or Install on an Activity row (Open is the window's own). */
+  activityAct: (id: string, action: Exclude<ActivityAction, 'open'>) => Promise<void>
+  /** Removes an ended Activity row; resolves to whether there was one. */
+  dismissActivity: (id: string) => Promise<boolean>
+  /** Endings the person has now seen (their screen is open, or a toast announced them). */
+  markActivitySeen: (ids: string[]) => Promise<void>
   /** Whether the OS lets Lyra use the microphone and capture the screen. */
   permissionStatus: () => Promise<PermissionStatus>
   /** Main window only. Opens the system settings page for a permission; false if there is none. */

@@ -101,6 +101,7 @@ import type { Task } from './tasks/args'
 import { isTaskLaunch, prepareTaskProfile, runTaskIn, taskFromArgv } from './tasks/run'
 import { rememberWindowBounds, savedWindowBounds } from './windowState'
 import type { Settings } from '../shared/types'
+import { registerActivity } from './activity'
 
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error)
@@ -334,6 +335,7 @@ async function updateSettingsFromRenderer(raw: unknown): Promise<Settings> {
 }
 
 function registerIpc(): void {
+  registerActivity()
   ipcMain.handle('pages:list', () => listPages())
   ipcMain.handle('pages:search', (_event, query: unknown) =>
     typeof query === 'string' ? searchSessions(query.slice(0, 200)) : []

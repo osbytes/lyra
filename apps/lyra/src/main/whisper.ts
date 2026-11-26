@@ -7,6 +7,7 @@ import { log } from './log'
 import { getSettings } from './settings'
 import { ensureSpeechVad } from './speechVad'
 import { ensureModelFile, hasModelFile, modelsDir, type ModelFile } from './models'
+import { reportSpeechModel } from './modelStatus'
 import { isHallucination, wordsFromTokens } from './whisperText'
 import { withVocabulary } from '../shared/vocabulary'
 
@@ -56,6 +57,7 @@ export function modelPath(): string {
 }
 
 export function broadcastStatus(status: WhisperStatus): void {
+  reportSpeechModel(status, MODEL.name)
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send('whisper:status', status)
   }
