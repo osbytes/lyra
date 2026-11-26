@@ -299,7 +299,8 @@ export function ensureModelFile(model: ModelFile, onProgress?: DownloadProgress)
   const dest = join(modelsDir(), model.name)
   const task = (async () => {
     if (await isVerified(dest, model)) return dest
-    await mkdir(modelsDir(), { recursive: true })
+    // A model made of several files keeps them in a folder of its own (`name` is then a path).
+    await mkdir(dirname(dest), { recursive: true })
     log('models', 'downloading', { name: model.name, url: hubUrl(model.url) })
     await download(model, dest, onProgress)
     log('models', 'downloaded', { name: model.name })

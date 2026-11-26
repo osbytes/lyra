@@ -88,7 +88,12 @@ export const SettingsSchema = z.object({
   /** The one-time "get consent before recording others" notice was acknowledged. */
   meetingNoticeSeen: z.boolean(),
   /** Search by meaning as well as by words, with a model on this computer (~146 MB). */
-  semanticSearch: z.boolean()
+  semanticSearch: z.boolean(),
+  /**
+   * Tell speakers apart with a larger model once a recording ends (a 121 MB download; slower
+   * computers take longer to label a session).
+   */
+  largerSpeakerModel: z.boolean()
 })
 export type Settings = z.infer<typeof SettingsSchema>
 

@@ -1,6 +1,14 @@
 /** Messages between the main process and the speaker worker (a utilityProcess). */
 
-export type SpeakerModels = { segmentation: string; embedding: string }
+export type SpeakerModels = {
+  segmentation: string
+  embedding: string
+  /**
+   * The speaker-activity model, when the user turned it on: a finished recording's turns then
+   * come from it (`speakerActivity.ts`) and voiceprints only name the speakers it found.
+   */
+  activity: string | null
+}
 
 export type DiarizeRequest = {
   type: 'diarize'

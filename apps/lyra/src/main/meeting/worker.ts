@@ -29,13 +29,19 @@ import {
   unit,
   type Span
 } from './clustering'
+import { activityStep } from './activityModel'
 import { advance, emptyRolling, rollingResult, type RollingState } from './rollingDiarizer'
+import { activityTurns, readActivity, withoutEchoes, withoutFaintSpeakers } from './speakerActivity'
 import { refineEdges } from './turnEdges'
 import { energy, mixTracks, readWav, SAMPLE_RATE } from './wav'
 
 /** Audio per speaker used for their voiceprint: enough to be stable, cheap to compute. */
 const EMBEDDING_SECONDS = 30
 const THREADS = 2
+/** The activity model is one large network, and a finished recording is waiting on it. */
+const ACTIVITY_THREADS = 4
+/** A speaker the activity model heard for less than this, with no words of their own, is noise. */
+const MIN_ACTIVITY_SPEAKER_SECONDS = 3
 /** Window length for clustering: long enough for a steady voiceprint, short enough for quick turns. */
 const WINDOW_SECONDS = 3
 /** Windows shorter than this don't shape the clusters; they take the nearest speaker after. */
@@ -181,32 +187,6 @@ async function diarize(request: DiarizeRequest): Promise<DiarizeResult> {
   const system = request.systemPath ? await readWav(request.systemPath) : null
   const audio = mixTracks(mic, system)
 
-  const pieces = speechPieces(segmenter(request.models), audio)
-  const windows = speechWindows(pieces, WINDOW_SECONDS)
-  const prints = windows.map(({ start, end }) =>
-    unit(
-      embed(
-        request.models,
-        audio.subarray(Math.floor(start * SAMPLE_RATE), Math.ceil(end * SAMPLE_RATE))
-      )
-    )
-  )
-  const micShares = system
-    ? windows.map(({ start, end }) => {
-        const from = Math.floor(start * SAMPLE_RATE)
-        const to = Math.ceil(end * SAMPLE_RATE)
-        const micEnergy = energy(mic, from, to)
-        const total = micEnergy + energy(system, from, to)
-        return total > 0 ? micEnergy / total : 1
-      })
-    : null
-  const labels = foldShortSpeakers(
-    clusterLongWindows(windows, prints, request.threshold, MIN_WINDOW_SECONDS),
-    windows,
-    prints,
-    minSpeakerSeconds(windows.reduce((sum, w) => sum + w.end - w.start, 0)),
-    { micShares, words: request.words, minWords: MIN_OWN_WORDS, distinct: request.threshold }
-  )
   const micShareOf = ({ start, end }: Span): number => {
     const from = Math.floor(start * SAMPLE_RATE)
     const to = Math.ceil(end * SAMPLE_RATE)
@@ -214,15 +194,54 @@ async function diarize(request: DiarizeRequest): Promise<DiarizeResult> {
     const total = micEnergy + (system ? energy(system, from, to) : 0)
     return total > 0 ? micEnergy / total : 1
   }
-  // The windows say who; where one turn ends and the next begins is then found more finely
-  // (`turnEdges.ts`). A change between the mic and the far end is left to the tracks.
-  const raw: SpeakerDiarizationSegment[] = refineEdges(
-    labelTimeline(windows, labels),
-    centroids(labels, prints),
-    (start, end) =>
-      unit(embed(request.models, audio.subarray(Math.floor(start * SAMPLE_RATE), Math.ceil(end * SAMPLE_RATE)))),
-    (a, b) => micShareOf(a) >= MIC_SIDE === micShareOf(b) >= MIC_SIDE
-  )
+  /** Turns from voiceprints of short windows, clustered: the path without the activity model. */
+  const clustered = (): SpeakerDiarizationSegment[] => {
+    const pieces = speechPieces(segmenter(request.models), audio)
+    const windows = speechWindows(pieces, WINDOW_SECONDS)
+    const prints = windows.map(({ start, end }) =>
+      unit(
+        embed(
+          request.models,
+          audio.subarray(Math.floor(start * SAMPLE_RATE), Math.ceil(end * SAMPLE_RATE))
+        )
+      )
+    )
+    const micShares = system
+      ? windows.map(({ start, end }) => {
+          const from = Math.floor(start * SAMPLE_RATE)
+          const to = Math.ceil(end * SAMPLE_RATE)
+          const micEnergy = energy(mic, from, to)
+          const total = micEnergy + energy(system, from, to)
+          return total > 0 ? micEnergy / total : 1
+        })
+      : null
+    const labels = foldShortSpeakers(
+      clusterLongWindows(windows, prints, request.threshold, MIN_WINDOW_SECONDS),
+      windows,
+      prints,
+      minSpeakerSeconds(windows.reduce((sum, w) => sum + w.end - w.start, 0)),
+      { micShares, words: request.words, minWords: MIN_OWN_WORDS, distinct: request.threshold }
+    )
+    // The windows say who; where one turn ends and the next begins is then found more finely
+    // (`turnEdges.ts`). A change between the mic and the far end is left to the tracks.
+    return refineEdges(
+      labelTimeline(windows, labels),
+      centroids(labels, prints),
+      (start, end) =>
+        unit(embed(request.models, audio.subarray(Math.floor(start * SAMPLE_RATE), Math.ceil(end * SAMPLE_RATE)))),
+      (a, b) => micShareOf(a) >= MIC_SIDE === micShareOf(b) >= MIC_SIDE
+    )
+  }
+  const raw: SpeakerDiarizationSegment[] = request.models.activity
+    ? withoutFaintSpeakers(
+        withoutEchoes(
+          activityTurns(await readActivity(audio, activityStep(request.models.activity, ACTIVITY_THREADS)))
+        ),
+        MIN_ACTIVITY_SPEAKER_SECONDS,
+        request.words,
+        MIN_OWN_WORDS
+      )
+    : clustered()
 
   const segments: DiarizedSegment[] = raw.map((segment) => ({ ...segment, micShare: micShareOf(segment) }))
 
