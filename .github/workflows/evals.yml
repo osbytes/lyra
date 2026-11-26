@@ -65,8 +65,9 @@ jobs:
         with:
           path: .eval-cache
           key: evals-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/lyra/src/main/models.ts', 'apps/lyra/src/main/whisper.ts', 'apps/lyra/src/main/speechVad.ts', 'apps/lyra/src/main/meeting/speakers.ts', 'apps/lyra/scripts/eval/sessions.cjs', 'apps/lyra/scripts/eval/acoustics.cjs') }}
+      # one at a time: a runner has three cores, and with more the app's own log goes nowhere
       - name: Quick session evals against the baseline
-        run: pnpm --filter lyra run eval:sessions --quick --check
+        run: pnpm --filter lyra run eval:sessions --quick --check --jobs 1
       - name: Keep the results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
