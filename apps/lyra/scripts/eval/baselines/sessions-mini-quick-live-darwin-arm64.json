@@ -1,0 +1,47 @@
+{
+  "dataset": "sessions",
+  "pipeline": "live",
+  "overall": {
+    "wer": 0.2032,
+    "cpWer": 0.2349,
+    "der": 0.1582,
+    "relabeled": 0.0282
+  },
+  "items": {
+    "room-2-quick": {
+      "wer": 0.1261,
+      "cpWer": 0.2005,
+      "der": 0.072,
+      "relabeled": 0.0565,
+      "speakers": "2/2"
+    },
+    "room-2-desk": {
+      "wer": 0.0842,
+      "cpWer": 0.1008,
+      "der": 0.0448,
+      "relabeled": 0.0408,
+      "speakers": "2/2"
+    },
+    "room-2-music": {
+      "wer": 0.6598,
+      "cpWer": 0.6598,
+      "der": 0.499,
+      "relabeled": 0,
+      "speakers": "2/2"
+    },
+    "hybrid-2+1": {
+      "wer": 0.0565,
+      "cpWer": 0.1211,
+      "der": 0.0664,
+      "relabeled": 0.0311,
+      "speakers": "3/3"
+    },
+    "call-1+1-quick": {
+      "wer": 0.0453,
+      "cpWer": 0.0453,
+      "der": 0.0648,
+      "relabeled": 0.0025,
+      "speakers": "2/2"
+    }
+  }
+}

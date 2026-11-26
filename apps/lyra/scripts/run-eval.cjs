@@ -8,8 +8,14 @@
 //   pnpm eval:ami                                   # ES2004a, IS1009a, TS3003a; first 10 min; far-field mic
 //   pnpm eval:ami --meetings ES2004a --minutes 5 --mic Mix-Headset
 //   pnpm eval:ami --minutes 0                       # whole meetings (slow)
+//   pnpm eval:local                                 # your own recordings (scripts/eval/local.cjs)
 //   node scripts/run-eval.cjs --score ref.json hyp.json   # score any two transcripts
+//   --check                   compare with the stored baseline for this suite, pipeline and
+//                             machine (scripts/eval/baselines/; eval-data/ for local cases) and
+//                             exit 1 if a rate rose past the tolerance (scripts/eval/baseline.cjs)
+//   --update-baseline         store this run as that baseline: only for a change you mean
 //   --enroll                  sessions: save the first person's voice (enroll.wav) before replaying
+//   --larger-speaker-model    label with the opt-in speaker-activity model (the setting, on)
 //   --asr whisper|parakeet    live and stream: the speech model (whisper, the default, is the app's)
 //   --no-context              live and stream: Whisper without a track's earlier text as its prompt
 //   --quick                   a few minutes, not an hour: a fixed subset covering each kind of
@@ -28,15 +34,19 @@
 //                             stop (the newest not labeled yet); offline is the
 //                             diarize-then-transcribe pipeline
 //
-// Prints WER, cpWER (words given to the wrong speaker count as errors) and DER per item, and
-// writes references, hypotheses and results.json under eval-data/results/<time>/. Data goes to
+// Prints WER, cpWER (words given to the wrong speaker count as errors) and DER per item, with
+// `relabeled`: the share of the speaker labels shown while recording that the pass after the stop
+// changed (live pipeline; what a reader watching the transcript saw corrected), and
+// // writes references, hypotheses and results.json under eval-data/results/<time>/. Data goes to
 // eval-data/ (gitignored); set LYRA_EVAL_DATA to keep it elsewhere. Set LYRA_MODELS_DIR to reuse
 // downloaded models, as for smoke:meeting.
 const { spawn, spawnSync } = require('node:child_process')
 const { existsSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs')
 const { join, resolve } = require('node:path')
 const ami = require('./eval/ami.cjs')
+const { compare, summarize } = require('./eval/baseline.cjs')
 const calls = require('./eval/calls.cjs')
+const local = require('./eval/local.cjs')
 const sessions = require('./eval/sessions.cjs')
 const { score } = require('./eval/metrics.cjs')
 
@@ -60,6 +70,7 @@ const pipeline = arg('pipeline', 'live')
 const enroll = process.argv.includes('--enroll')
 const asr = arg('asr', 'whisper')
 const noContext = process.argv.includes('--no-context')
+const largerSpeakerModel = process.argv.includes('--larger-speaker-model')
 const pct = (value) => `${(value * 100).toFixed(1)}%`.padStart(7)
 
 function report(id, result) {
@@ -67,8 +78,47 @@ function report(id, result) {
   process.stdout.write(
     `${id.padEnd(22)} WER ${pct(wer.rate)}  cpWER ${pct(cpWer.rate)}  DER ${pct(der.rate)}` +
       ` (miss ${pct(der.missed)} fa ${pct(der.falseAlarm)} conf ${pct(der.confusion)})` +
-      `  speakers ${result.hypSpeakers}/${result.refSpeakers}\n`
+      `  speakers ${result.hypSpeakers}/${result.refSpeakers}` +
+      `${relabeled(result.labels) === null ? '' : `  relabeled ${pct(relabeled(result.labels)).trim()}`}\n`
   )
+}
+
+/** The share of the labels shown at the stop that the last pass changed; null when none were. */
+function relabeled(labels) {
+  return labels && labels.labeledAtStop > 0 ? labels.changedAtStop / labels.labeledAtStop : null
+}
+
+/**
+ * Where this suite's baseline is kept. In the repo for the generated suites, by machine: Whisper
+ * hears a little differently on each backend. Beside the cases for your own recordings, whose
+ * names stay out of the repo.
+ */
+function baselinePath(dataset, dataDir, name) {
+  const file = `${name}-${process.platform}-${process.arch}.json`
+  return dataset === 'local' ? join(local.localDir(dataDir), 'baselines', file) : join(__dirname, 'eval', 'baselines', file)
+}
+
+/** Prints how the run compares with its baseline; false when it got worse. */
+function checkBaseline(path, run) {
+  if (!existsSync(path)) {
+    process.stdout.write(`eval: no baseline at ${path}; make one with --update-baseline\n`)
+    return false
+  }
+  const baseline = JSON.parse(readFileSync(path, 'utf8'))
+  const current = summarize(run)
+  const { regressions, missing, ok } = compare(baseline, current)
+  const delta = (rate) => {
+    const before = baseline.overall[rate]
+    const after = current.overall[rate]
+    return before === undefined || after === undefined ? '' : `  ${rate} ${pct(before).trim()} → ${pct(after).trim()}`
+  }
+  process.stdout.write(`baseline:${['wer', 'cpWer', 'der', 'relabeled'].map(delta).join('')}\n`)
+  for (const { id, rate, before, after } of regressions) {
+    process.stdout.write(`  worse: ${id} ${rate} ${pct(before).trim()} → ${pct(after).trim()}\n`)
+  }
+  for (const id of missing) process.stdout.write(`  missing: ${id} is in the baseline and did not run\n`)
+  process.stdout.write(ok ? 'eval: no worse than the baseline\n' : 'eval: worse than the baseline\n')
+  return ok
 }
 
 function scoreFiles(refPath, hypPath) {
@@ -90,7 +140,8 @@ function runLyra(item, output) {
     ...(pipeline === 'capture' ? ['--capture'] : []),
     ...(enroll && item.enroll ? ['--enroll', item.enroll] : []),
     ...(asr !== 'whisper' ? ['--asr', asr] : []),
-    ...(noContext ? ['--no-context'] : [])
+    ...(noContext ? ['--no-context'] : []),
+    ...(largerSpeakerModel ? ['--larger-speaker-model'] : [])
   ]
   // With several running at once their logs would only interleave, so they go nowhere.
   const child = spawn(process.execPath, args, { cwd: root, stdio: ['ignore', 'ignore', jobs > 1 ? 'ignore' : 'inherit'] })
@@ -120,6 +171,11 @@ function plan(dataset, dataDir) {
       items: ids.map((name) => ({ name, prepare: () => sessions.prepare(dataDir, name) }))
     }
   }
+  if (dataset === 'local') {
+    const names = list(arg('cases', local.names(dataDir).join(',')))
+    if (names.length === 0) throw new Error('no local cases yet; add one with `node scripts/eval/local.cjs add <session>`')
+    return { options: { cases: names.length }, items: names.map((name) => ({ name, prepare: async () => local.prepare(dataDir, name) })) }
+  }
   if (dataset === 'ami') {
     const meetings = list(arg('meetings', ami.DEFAULT_MEETINGS.join(',')))
     const minutes = Number(arg('minutes', '10'))
@@ -130,7 +186,7 @@ function plan(dataset, dataDir) {
       items: meetings.map((meeting) => ({ name: meeting, prepare: () => ami.prepare(dataDir, meeting, { mic, minutes }) }))
     }
   }
-  throw new Error(`unknown --dataset ${dataset}; use calls, sessions or ami`)
+  throw new Error(`unknown --dataset ${dataset}; use calls, sessions, local or ami`)
 }
 
 async function main() {
@@ -163,8 +219,11 @@ async function main() {
       cpWer: words ? sum((r) => r.cpWer.errors) / sum((r) => r.cpWer.words) : 0,
       der: derTime ? sum((r) => r.der.rate * r.der.scoredSeconds) / derTime : 0
     }
-    writeFileSync(join(outDir, 'results.json'), JSON.stringify({ dataset, pipeline, ...options, overall, results, failures }, null, 2))
-    return overall
+    const labeled = sum((r) => r.labels?.labeledAtStop ?? 0)
+    if (labeled > 0) overall.relabeled = sum((r) => r.labels?.changedAtStop ?? 0) / labeled
+    const run = { dataset, pipeline, ...options, overall, results, failures }
+    writeFileSync(join(outDir, 'results.json'), JSON.stringify(run, null, 2))
+    return run
   }
 
   const runOne = async ({ name, prepare }) => {
@@ -174,8 +233,8 @@ async function main() {
       process.stdout.write(`eval: ${item.id} (${(item.seconds / 60).toFixed(1)} min) running…\n`)
       const hyp = await runLyra(item, join(outDir, `${item.id}.hyp.json`))
       const result = score(item.reference, hyp)
-      report(item.id, result)
-      results.push({ id: item.id, audioSeconds: item.seconds, pipelineSeconds: hyp.seconds, ...result })
+      report(item.id, { ...result, labels: hyp.labels })
+      results.push({ id: item.id, audioSeconds: item.seconds, pipelineSeconds: hyp.seconds, labels: hyp.labels, ...result })
     } catch (error) {
       process.stdout.write(`eval: ${name} failed: ${error.message}\n`)
       failures.push({ id: name, error: error.message })
@@ -190,12 +249,24 @@ async function main() {
     })
   )
 
-  const overall = save()
+  const run = save()
+  const { overall } = run
   if (results.length > 0) {
-    process.stdout.write(`${'overall'.padEnd(22)} WER ${pct(overall.wer)}  cpWER ${pct(overall.cpWer)}  DER ${pct(overall.der)}\n`)
+    process.stdout.write(
+      `${'overall'.padEnd(22)} WER ${pct(overall.wer)}  cpWER ${pct(overall.cpWer)}  DER ${pct(overall.der)}` +
+        `${overall.relabeled === undefined ? '' : `  relabeled ${pct(overall.relabeled).trim()}`}\n`
+    )
   }
   process.stdout.write(`eval: results in ${outDir}\n`)
   if (failures.length > 0) process.exit(1)
+  const baseline = baselinePath(dataset, dataDir, `${label ?? dataset}${quick ? '-quick' : ''}-${pipeline}${largerSpeakerModel ? '-larger' : ''}`)
+  if (process.argv.includes('--update-baseline')) {
+    mkdirSync(join(baseline, '..'), { recursive: true })
+    writeFileSync(baseline, `${JSON.stringify(summarize(run), null, 2)}\n`)
+    process.stdout.write(`eval: baseline saved to ${baseline}\n`)
+  } else if (process.argv.includes('--check') && !checkBaseline(baseline, run)) {
+    process.exit(1)
+  }
 }
 
 main().catch((error) => {

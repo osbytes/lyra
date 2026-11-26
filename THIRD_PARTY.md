@@ -14,6 +14,7 @@ upstream revision and checked against its sha256 before it is loaded (`src/main/
 | Whisper `large-v3-turbo`, 5-bit ggml build (`ggml-large-v3-turbo-q5_0.bin`) | Transcription | MIT (whisper.cpp model card); the original OpenAI weights are released under MIT | [ggerganov/whisper.cpp @ 5359861](https://huggingface.co/ggerganov/whisper.cpp/tree/5359861c739e955e79d9a303bcbc70fb988958b1) |
 | pyannote segmentation 3.0, ONNX export | Finding who speaks when | MIT ([pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0)) | [csukuangfj/sherpa-onnx-pyannote-segmentation-3-0 @ 9403a69](https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/tree/9403a6902bb58e3d5ae8c7e77c3422de279db2e0) |
 | NVIDIA NeMo TitaNet-small | Voiceprints | CC BY 4.0 ([model card](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/titanet_small)); attribution: NVIDIA | [k2-fsa/sherpa-onnx release `speaker-recongition-models`](https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models), pinned by sha256 |
+| NVIDIA Nemotron 3 Diarization, 8-bit ONNX export | Finding who speaks when, with "Larger speaker model" on; downloaded only then | OpenMDW 1.1 ([model card](https://huggingface.co/nvidia/Nemotron-3-Diarization)); attribution: NVIDIA | [onnx-community/Nemotron-3-Diarization-ONNX @ 353b6f8](https://huggingface.co/onnx-community/Nemotron-3-Diarization-ONNX/tree/353b6f8ad2cac3580e982d7fbdf0a010786b0406) |
 | Silero VAD v5.1.2, ggml build (`ggml-silero-v5.1.2.bin`) | Dropping non-speech inside each chunk, in whisper.cpp | MIT ([snakers4/silero-vad](https://github.com/snakers4/silero-vad)) | [ggml-org/whisper-vad @ 9ffd54a](https://huggingface.co/ggml-org/whisper-vad/tree/9ffd54a1e1ee413ddf265af9913beaf518d1639b) |
 | Silero VAD v5, ONNX (`silero_vad_v5.onnx`) | Where a recording's chunks start and end | MIT ([snakers4/silero-vad](https://github.com/snakers4/silero-vad)) | [k2-fsa/sherpa-onnx release `asr-models`](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models), pinned by sha256 |
 | NVIDIA Parakeet TDT 0.6B v3, int8 ONNX | Evals only (`--asr parakeet`); not downloaded by the app | CC BY 4.0 ([model card](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)); attribution: NVIDIA | [csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8 @ ed5d745](https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/tree/ed5d745623472f97cfc2e6c2916ee248798fc5a8) |
@@ -47,6 +48,7 @@ production package against a permissive-licence allowlist weekly (`security.yml`
 | Electron | MIT |
 | `@kutalia/whisper-node-addon` (whisper.cpp) | MIT |
 | `sherpa-onnx-node` | Apache-2.0 |
+| `onnxruntime-node` | MIT |
 | `node-llama-cpp` (llama.cpp) | MIT |
 | `node-llama-cpp`'s own dependency tree, shipped beside the app in `resources/llama` and pinned by `apps/lyra/scripts/llama/package-lock.json` (139 packages, including the prebuilt `@node-llama-cpp/<platform>` binaries) | MIT, ISC, BlueOak-1.0.0, `BSD-2-Clause OR MIT OR Apache-2.0` (per the lockfile) |
 | `@libsql/client` and its prebuilt `@libsql/<platform>` binary (the search index) | MIT |

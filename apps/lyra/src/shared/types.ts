@@ -424,6 +424,8 @@ export type VoicePagesApi = {
   /** Puts plain text on the system clipboard. */
   copyText: (text: string) => void
   platform: string
+  /** The processor Lyra was built for (`arm64`, `x64`): some models have no build for every one. */
+  arch: string
   /** Downloads the model if needed and loads it into memory. */
   warmUp: () => Promise<void>
   /** Appends a line to the app log (terminal + userData/logs/lyra.log). */
