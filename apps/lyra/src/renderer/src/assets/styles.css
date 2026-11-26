@@ -905,6 +905,9 @@ code {
   line-height: 36px;
   resize: none;
   field-sizing: content;
+  /* At 200% display scaling the sized height can round a pixel short and show scroll arrows;
+     the field always grows to fit, so nothing is ever hidden. */
+  overflow: hidden;
 }
 
 .title-input::placeholder,
@@ -970,8 +973,7 @@ code {
 }
 
 /*
- * .ghost and .transcriber-caret: the app no longer draws these; the website's demo editor does,
- * through this stylesheet (apps/website/scripts/sync-app-styles.mjs).
+ * .ghost and .transcriber-caret: the app no longer draws these (the website demo that did is gone).
  * The transcriber's cursor: a second author's caret, labeled, where its words land. Zero width,
  * so it never shifts the text it sits in; drawn in the mirror under the textarea.
  */
