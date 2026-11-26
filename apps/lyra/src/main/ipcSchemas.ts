@@ -108,6 +108,9 @@ export const ModelNameArg = z
   .max(200)
   .regex(/^[\w][\w.-]*$/, 'not a model file name')
 
+/** `models:retry`: which feature's model to fetch again. */
+export const ModelFeatureArg = z.enum(['semanticSearch', 'localNotes'])
+
 /** `permissions:openSettings`. Main maps each to a fixed system settings page. */
 export const PermissionKindArg = z.enum(['microphone', 'screen'])
 

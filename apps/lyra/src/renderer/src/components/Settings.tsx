@@ -26,6 +26,7 @@ import { HotkeyInput } from './HotkeyInput'
 import { CloseIcon, FolderIcon, GaugeIcon, GearIcon, PeopleIcon, RecordIcon } from './Icons'
 import { LocalServerSettings, TestResult } from './LocalServer'
 import { MicrophoneSelect } from './MicrophoneSelect'
+import { ModelStatusLine } from './ModelStatusLine'
 import { PeopleSettings } from './People'
 import { PermissionRow } from './Permissions'
 import { CommitInput, Row, Section, type SectionProps, type Update } from './SettingsParts'
@@ -585,6 +586,7 @@ function SummarySection({ settings, update }: SectionProps) {
           }}
         />
       </Row>
+      {choice === 'local' ? <ModelStatusLine feature="localNotes" /> : null}
       {choice === 'local' ? (
         <p className="settings-notice">
           Runs a small model on this computer, so nothing leaves it. The first time downloads about
@@ -647,6 +649,7 @@ function SearchSection({ settings, update }: SectionProps) {
           onChange={(semanticSearch) => void update({ semanticSearch })}
         />
       </Row>
+      {settings.semanticSearch ? <ModelStatusLine feature="semanticSearch" /> : null}
       {settings.semanticSearch ? (
         <p className="settings-notice">
           Runs a small model on this computer, so nothing leaves it. The first time downloads about

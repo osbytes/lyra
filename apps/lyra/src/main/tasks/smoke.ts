@@ -1435,6 +1435,19 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
         if (!perms.microphone || !perms.screen) fail('permission status: ' + JSON.stringify(perms))
         if ((await window.api.cancelModelDownload('no-such-model.bin')) !== false) fail('cancelled a download that was not running')
         if (!(await refuses(() => window.api.cancelModelDownload('../settings.json')))) fail('models:cancel took a path')
+        // Model status: a list of known features, a subscription, and Retry only for real features.
+        const modelStates = await window.api.modelStatus()
+        if (!Array.isArray(modelStates) || modelStates.some((entry) => !['semanticSearch', 'localNotes'].includes(entry.feature) || typeof entry.model !== 'string')) {
+          fail('model status: ' + JSON.stringify(modelStates))
+        }
+        const stopModelStatus = window.api.onModelStatus(() => {})
+        if (typeof stopModelStatus !== 'function') fail('onModelStatus returned no unsubscribe')
+        stopModelStatus()
+        if (!(await refuses(() => window.api.retryModel('whisper')))) fail('models:retry took an unknown feature')
+        // Both features are off here, so Retry has nothing to fetch and must not start a download.
+        await window.api.retryModel('semanticSearch')
+        await window.api.retryModel('localNotes')
+        if ((await window.api.modelStatus()).some((entry) => entry.state === 'downloading')) fail('Retry with the feature off started a download')
         if (!(await refuses(() => window.api.listServerModels('http://192.168.1.5:11434/v1')))) fail('listModels took http to another computer')
         if (!(await refuses(() => window.api.revealFolder('/')))) fail('diagnostics:reveal took a path')
         if (!(await refuses(() => window.api.openPermissionSettings('camera')))) fail('openSettings took an unknown kind')

@@ -22,6 +22,7 @@ import { checkConfig, config, ConfigError, configSummary } from './config'
 import { attachEditMenu } from './editMenu'
 import {
   CreatePageArg,
+  ModelFeatureArg,
   ModelNameArg,
   PageIdArg,
   parseSettingsPatch,
@@ -72,7 +73,7 @@ import { getSettings, onSettingsChanged, updateSettings } from './settings'
 import { registerMeetingPipeline } from './meeting/pipeline'
 import { registerKeyIpc } from './secrets'
 import { createServices, type Services } from './services'
-import { releaseNotesModel, stopNotesWorker } from './meeting/notesLocal'
+import { prefetchNotesModel, releaseNotesModel, reportNotesModel, stopNotesWorker } from './meeting/notesLocal'
 import { stopSpeakerWorker } from './meeting/speakers'
 import { startLiveLabels } from './meeting/liveLabels'
 import { relabelSession } from './meeting/relabel'
@@ -86,6 +87,7 @@ import {
 import { previewAudioSweep, startAudioRetention } from './audioRetention'
 import { getDiagnostics, noteWhisperUsed, revealFolder } from './diagnostics'
 import { cancelModelDownload } from './models'
+import { modelStatuses, onModelRetry, retryModel } from './modelStatus'
 import { detectServers, listServerModels, testWriter } from './notesServers'
 import { openPermissionSettings, permissionStatus } from './permissions'
 import { createTray } from './tray'
@@ -427,6 +429,14 @@ function registerSettingsToolsIpc(): void {
     if (cancelled) log('models', 'download cancelled from the window')
     return cancelled
   })
+  ipcMain.handle('models:status:get', (event) => {
+    requireMainWindow(event)
+    return modelStatuses()
+  })
+  ipcMain.handle('models:retry', (event, feature: unknown) => {
+    requireMainWindow(event)
+    retryModel(ModelFeatureArg.parse(feature))
+  })
   ipcMain.handle('permissions:status', () => permissionStatus())
   ipcMain.handle('permissions:openSettings', (event, kind: unknown) => {
     requireMainWindow(event)
@@ -603,7 +613,12 @@ void app.whenReady().then(() => {
     applyLoginItem(getSettings().launchAtLogin)
     onSettingsChanged((next, prev) => {
       if (next.launchAtLogin !== prev.launchAtLogin) applyLoginItem(next.launchAtLogin)
+      if (next.notesEngine === 'local' && prev.notesEngine !== 'local') prefetchNotesModel()
     })
+    onModelRetry('localNotes', () => {
+      if (getSettings().notesEngine === 'local') prefetchNotesModel()
+    })
+    if (getSettings().notesEngine === 'local') void reportNotesModel()
   }
   void migrateLegacyPages().finally(async () => {
     // A crash mid-recording leaves WAV headers that say "no audio"; fix them before anything reads.

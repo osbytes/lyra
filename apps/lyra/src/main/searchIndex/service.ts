@@ -1,11 +1,13 @@
 import { app, utilityProcess, type UtilityProcess } from 'electron'
 import { join } from 'node:path'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
 import type { SearchQuery } from '../../shared/searchQuery'
 import { PACKAGED_FLAG } from '../meeting/notesFormat'
 import { log } from '../log'
-import { ensureModelFile, type ModelFile } from '../models'
+import { cancelModelDownload, ensureModelFile, type ModelFile } from '../models'
+import { downloadReporter, onModelRetry, reportModelFailure, setModelStatus } from '../modelStatus'
 import { notesDir } from '../pages'
 import {
   listSessions,
@@ -49,6 +51,8 @@ const RESTART_MAX_MS = 5 * 60_000
 const MAX_FAILED_STARTS = 6
 /** A worker that has run this long without trouble resets the count. */
 const STABLE_MS = 60_000
+/** How often Settings' "Reading your sessions" count is brought up to date. */
+const READING_POLL_MS = 1500
 
 /** The worker is gone or waiting to restart: retrying the same request now can't help. */
 class IndexUnavailable extends Error {}
@@ -199,6 +203,47 @@ async function restoreEmbedder(child: UtilityProcess, choice: NonNullable<Embedd
     if (error instanceof IndexUnavailable) throw error
     if (embedderChoice === choice) embedderChoice = null
     log('search-index', 'semantic search unavailable', { error: String(error) })
+    reportModelFailure('semanticSearch', EMBEDDING_MODEL, error)
+    return
+  }
+  // A restarted worker carries on embedding; Settings carries on counting.
+  void watchEmbedding()
+}
+
+let watching = 0
+
+/**
+ * Reports how far background embedding has got, as Settings shows it ("Reading your sessions"),
+ * until every passage has a vector, embedding fails, or semantic search is turned off. Only the
+ * newest call keeps going.
+ */
+async function watchEmbedding(): Promise<void> {
+  const run = ++watching
+  const model = EMBEDDING_MODEL.name
+  // Asked afresh after every await: turning semantic search off or a newer watch ends this one.
+  const current = (): boolean => run === watching && embedderChoice?.kind === 'llama'
+  for (;;) {
+    if (!current()) return
+    let stats: IndexStats
+    try {
+      stats = await call({ type: 'stats' }, IndexStats)
+    } catch (error) {
+      // A worker that is restarting starts a new watch once its embedder is back.
+      if (!(error instanceof IndexUnavailable)) reportModelFailure('semanticSearch', EMBEDDING_MODEL, error)
+      return
+    }
+    if (!current()) return
+    if (stats.embedError) {
+      setModelStatus({ feature: 'semanticSearch', model, state: 'error', message: stats.embedError })
+      return
+    }
+    if (stats.embedded >= stats.chunks) {
+      setModelStatus({ feature: 'semanticSearch', model, state: 'ready' })
+      return
+    }
+    const [pausedFor = null] = busy
+    setModelStatus({ feature: 'semanticSearch', model, state: 'reading', done: stats.embedded, total: stats.chunks, pausedFor })
+    await sleep(READING_POLL_MS)
   }
 }
 
@@ -227,23 +272,32 @@ async function applySemanticSearch(enabled: boolean): Promise<void> {
       return
     }
     let logged = 0
+    const report = downloadReporter('semanticSearch', EMBEDDING_MODEL)
     const modelPath = await ensureModelFile(EMBEDDING_MODEL, (received, total) => {
+      report(received, total)
       const percent = Math.floor((received / total) * 4) * 25
       if (percent > logged) log('search-index', 'downloading the embedding model', { percent })
       logged = Math.max(logged, percent)
     })
     embedderChoice = { kind: 'llama', modelPath, sha256: EMBEDDING_MODEL.sha256 }
+    // Loading the model takes a few seconds; the count follows once it reads.
+    setModelStatus({ feature: 'semanticSearch', model: EMBEDDING_MODEL.name, state: 'reading', done: 0, total: 0, pausedFor: null })
     await call({ type: 'setEmbedder', embedder: embedderChoice }, z.null())
     log('search-index', 'semantic search on', { model: EMBEDDING_MODEL.name })
+    void watchEmbedding()
   } catch (error) {
     embedderChoice = null
     log('search-index', 'semantic search unavailable', { error: String(error) })
+    // Turned off meanwhile (which cancels the download): there's nothing to report.
+    if (getSettings().semanticSearch) reportModelFailure('semanticSearch', EMBEDDING_MODEL, error)
   }
 }
 
 let semanticChange: Promise<void> = Promise.resolve()
 
 function setSemanticSearch(enabled: boolean): void {
+  // Turning it off shouldn't wait for 146 MB to finish arriving first.
+  if (!enabled) cancelModelDownload(EMBEDDING_MODEL.name)
   semanticChange = semanticChange.then(() => applySemanticSearch(enabled))
 }
 
@@ -440,6 +494,9 @@ export function startSearchIndex(): void {
     startReconcile()
   })
   startReconcile()
+  onModelRetry('semanticSearch', () => {
+    if (getSettings().semanticSearch) setSemanticSearch(true)
+  })
   if (getSettings().semanticSearch) setSemanticSearch(true)
 }
 
