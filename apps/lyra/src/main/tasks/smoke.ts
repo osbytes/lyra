@@ -141,6 +141,10 @@ function checkSettingsSchema(): void {
   // Files from before the meeting prompt get its default, and keep their mic prompt choices.
   const before = parseSettings({ micPrompt: { enabled: true, ignoredApps: ['obs64'] } }, { ...base, meetingPrompt: true })
   if (!before.meetingPrompt || before.micPrompt.ignoredApps.join() !== 'obs64') throw new Error('settings: meeting prompt default')
+  // The larger speaker model is a download and extra work: off unless turned on, and a bad value stays off.
+  if (base.largerSpeakerModel || parseSettings({ largerSpeakerModel: 'yes' }, base).largerSpeakerModel) {
+    throw new Error('settings: larger speaker model default')
+  }
 }
 
 /**

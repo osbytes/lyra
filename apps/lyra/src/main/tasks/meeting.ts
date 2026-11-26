@@ -62,6 +62,7 @@ async function captureThroughWindow(wavPath: string): Promise<string> {
 export async function runMeetingFixture(task: MeetingTask, services: Services): Promise<void> {
   const wavPath = task.mic
   try {
+    if (task.largerSpeakerModel) overrideSettings({ largerSpeakerModel: true })
     const page = task.capture ? { id: await captureThroughWindow(wavPath) } : await createPage()
     if (task.enroll) {
       const models = await ensureSpeakerModels()

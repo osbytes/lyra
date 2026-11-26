@@ -59,7 +59,8 @@ const SettingsPatchSchema = z
     sidebarWidth: field.sidebarWidth.exactOptional(),
     detailsWidth: field.detailsWidth.exactOptional(),
     meetingNoticeSeen: field.meetingNoticeSeen.exactOptional(),
-    semanticSearch: field.semanticSearch.exactOptional()
+    semanticSearch: field.semanticSearch.exactOptional(),
+    largerSpeakerModel: field.largerSpeakerModel.exactOptional()
   })
   .strict()
 

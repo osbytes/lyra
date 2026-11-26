@@ -49,6 +49,7 @@
     "ai": "^7.0.181",
     "electron-updater": "^6.8.9",
     "fuse.js": "^7.5.0",
+    "onnxruntime-node": "1.31.1",
     "react-hotkeys-hook": "^5.4.0",
     "sherpa-onnx-node": "^2.0.2",
     "yjs": "13.6.27",

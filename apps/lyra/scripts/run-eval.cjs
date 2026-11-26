@@ -15,6 +15,7 @@
 //                             exit 1 if a rate rose past the tolerance (scripts/eval/baseline.cjs)
 //   --update-baseline         store this run as that baseline: only for a change you mean
 //   --enroll                  sessions: save the first person's voice (enroll.wav) before replaying
+//   --larger-speaker-model    label with the opt-in speaker-activity model (the setting, on)
 //   --asr whisper|parakeet    live and stream: the speech model (whisper, the default, is the app's)
 //   --no-context              live and stream: Whisper without a track's earlier text as its prompt
 //   --quick                   a few minutes, not an hour: a fixed subset covering each kind of
@@ -69,6 +70,7 @@ const pipeline = arg('pipeline', 'live')
 const enroll = process.argv.includes('--enroll')
 const asr = arg('asr', 'whisper')
 const noContext = process.argv.includes('--no-context')
+const largerSpeakerModel = process.argv.includes('--larger-speaker-model')
 const pct = (value) => `${(value * 100).toFixed(1)}%`.padStart(7)
 
 function report(id, result) {
@@ -138,7 +140,8 @@ function runLyra(item, output) {
     ...(pipeline === 'capture' ? ['--capture'] : []),
     ...(enroll && item.enroll ? ['--enroll', item.enroll] : []),
     ...(asr !== 'whisper' ? ['--asr', asr] : []),
-    ...(noContext ? ['--no-context'] : [])
+    ...(noContext ? ['--no-context'] : []),
+    ...(largerSpeakerModel ? ['--larger-speaker-model'] : [])
   ]
   // With several running at once their logs would only interleave, so they go nowhere.
   const child = spawn(process.execPath, args, { cwd: root, stdio: ['ignore', 'ignore', jobs > 1 ? 'ignore' : 'inherit'] })
@@ -256,7 +259,7 @@ async function main() {
   }
   process.stdout.write(`eval: results in ${outDir}\n`)
   if (failures.length > 0) process.exit(1)
-  const baseline = baselinePath(dataset, dataDir, `${label ?? dataset}${quick ? '-quick' : ''}-${pipeline}`)
+  const baseline = baselinePath(dataset, dataDir, `${label ?? dataset}${quick ? '-quick' : ''}-${pipeline}${largerSpeakerModel ? '-larger' : ''}`)
   if (process.argv.includes('--update-baseline')) {
     mkdirSync(join(baseline, '..'), { recursive: true })
     writeFileSync(baseline, `${JSON.stringify(summarize(run), null, 2)}\n`)

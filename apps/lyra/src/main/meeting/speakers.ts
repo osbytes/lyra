@@ -2,6 +2,7 @@ import { utilityProcess, type UtilityProcess } from 'electron'
 import { stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { log } from '../log'
+import { getSettings } from '../settings'
 import { ensureModelFile, type DownloadProgress, type ModelFile } from '../models'
 import type {
   DiarizeRequest,
@@ -37,10 +38,39 @@ const EMBEDDING: ModelFile = {
   sha256: 'ad4a1802485d8b34c722d2a9d04249662f2ece5d28a7a039063ca22f515a789e'
 }
 
-/** Downloads the segmentation and speaker-embedding models on first use (~46 MB). */
+/**
+ * NVIDIA Nemotron 3 Diarization (OpenMDW licence), the 8-bit ONNX export: the graph and its
+ * weights, which the graph finds beside it under that exact name. Opt-in ("Larger speaker
+ * model" in Settings): on real far-field meetings it found the right number of people and
+ * halved the words given to the wrong one (docs/EVALS.md), for a 121 MB download.
+ */
+const ACTIVITY_REVISION =
+  'https://huggingface.co/onnx-community/Nemotron-3-Diarization-ONNX/resolve/353b6f8ad2cac3580e982d7fbdf0a010786b0406/onnx'
+const ACTIVITY: ModelFile = {
+  name: 'nemotron-3-diarization/model_quantized.onnx',
+  url: `${ACTIVITY_REVISION}/model_quantized.onnx`,
+  bytes: 364_375,
+  sha256: 'fff7d18c7439c9fdc1c6c4dfec924cb42d3344264ca879780dfaf7ee886e6c1e'
+}
+const ACTIVITY_WEIGHTS: ModelFile = {
+  name: 'nemotron-3-diarization/model_quantized.onnx_data',
+  url: `${ACTIVITY_REVISION}/model_quantized.onnx_data`,
+  bytes: 120_479_872,
+  sha256: '002d7483e1c865c35c82220fdb378f185ff213c6d35922b38ae421c8ec72c338'
+}
+
+/** ONNX Runtime, which runs the activity model, publishes no build for Intel Macs. */
+const ACTIVITY_AVAILABLE = !(process.platform === 'darwin' && process.arch === 'x64')
+
+/**
+ * Downloads the segmentation and speaker-embedding models on first use (~46 MB), and the
+ * activity model too when the setting asks for it.
+ */
 export async function ensureSpeakerModels(onProgress?: DownloadProgress): Promise<SpeakerModels> {
-  // Approximate combined progress across both files (sizes known in advance).
-  const total = SEGMENTATION.bytes + EMBEDDING.bytes
+  const larger = ACTIVITY_AVAILABLE && getSettings().largerSpeakerModel
+  // Approximate combined progress across the files (sizes known in advance).
+  const base = SEGMENTATION.bytes + EMBEDDING.bytes
+  const total = base + (larger ? ACTIVITY.bytes + ACTIVITY_WEIGHTS.bytes : 0)
   const segmentation = await ensureModelFile(
     SEGMENTATION,
     onProgress && ((received) => {
@@ -53,7 +83,15 @@ export async function ensureSpeakerModels(onProgress?: DownloadProgress): Promis
       onProgress(SEGMENTATION.bytes + received, total)
     })
   )
-  return { segmentation, embedding }
+  if (!larger) return { segmentation, embedding, activity: null }
+  await ensureModelFile(
+    ACTIVITY_WEIGHTS,
+    onProgress && ((received) => {
+      onProgress(base + received, total)
+    })
+  )
+  const activity = await ensureModelFile(ACTIVITY)
+  return { segmentation, embedding, activity }
 }
 
 type Pending = {

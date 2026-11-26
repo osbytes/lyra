@@ -113,6 +113,7 @@ const api: VoicePagesApi = {
   openPermissionSettings: (kind) => ipcRenderer.invoke('permissions:openSettings', kind),
   copyText: (text) => ipcRenderer.send('clipboard:write', text),
   platform: process.platform,
+  arch: process.arch,
   warmUp: () => ipcRenderer.invoke('whisper:warmUp'),
   log: (scope, message, data) => ipcRenderer.send('log:write', scope, message, data),
   onStatus: (callback) => {

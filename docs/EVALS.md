@@ -67,6 +67,42 @@ the number of sessions or scenarios. Sessions WER is driven by overlapping speec
 | 2026-11-25 | turn edges (`turnEdges.ts`) | sessions v2 mini, seed 2 (not tuned on) | live | 5 (22 min) | 14.3% | 16.5% | 6.3% |
 | 2026-11-25 | before turn edges | calls (macOS voices) | live | 8 | 3.3% | 6.5% | 6.8% |
 | 2026-11-25 | turn edges (`turnEdges.ts`) | calls (macOS voices) | live | 8 | 3.3% | 6.7% | 7.0% |
+| 2026-11-25 | before the larger speaker model | AMI far-field (ES2004a, IS1009a, TS3003a, EN2002a; 10 min each) | live | 4 (40 min) | 39.2% | 47.6% | 31.1% |
+| 2026-11-25 | larger speaker model on (`--larger-speaker-model`) | AMI far-field, the same four | live | 4 (40 min) | 39.3% | 42.6% | 25.1% |
+| 2026-11-25 | larger speaker model on | sessions v2 mini, quick | live | 5 | 20.5% | 26.5% | 17.3% |
+
+## The larger speaker model
+
+"Larger speaker model" in Settings (off by default) labels a finished recording with NVIDIA
+Nemotron 3 Diarization (`src/main/meeting/speakerActivity.ts`): one network that reads the audio
+and says, for each 10 ms, which of up to eight people are speaking, instead of voiceprints of
+short windows clustered. `--larger-speaker-model` turns it on for an eval run. Voiceprints still
+name the people it finds.
+
+- **Real meetings: clearly better.** On the four AMI far-field excerpts (four people each, one
+  table mic) it found 4, 4, 3 and 4 people where the standard path found 6, 6, 4 and 7; speaker
+  confusion fell from 2.3-11.1% of time to 0.3-2.3%; and the words given to the wrong person
+  (cpWER minus WER) fell from 8.4 points to 3.3. Giving the same words to the reference's own
+  turns scores 4.9 points by the same measure, so what is left is word timing and speech
+  recognition, not diarization.
+- **The synthetic sessions: worse, and not a fair test of it.** `eval:sessions` builds its rooms
+  with a small Schroeder reverb (`scripts/eval/acoustics.cjs`), whose echoes are distinct enough
+  that this model reports each echo as a second person talking along with the first. Clean
+  two-voice audio gives two speakers; the same audio through that reverb at the `mid` seat gives
+  four. Real rooms measured so far (AMI, one private desk recording) show none of it.
+  `withoutEchoes` joins channels that speak together for most of their speech, which brings the
+  speaker count right in 18 of 22 sessions, but confusion stays near 4%. Until the corpus has a
+  more realistic room, judge this path on real audio (`eval:ami`, `eval:local`), and the gate
+  (`--check`) stays on the standard path.
+- **Cost.** About 25 ms per second of audio on four threads (Apple M-series, 8-bit weights),
+  against about 58 for the standard path; a 121 MB model and ONNX Runtime (about 90 MB in the
+  macOS build). ONNX Runtime has no build for Intel Macs, where the setting is hidden.
+- **While recording.** The model reads audio in fixed half-minute steps, each with what it kept
+  of the steps before, so a step's answer never changes. The rounds while recording read on from
+  the last settled step, and the pass after the stop reads the same steps again: on AMI
+  `relabeled` is 0.1% with this on (12.1% on the standard path), and the labels as shown while
+  recording (`--pipeline stream`) score cpWER 48.2% against 53.9%. What is newer than the last
+  whole step is answered provisionally and read again next round.
 
 ## Where the speaker errors are
 
