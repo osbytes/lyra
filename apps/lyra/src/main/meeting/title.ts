@@ -13,11 +13,12 @@ const MAX_CHARS = 20_000
 /**
  * What the title is made from: the transcript as `Name: text` lines, with the user's typed notes
  * first only when the writer is on this computer. Settings tells people that a summary provider
- * receives the transcript; what they typed stays home.
+ * receives the transcript; what they typed stays home. A summary Lyra just wrote comes first: it
+ * covers the whole session, where the transcript is cut to its start.
  */
-function sessionText(snapshot: SessionSnapshot, onDevice: boolean): string {
+function sessionText(snapshot: SessionSnapshot, onDevice: boolean, summary: string): string {
   const typed = onDevice ? snapshot.notes.trim() : ''
-  return [typed, transcriptLines(snapshot)].filter(Boolean).join('\n\n').slice(0, MAX_CHARS)
+  return [summary.trim(), typed, transcriptLines(snapshot)].filter(Boolean).join('\n\n').slice(0, MAX_CHARS)
 }
 
 export type TitleService = {
@@ -27,22 +28,25 @@ export type TitleService = {
    * local model's download on its own. One request per session at a time (a second is ignored);
    * the writer bounds each call with a timeout and an output cap.
    */
-  suggestTitle(pageId: string): Promise<void>
-  /** Suggests a title after each recording, from what was said and written so far. */
+  suggestTitle(pageId: string, options?: { summary?: string }): Promise<void>
+  /**
+   * Suggests a title after each recording, from what was said and written so far. (The notes
+   * service asks again after each summary, with the summary it wrote.)
+   */
   register(): void
 }
 
 export function createTitleSuggestions(deps: { writer: () => Promise<NotesWriter | null> }): TitleService {
   const running = new Set<string>()
 
-  async function suggestTitle(pageId: string): Promise<void> {
+  async function suggestTitle(pageId: string, options: { summary?: string } = {}): Promise<void> {
     if (running.has(pageId) || peekManifest(pageId)?.titleAuto === false) return
     running.add(pageId)
     let writer: NotesWriter | null = null
     try {
       writer = await deps.writer()
       if (!writer || !(await writer.canTitle())) return
-      const text = sessionText(await readSession(pageId), writer.onDevice)
+      const text = sessionText(await readSession(pageId), writer.onDevice, options.summary ?? '')
       if ((text.match(/\S+/g)?.length ?? 0) < MIN_WORDS) return
       const title = await writer.title(text)
       if (!title) return

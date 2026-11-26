@@ -2654,6 +2654,63 @@ code {
   min-height: 28px;
 }
 
+.summary.is-collapsed {
+  gap: 6px;
+  padding-bottom: 12px;
+}
+
+.summary-folded {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.summary-lead {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}
+
+.summary-counts {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.summary-fold {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  margin-left: -6px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+.summary-fold:hover {
+  background: var(--surface-hover);
+}
+
+.summary-chevron {
+  display: inline-flex;
+  color: var(--text-muted);
+  transition: transform 120ms ease;
+}
+
+.summary.is-collapsed .summary-chevron {
+  transform: rotate(-90deg);
+}
+
 .summary-badge {
   padding: 0 6px;
   border-radius: 999px;
@@ -2664,9 +2721,14 @@ code {
   line-height: 18px;
 }
 
-.summary-edit {
-  height: 28px;
+.summary-tools {
+  display: flex;
+  gap: 4px;
   margin-left: auto;
+}
+
+.summary-tools .btn {
+  height: 28px;
 }
 
 .summary-body {
@@ -2764,6 +2826,144 @@ code {
   align-items: center;
   gap: 8px;
   font-size: 13px;
+}
+
+/*
+ * Sections: a table of contents for the transcript. With room, a rail in the left margin past
+ * the speaker names (its offset is measured); the sticky anchor takes no height, so the lines
+ * don't move. Without room, the current section sits in the transcript's bar and opens a list.
+ */
+.toc-anchor {
+  position: sticky;
+  top: 16px;
+  z-index: 3;
+  height: 0;
+}
+
+.toc-rail {
+  position: absolute;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 220px;
+}
+
+.toc-rail .section-label {
+  padding: 0 8px;
+}
+
+.toc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: calc(100vh - 220px);
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.toc-item {
+  display: grid;
+  grid-template-columns: 3.75em minmax(0, 1fr);
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.35;
+  text-align: left;
+  cursor: pointer;
+}
+
+.toc-item:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.toc-item:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.toc-item.is-current {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.toc-time {
+  color: var(--text-subtle);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* Titles are 2-6 words: two lines show them whole without letting one run long. */
+.toc-title {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+.toc-menu {
+  position: relative;
+  min-width: 0;
+}
+
+.toc-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 260px;
+  height: 24px;
+  padding: 0 6px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.toc-toggle:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.toc-toggle-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toc-toggle-chevron {
+  display: inline-flex;
+  flex-shrink: 0;
+  transition: transform 120ms ease;
+}
+
+.toc-toggle[aria-expanded='true'] .toc-toggle-chevron {
+  transform: rotate(180deg);
+}
+
+.toc-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  width: 280px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
 }
 
 .speakers-label {
@@ -4247,6 +4447,21 @@ code {
  * Two panes in the session column: the user's notes on top, the transcript below, with a
  * divider to drag between them. Without a transcript the notes take the whole column.
  */
+/* The title, fixed above the notes and transcript panes; aligned with their scrolled pages. */
+.session-head {
+  flex-shrink: 0;
+  padding-right: var(--scrollbar-size);
+}
+
+.session-head .page {
+  min-height: 0;
+  padding-bottom: 0;
+}
+
+.session-head .title-input {
+  margin: 20px 0 4px;
+}
+
 .panes {
   display: flex;
   flex: 1;

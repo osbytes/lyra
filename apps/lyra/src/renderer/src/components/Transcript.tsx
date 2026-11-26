@@ -1069,7 +1069,8 @@ export function Transcript({
                 {unsure.length} unsure {unsure.length === 1 ? 'line' : 'lines'}
               </button>
             ) : null}
-            {notesEngine !== 'off' && labeled ? (
+            {/* Once there is a summary, rewriting it is offered on the summary itself. */}
+            {notesEngine !== 'off' && labeled && !hasSummary ? (
               <SummaryButton pageId={pageId} hasSummary={hasSummary} className="btn ghost" />
             ) : null}
           </span>

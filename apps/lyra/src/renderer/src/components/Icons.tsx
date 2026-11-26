@@ -106,6 +106,12 @@ export const PeopleIcon = () => (
   </Icon>
 )
 
+export const SortIcon = () => (
+  <Icon width="15" height="15">
+    <path d="M7 4v16M3.5 16.5 7 20l3.5-3.5M17 20V4M13.5 7.5 17 4l3.5 3.5" />
+  </Icon>
+)
+
 export const ChevronDownIcon = () => (
   <Icon width="14" height="14">
     <path d="m6 9 6 6 6-6" />

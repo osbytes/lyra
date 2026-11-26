@@ -120,7 +120,11 @@ const BACKFILL_WORDS: Record<NotesBackfillKind, { running: string; done: string;
 }
 
 /** `writer` is the one the user chose, or null when summaries are off (writers.ts). */
-export function createMeetingNotes(deps: { writer: () => Promise<NotesWriter | null> }): MeetingNotesService {
+export function createMeetingNotes(deps: {
+  writer: () => Promise<NotesWriter | null>
+  /** After Lyra writes a summary into a session, with that summary (the title follows it). */
+  onWritten?: (pageId: string, summary: string) => void
+}): MeetingNotesService {
   const jobs = createJobs()
   /** The bulk run going, if any: whether it was asked to stop, and the session it is on. */
   let backfilling: { stop: AbortController; pageId: string | null } | null = null
@@ -172,6 +176,7 @@ export function createMeetingNotes(deps: { writer: () => Promise<NotesWriter | n
         sections: notes.sections.length,
         ms: Date.now() - started
       })
+      if (written) deps.onWritten?.(pageId, summary)
       if (written || trigger === 'auto') broadcast(pageId, 'done', 1, undefined, trigger === 'manual')
       else broadcast(pageId, 'error', 0, SUMMARY_KEPT)
       return written
