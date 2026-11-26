@@ -465,12 +465,21 @@ export function DictationDock(props: Props) {
 }
 
 /** The recorder's error or notice, shown in the toast stack rather than on the dock. */
-export function DictationMessage({ error, notice }: { error: string | null; notice: string | null }) {
-  if (error) return <Toast tone="error" role="alert" text={error} />
+export function DictationMessage({
+  error,
+  notice,
+  onDismiss
+}: {
+  error: string | null
+  notice: string | null
+  onDismiss: () => void
+}) {
+  if (error) return <Toast tone="error" role="alert" text={error} onDismiss={onDismiss} />
   if (!notice) return null
   return (
     <Toast
       text={notice}
+      onDismiss={onDismiss}
       action={
         notice === SYSTEM_AUDIO_BLOCKED_NOTICE ? (
           <button

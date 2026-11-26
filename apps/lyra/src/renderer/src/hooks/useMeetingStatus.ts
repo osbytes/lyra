@@ -57,7 +57,7 @@ export function useMeetingStatus(pageId: string | undefined): MeetingStatus | nu
   return pageId === undefined ? null : (all.get(pageId) ?? null)
 }
 
-/** Forgets an error status once the user has dismissed it. */
+/** Forgets a finished or failed status once the user has closed it. */
 export function dismissMeetingStatus(pageId: string): void {
   set(pageId, null)
 }

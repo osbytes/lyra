@@ -127,7 +127,8 @@ export function ProcessingToast({ pageId }: { pageId: string }) {
   return (
     <ActivityToast
       activity={activity}
-      {...(activity.tone === 'error' ? { onDismiss: () => dismissMeetingStatus(pageId) } : {})}
+      // Finished or failed work can be closed; work still running can't.
+      {...(activity.tone === 'busy' ? {} : { onDismiss: () => dismissMeetingStatus(pageId) })}
     />
   )
 }

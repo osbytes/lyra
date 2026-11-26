@@ -425,6 +425,10 @@ export default function App(): React.JSX.Element {
     <Toast
       role="status"
       text={toast.text}
+      onDismiss={() => {
+        setToast(null)
+        leaveToast()
+      }}
       onMouseMove={() => {
         if (heldToast !== toast) setHeldToast(toast)
       }}
@@ -923,7 +927,11 @@ export default function App(): React.JSX.Element {
                   }
                 />
               ) : null}
-              <DictationMessage error={dictation.error} notice={dictation.notice} />
+              <DictationMessage
+                error={dictation.error}
+                notice={dictation.notice}
+                onDismiss={dictation.dismissMessage}
+              />
               {toastElement}
             </ToastStack>
           </div>
