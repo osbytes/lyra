@@ -1,9 +1,10 @@
 /** Messages between the main process (notesLocal.ts) and the local notes worker (notesWorker.ts). */
 import { z } from 'zod'
+import { NotesLine } from './notesFormat'
 
 export const NotesWorkerRequest = z.discriminatedUnion('kind', [
-  /** Meeting notes for a whole transcript; the worker splits and merges it to fit the model. */
-  z.object({ kind: z.literal('notes'), id: z.number(), modelPath: z.string(), transcript: z.string() }),
+  /** Meeting notes for a whole transcript; the worker cuts it into sections to fit the model. */
+  z.object({ kind: z.literal('notes'), id: z.number(), modelPath: z.string(), lines: z.array(NotesLine) }),
   z.object({ kind: z.literal('title'), id: z.number(), modelPath: z.string(), text: z.string() }),
   /** Stops request `id`, running or queued. */
   z.object({ kind: z.literal('cancel'), id: z.number() }),
@@ -12,8 +13,10 @@ export const NotesWorkerRequest = z.discriminatedUnion('kind', [
 ])
 export type NotesWorkerRequest = z.infer<typeof NotesWorkerRequest>
 
-export const NotesWorkerResponse = z.discriminatedUnion('ok', [
-  z.object({ id: z.number(), ok: z.literal(true), result: z.unknown() }),
-  z.object({ id: z.number(), ok: z.literal(false), error: z.string() })
+export const NotesWorkerResponse = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('result'), id: z.number(), result: z.unknown() }),
+  z.object({ kind: z.literal('error'), id: z.number(), error: z.string() }),
+  /** Model calls done of those planned for request `id`; more messages follow. */
+  z.object({ kind: z.literal('progress'), id: z.number(), done: z.number(), total: z.number() })
 ])
 export type NotesWorkerResponse = z.infer<typeof NotesWorkerResponse>

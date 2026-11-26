@@ -61,7 +61,8 @@ describe('renderNotes', () => {
       summary: 'We met.',
       decisions: [],
       actionItems: [{ owner: 'Ana', task: 'Send it' }],
-      openQuestions: ['When?']
+      openQuestions: ['When?'],
+      sections: []
     })
     expect(text).toBe(
       [
@@ -92,7 +93,7 @@ describe('splitNotes', () => {
   })
 
   it('round-trips rendered notes', () => {
-    const notes = { summary: 'S', decisions: ['D'], actionItems: [], openQuestions: [] }
+    const notes = { summary: 'S', decisions: ['D'], actionItems: [], openQuestions: [], sections: [] }
     const body = `${renderNotes(notes)}\n\n${TRANSCRIPT_DIVIDER}\n\nAna: hi`
     expect(splitNotes(body).notes).toBe(renderNotes(notes))
   })

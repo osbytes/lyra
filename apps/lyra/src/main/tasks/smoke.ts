@@ -15,6 +15,7 @@ import {
   flushAllSessions,
   getSessionPage as getPage,
   listSessions as listPages,
+  changeSession,
   editSession,
   readManifestOf,
   openSessionFor,
@@ -49,6 +50,7 @@ import {
   setSegmentEdits,
   setSegmentText,
   snapshotOf,
+  docMeta,
   docTranscript,
   upsertSpeaker,
   addTag
@@ -81,6 +83,8 @@ import { MockLanguageModelV4 } from 'ai/test'
 import type { ProviderId } from '../../shared/ai'
 import { parseSettings, type Settings } from '../../shared/settings'
 import { createMeetingNotes } from '../meeting/notes'
+import { NOTES_RUN_KEY, NotesRun } from '../meeting/notesJobs'
+import { NOTES_PIPELINE } from '../meeting/notesPipeline'
 import { createFakeNotesWriter, createModelNotesWriter } from '../meeting/notesWriter'
 import { chooseWriter } from '../meeting/writers'
 import { searchSessions } from '../search'
@@ -185,10 +189,15 @@ async function checkNotesWriters(): Promise<void> {
   if (cloud?.name !== 'Anthropic (claude-opus-5-5)') fail(`cloud writer: ${cloud?.name ?? 'none'}`)
 
   // The AI SDK adapter against a mock model: structured output parsed by the zod schema, tidied.
+  // Each call answered in its own shape: the notes, then the action items (with their quotes).
+  const { actionItems, ...draft } = notes
+  const found = { actionItems: actionItems.map((item) => ({ quote: 'I will fix the installer', ...item })) }
   const model = new MockLanguageModelV4({
-    doGenerate: () =>
+    doGenerate: (options) =>
       Promise.resolve({
-        content: [{ type: 'text', text: JSON.stringify(notes) }],
+        content: [
+          { type: 'text', text: JSON.stringify(JSON.stringify(options.prompt).includes('You find the action items') ? found : draft) }
+        ],
         finishReason: { unified: 'stop', raw: 'stop' },
         usage: {
           inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
@@ -197,7 +206,9 @@ async function checkNotesWriters(): Promise<void> {
         warnings: []
       })
   })
-  const written = await createModelNotesWriter(model, 'mock').notes('Sam: I will fix the installer.')
+  const written = await createModelNotesWriter(model, 'mock').notes([
+    { speaker: 'Sam', text: 'I will fix the installer.', start: 0, end: 2 }
+  ])
   if (written.summary !== 'Planned the release.' || written.decisions.join() !== 'Ship Friday') {
     fail(`adapter did not tidy: ${JSON.stringify(written)}`)
   }
@@ -214,7 +225,7 @@ async function checkNotesWriters(): Promise<void> {
         warnings: []
       })
   })
-  const rejected = await createModelNotesWriter(bad, 'mock').notes('x').then(
+  const rejected = await createModelNotesWriter(bad, 'mock').notes([{ speaker: 'Sam', text: 'x', start: 0, end: 1 }]).then(
     () => '',
     (error: unknown) => (error instanceof Error ? error.message : String(error))
   )
@@ -229,6 +240,24 @@ async function checkNotesWriters(): Promise<void> {
   await service.generateNotes(page.id)
   const summary = (await readSession(page.id)).summary
   if (!summary.includes('Fix the installer') || local.asked.length !== 1) fail(`service summary: ${JSON.stringify(summary)}`)
+
+  // Each run records how the notes were made, so notes from an older pipeline can be redone in bulk.
+  const run = NotesRun.safeParse(await changeSession(page.id, (doc) => docMeta(doc).get(NOTES_RUN_KEY)))
+  if (!run.success || run.data.pipeline !== NOTES_PIPELINE || run.data.writer !== local.name) {
+    fail(`notes run record: ${JSON.stringify(run)}`)
+  }
+  const fresh = await service.backfillStatus()
+  await changeSession(page.id, (doc) => {
+    docMeta(doc).set(NOTES_RUN_KEY, { ...run.data, pipeline: NOTES_PIPELINE - 1 })
+  })
+  const older = await service.backfillStatus()
+  if (older.outdated !== fresh.outdated + 1 || older.running) fail(`backfill status: ${JSON.stringify([fresh, older])}`)
+  const backfilled = await service.backfill('outdated')
+  const after = await service.backfillStatus()
+  if (backfilled.written < 1 || backfilled.failed || backfilled.stopped || after.outdated !== 0) {
+    fail(`backfill: ${JSON.stringify([backfilled, after])}`)
+  }
+  if (service.stopBackfill()) fail('stopped a backfill that was not running')
   await deletePage(page.id)
 }
 
@@ -1443,6 +1472,13 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
         await window.api.updateSettings({ notesEngine: 'off' })
         const offTest = await window.api.testNotesWriter()
         if (offTest.ok || offTest.error !== 'Summaries are off.') fail('testWriter with summaries off: ' + JSON.stringify(offTest))
+        const backfillOff = await window.api.backfillNotes('outdated').then(() => '', (error) => String(error))
+        if (!backfillOff.includes('turned off')) fail('backfill with summaries off: ' + backfillOff)
+        if (!(await refuses(() => window.api.backfillNotes('everything')))) fail('notes:backfill took an unknown kind')
+        if (!(await refuses(() => window.api.notesState(7)))) fail('notes:state took a number')
+        const backfillStatus = await window.api.notesBackfillStatus()
+        if (typeof backfillStatus.outdated !== 'number' || backfillStatus.running) fail('backfill status: ' + JSON.stringify(backfillStatus))
+        if ((await window.api.stopBackfillNotes()) !== false) fail('stopped a backfill that was not running')
         await window.api.updateSettings({ notesEngine: engineBefore })
         const vocab = await window.api.updateSettings({ vocabulary: [' Acme', 'acme', 'Siobhan'] })
         if (JSON.stringify(vocab.vocabulary) !== '["Acme","Siobhan"]') fail('vocabulary not cleaned: ' + JSON.stringify(vocab.vocabulary))

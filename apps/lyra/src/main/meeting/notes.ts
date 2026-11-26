@@ -1,21 +1,31 @@
 import { BrowserWindow, ipcMain } from 'electron'
 import { z } from 'zod'
-import type { MeetingStatus } from '../../shared/types'
+import type {
+  MeetingStatus,
+  NotesBackfill,
+  NotesBackfillKind,
+  NotesBackfillResult,
+  NotesState
+} from '../../shared/types'
 import { log } from '../log'
 import { docMeta, docSummary, editDoc, snapshotOf } from '../../shared/sessionDoc'
-import { changeSession, editSession } from '../sessionStore'
-import { transcriptLines } from './notesChunks'
-import { renderNotes } from './notesFormat'
+import { changeSession, editSession, listSessions } from '../sessionStore'
+import { notesLinesOf } from './notesChunks'
+import { renderNotes, type NotesLine } from './notesFormat'
 import {
   createJobs,
   GENERATED_SUMMARY_KEY,
   isAbort,
   mayWriteSummary,
+  NOTES_RUN_KEY,
+  notesState,
   SupersededError,
   summaryEdited,
   summaryFingerprint,
+  type NotesRun,
   type NotesTrigger
 } from './notesJobs'
+import { NOTES_PIPELINE } from './notesPipeline'
 import type { NotesWriter } from './notesWriter'
 import { onMeetingLabeled } from './events'
 
@@ -42,43 +52,89 @@ export type MeetingNotesService = {
   summaryEdited(pageId: string): Promise<boolean>
   /** Stops a session's notes run, if one is going; returns whether one was. */
   cancel(pageId: string): boolean
+  /** How many sessions a bulk run would write notes for, and how many it leaves alone. */
+  backfillStatus(): Promise<NotesBackfill>
+  /**
+   * Writes notes, one session at a time with the current writer: for every session whose notes
+   * an older pipeline made (and nobody edited since), or for every meeting that has none.
+   */
+  backfill(kind: NotesBackfillKind): Promise<NotesBackfillResult>
+  /** Stops a bulk run on the session it is on; returns whether one was going. */
+  stopBackfill(): boolean
   /** Generates notes after each labeled meeting, and answers the renderer's requests. */
   register(): void
 }
 
 /** The session as notes need it, plus the fingerprint of the summary Lyra last wrote. */
-function readForNotes(pageId: string): Promise<{ transcript: string; summary: string; fingerprint: unknown }> {
+function readForNotes(pageId: string): Promise<{ lines: NotesLine[]; summary: string; fingerprint: unknown }> {
   return changeSession(pageId, (doc) => {
     const snapshot = snapshotOf(doc)
     return {
-      transcript: transcriptLines(snapshot),
+      lines: notesLinesOf(snapshot),
       summary: snapshot.summary,
       fingerprint: docMeta(doc).get(GENERATED_SUMMARY_KEY)
     }
   })
 }
 
+/** Where a session's notes stand against the current pipeline (see `notesState`). */
+function stateOf(pageId: string): Promise<NotesState> {
+  return changeSession(pageId, (doc) => {
+    const snapshot = snapshotOf(doc)
+    const meta = docMeta(doc)
+    return notesState(
+      {
+        summary: snapshot.summary,
+        fingerprint: meta.get(GENERATED_SUMMARY_KEY),
+        run: meta.get(NOTES_RUN_KEY),
+        // Notes are written on their own for labeled meetings only, so only those miss them.
+        meeting: snapshot.transcript.some((line) => line.cluster !== null)
+      },
+      NOTES_PIPELINE
+    )
+  })
+}
+
+/** Every session by where its notes stand; one that can't be read is left out. */
+async function survey(): Promise<Record<NotesState, string[]>> {
+  const found: Record<NotesState, string[]> = { current: [], outdated: [], edited: [], missing: [], none: [] }
+  for (const { id } of await listSessions()) {
+    try {
+      found[await stateOf(id)].push(id)
+    } catch (error) {
+      log('notes', 'skipped a session it could not read', { pageId: id, error: String(error) })
+    }
+  }
+  return found
+}
+
 /** `writer` is the one the user chose, or null when summaries are off (writers.ts). */
 export function createMeetingNotes(deps: { writer: () => Promise<NotesWriter | null> }): MeetingNotesService {
   const jobs = createJobs()
+  /** The bulk run going, if any: whether it was asked to stop, and the session it is on. */
+  let backfilling: { stop: AbortController; pageId: string | null } | null = null
 
-  async function generateNotes(pageId: string, trigger: NotesTrigger = 'manual'): Promise<void> {
+  /** Writes a session's notes; resolves to whether they were written. */
+  async function generateNotes(pageId: string, trigger: NotesTrigger = 'manual'): Promise<boolean> {
     const before = await readForNotes(pageId)
     // Checked before taking the session's slot, so a skipped run never cancels a real one.
     if (trigger === 'auto' && summaryEdited(before.summary, before.fingerprint)) {
       log('notes', 'kept the edited summary', { pageId })
-      return
+      return false
     }
     const job = jobs.start(pageId)
     let writer: NotesWriter | null = null
     try {
       writer = await deps.writer()
       if (!writer) throw new Error('Summaries are turned off in Settings → Sessions')
-      if (!before.transcript.trim()) throw new Error('This note has no transcript to summarize')
+      if (!before.lines.length) throw new Error('This note has no transcript to summarize')
       broadcast(pageId, 'summarizing', 0)
       const started = Date.now()
-      const notes = await writer.notes(before.transcript, {
+      const notes = await writer.notes(before.lines, {
         signal: job.signal,
+        onProgress: (done, total) => {
+          broadcast(pageId, 'summarizing', total ? done / total : 0)
+        },
         onDownload: (received, total) => {
           broadcast(pageId, 'downloading', total ? received / total : 0, 'notes model')
         }
@@ -86,6 +142,7 @@ export function createMeetingNotes(deps: { writer: () => Promise<NotesWriter | n
       // A writer that finished despite an abort still mustn't write; the catch reports why.
       job.signal.throwIfAborted()
       const summary = renderNotes(notes)
+      const run: NotesRun = { pipeline: NOTES_PIPELINE, writer: writer.name, at: new Date().toISOString() }
       // Only the summary changes, so edits made elsewhere while the model worked are untouched.
       const written = await editSession(pageId, (doc) => {
         const now = { summary: docSummary(doc).toJSON(), fingerprint: docMeta(doc).get(GENERATED_SUMMARY_KEY) }
@@ -93,6 +150,7 @@ export function createMeetingNotes(deps: { writer: () => Promise<NotesWriter | n
         doc.transact(() => {
           editDoc(doc, { summary }, ORIGIN_NOTES)
           docMeta(doc).set(GENERATED_SUMMARY_KEY, summaryFingerprint(summary))
+          docMeta(doc).set(NOTES_RUN_KEY, run)
         }, ORIGIN_NOTES)
         return true
       })
@@ -100,15 +158,17 @@ export function createMeetingNotes(deps: { writer: () => Promise<NotesWriter | n
         pageId,
         trigger,
         writer: writer.name,
+        sections: notes.sections.length,
         ms: Date.now() - started
       })
       if (written || trigger === 'auto') broadcast(pageId, 'done', 1)
       else broadcast(pageId, 'error', 0, 'The summary was edited while it was being written, so it was kept')
+      return written
     } catch (error) {
       // A newer request took over; it reports its own status.
       if (job.signal.reason instanceof SupersededError) {
         log('notes', 'replaced by a newer request', { pageId, writer: writer?.name ?? null })
-        return
+        return false
       }
       const message =
         job.signal.aborted && job.signal.reason instanceof Error
@@ -129,9 +189,61 @@ export function createMeetingNotes(deps: { writer: () => Promise<NotesWriter | n
     return summaryEdited(summary, fingerprint)
   }
 
+  async function backfillStatus(): Promise<NotesBackfill> {
+    const found = await survey()
+    return {
+      outdated: found.outdated.length,
+      missing: found.missing.length,
+      edited: found.edited.length,
+      running: backfilling !== null
+    }
+  }
+
+  async function backfill(kind: NotesBackfillKind): Promise<NotesBackfillResult> {
+    if (backfilling) throw new Error('Summaries are already being written')
+    const run: { stop: AbortController; pageId: string | null } = { stop: new AbortController(), pageId: null }
+    backfilling = run
+    // A function, not the field: TypeScript would keep the value it narrowed before an await.
+    const stopped = (): boolean => run.stop.signal.aborted
+    const result: NotesBackfillResult = { written: 0, failed: 0, stopped: false }
+    try {
+      if (!(await deps.writer())) throw new Error('Summaries are turned off in Settings → Sessions')
+      const ids = (await survey())[kind]
+      log('notes', 'backfill started', { kind, sessions: ids.length })
+      for (const pageId of ids) {
+        if (stopped()) break
+        run.pageId = pageId
+        try {
+          // `auto`: a summary edited since the survey is kept, as after a recording.
+          if (await generateNotes(pageId, 'auto')) result.written++
+        } catch {
+          // Already logged and shown on the session; a stop isn't a failure.
+          if (!stopped()) result.failed++
+        }
+      }
+      result.stopped = stopped()
+      log('notes', 'backfill finished', { kind, ...result })
+      return result
+    } finally {
+      backfilling = null
+    }
+  }
+
+  function stopBackfill(): boolean {
+    if (!backfilling) return false
+    backfilling.stop.abort()
+    if (backfilling.pageId) jobs.cancel(backfilling.pageId, new Error('Summary stopped'))
+    return true
+  }
+
   return {
-    generateNotes,
+    generateNotes: async (pageId, trigger) => {
+      await generateNotes(pageId, trigger)
+    },
     summaryEdited: edited,
+    backfillStatus,
+    backfill,
+    stopBackfill,
     cancel: (pageId) => jobs.cancel(pageId, new Error('Summary stopped')),
     register() {
       onMeetingLabeled((pageId) => {
@@ -150,6 +262,10 @@ export function createMeetingNotes(deps: { writer: () => Promise<NotesWriter | n
       })
       ipcMain.handle('notes:generate', (_event, pageId: unknown) => generateNotes(z.string().parse(pageId), 'manual'))
       ipcMain.handle('notes:summaryEdited', (_event, pageId: unknown) => edited(z.string().parse(pageId)))
+      ipcMain.handle('notes:state', (_event, pageId: unknown) => stateOf(z.string().parse(pageId)))
+      ipcMain.handle('notes:backfillStatus', () => backfillStatus())
+      ipcMain.handle('notes:backfill', (_event, kind: unknown) => backfill(z.enum(['outdated', 'missing']).parse(kind)))
+      ipcMain.handle('notes:stopBackfill', () => stopBackfill())
       ipcMain.handle('notes:cancel', (_event, pageId: unknown) => jobs.cancel(z.string().parse(pageId), new Error('Summary stopped')))
     }
   }

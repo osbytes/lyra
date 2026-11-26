@@ -5,18 +5,14 @@
 import type { GbnfJsonObjectSchema, Llama, LlamaGrammar, LlamaModel } from 'node-llama-cpp'
 import { z } from 'zod'
 import { loadLlamaModule } from '../llamaModule'
-import { fitText, mapReduceNotes, titlePrompt, type TokenCounter } from './notesChunks'
-import {
-  MeetingNotes,
-  NOTES_SYSTEM_PROMPT,
-  TitleSuggestion,
-  TITLE_SYSTEM_PROMPT
-} from './notesFormat'
+import { fitText, promptTokens, titlePrompt, type TokenCounter } from './notesChunks'
+import { NOTES_SYSTEM_PROMPTS, TitleSuggestion, TITLE_SYSTEM_PROMPT } from './notesFormat'
 import { callSignal } from './notesJobs'
+import { writeNotes } from './notesPipeline'
 import { NotesWorkerRequest, type NotesWorkerResponse } from './notesProtocol'
 
 const CONTEXT_SIZE = 8192
-/** Notes for one part are short; the cap also stops a model that never closes its JSON. */
+/** Notes for one section are short; the cap also stops a model that never closes its JSON. */
 const NOTES_OUTPUT_TOKENS = 1536
 const TITLE_OUTPUT_TOKENS = 64
 /** The chat template's own tokens around the system prompt and the message. */
@@ -79,7 +75,7 @@ async function prompt(
 
 type Work = Exclude<NotesWorkerRequest, { kind: 'cancel' } | { kind: 'release' }>
 
-async function answer(request: Work, signal: AbortSignal): Promise<unknown> {
+async function answer(request: Work, signal: AbortSignal, onProgress: (done: number, total: number) => void): Promise<unknown> {
   signal.throwIfAborted()
   const { llama: runtime, model } = await getModel(request.modelPath)
   // Chunks are measured with the model's own tokenizer: a character count is ~4x off for
@@ -93,16 +89,29 @@ async function answer(request: Work, signal: AbortSignal): Promise<unknown> {
       return prompt(model, { grammar, system: TITLE_SYSTEM_PROMPT, text, maxTokens: TITLE_OUTPUT_TOKENS, signal })
     }
     case 'notes': {
-      const grammar = await runtime.createGrammarForJsonSchema(grammarSchema(MeetingNotes))
-      return mapReduceNotes({
-        transcript: request.transcript,
-        budget: CONTEXT_SIZE - NOTES_OUTPUT_TOKENS - count(NOTES_SYSTEM_PROMPT) - TEMPLATE_TOKENS,
+      // One grammar per answer shape (whole meeting, section, overview), built on first use.
+      const grammars = new Map<z.ZodObject, LlamaGrammar>()
+      const grammarFor = async (schema: z.ZodObject): Promise<LlamaGrammar> => {
+        const known = grammars.get(schema)
+        if (known) return known
+        const grammar = await runtime.createGrammarForJsonSchema(grammarSchema(schema))
+        grammars.set(schema, grammar)
+        return grammar
+      }
+      return writeNotes({
+        lines: request.lines,
+        budget: CONTEXT_SIZE - NOTES_OUTPUT_TOKENS - promptTokens(NOTES_SYSTEM_PROMPTS, count) - TEMPLATE_TOKENS,
         count,
         signal,
-        ask: async (text) =>
-          MeetingNotes.parse(
-            await prompt(model, { grammar, system: NOTES_SYSTEM_PROMPT, text, maxTokens: NOTES_OUTPUT_TOKENS, signal })
-          )
+        onProgress,
+        ask: async (call) =>
+          prompt(model, {
+            grammar: await grammarFor(call.schema),
+            system: call.system,
+            text: call.prompt,
+            maxTokens: NOTES_OUTPUT_TOKENS,
+            signal
+          })
       })
     }
   }
@@ -152,13 +161,16 @@ process.parentPort.on('message', (event: Electron.MessageEvent) => {
     case 'title': {
       const controller = new AbortController()
       running.set(request.id, controller)
-      enqueue(() => answer(request, controller.signal))
+      const onProgress = (done: number, total: number): void => {
+        reply({ kind: 'progress', id: request.id, done, total })
+      }
+      enqueue(() => answer(request, controller.signal, onProgress))
         .then(
           (result) => {
-            reply({ id: request.id, ok: true, result })
+            reply({ kind: 'result', id: request.id, result })
           },
           (error: unknown) => {
-            reply({ id: request.id, ok: false, error: error instanceof Error ? error.message : String(error) })
+            reply({ kind: 'error', id: request.id, error: error instanceof Error ? error.message : String(error) })
           }
         )
         .finally(() => running.delete(request.id))

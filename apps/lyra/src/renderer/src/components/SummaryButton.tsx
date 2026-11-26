@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useMeetingStatus } from '../hooks/useMeetingStatus'
+import { useNotesState } from '../hooks/useNotesState'
 import { log } from '../lib/log'
 import { writingNotes } from '../lib/status'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -14,7 +15,8 @@ type Props = {
 /**
  * Write / Rewrite summary, shared by the transcript's bar and the details panel. A manual
  * rewrite replaces the summary and isn't undoable, so an edited summary is confirmed first.
- * While a summary is being written (from here or anywhere else) the button becomes Stop.
+ * While a summary is being written (from here or anywhere else) the button becomes Stop. A
+ * summary an older version of Lyra wrote, untouched since, offers an update instead.
  */
 export function SummaryButton({ pageId, hasSummary, className, icon }: Props) {
   const status = useMeetingStatus(pageId)
@@ -30,6 +32,7 @@ export function SummaryButton({ pageId, hasSummary, className, icon }: Props) {
   }, [])
 
   const writing = starting || writingNotes(status)
+  const outdated = useNotesState(pageId, hasSummary, status) === 'outdated'
   const otherJob = !!status && status.task !== 'notes' && status.state !== 'done' && status.state !== 'error'
 
   const write = (): void => {
@@ -78,13 +81,18 @@ export function SummaryButton({ pageId, hasSummary, className, icon }: Props) {
         type="button"
         className={className}
         disabled={!writing && otherJob}
+        title={
+          !writing && outdated
+            ? 'Written by an earlier version of Lyra. Updating rewrites it with sections and better action items.'
+            : undefined
+        }
         onClick={() => {
           if (writing) onStop()
           else void onWrite()
         }}
       >
         {icon}
-        {writing ? 'Stop summary' : hasSummary ? 'Rewrite summary' : 'Write summary'}
+        {writing ? 'Stop summary' : outdated ? 'Update summary' : hasSummary ? 'Rewrite summary' : 'Write summary'}
       </button>
       {asking ? (
         <ConfirmDialog

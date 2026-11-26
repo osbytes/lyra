@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Editor } from './Editor'
 
 /** The section headings `renderNotes` writes (src/main/meeting/notesFormat.ts). */
-const HEADINGS = new Set(['Summary', 'Decisions', 'Action items', 'Open questions'])
+const HEADINGS = new Set(['Summary', 'Sections', 'Decisions', 'Action items', 'Open questions'])
 
 type Item = { text: string; line: number; done: boolean | null }
 type Section = { heading: string | null; paragraphs: string[]; items: Item[] }
