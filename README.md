@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="apps/lyra/build/icon.png" width="128" alt="Lyra" />
+  <img src="apps/lyra/build/icon.svg" width="128" alt="Lyra" />
 </p>
 
 <h1 align="center">Lyra</h1>
@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshot.png" alt="Lyra — a local voice notebook" width="920" />
+  <img src="apps/website/public/screenshots/meeting-details-dark.webp" width="920" alt="Lyra showing a design review: the sessions list, a generated summary with action items, a transcript with each line labeled by speaker, and the details panel with tags and how much each speaker talked" />
 </p>
 
 ## Features
