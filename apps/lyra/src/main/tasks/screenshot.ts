@@ -360,6 +360,12 @@ export async function captureScreenshot(win: BrowserWindow, reviewDir: string | 
         await win.webContents.executeJavaScript(`document.querySelector('.transcript')?.scrollIntoView()`)
         await settle()
         await save(reviewDir, `meeting-${theme}.png`)
+        // The same view with the details panel open, before any popover: the website's picture.
+        await pressShortcut('.')
+        await settle()
+        await save(reviewDir, `meeting-panel-${theme}.png`)
+        await pressShortcut('.')
+        await settle()
         // Still processing, scrolled to the end: the status stays in view in the toast stack, with
         // the time left, and the sidebar marks the session.
         if (meetingId) {

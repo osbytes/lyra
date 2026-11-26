@@ -11,8 +11,8 @@
 }
 
 /* The sky is dark in either theme, so the app's dark tokens and tones apply here whatever the
-   visitor's scheme. Copied from the app's dark block; the selector outranks `.lyra-ui`. */
-.graph:global(.lyra-ui) {
+   visitor's scheme. Copied from the app's dark block. */
+.graph {
   color-scheme: dark;
   --surface: #1e1e24;
   --border: #2a2a32;
@@ -27,19 +27,29 @@
   --shadow-md: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 12px -2px rgba(0, 0, 0, 0.4);
 }
 
-.graph:global(.lyra-ui) .dot[data-tone='0'] {
+.graph .dot[data-tone='0'] {
   --tone-bg: rgba(130, 160, 255, 0.24);
   --tone-text: #c3d1ff;
 }
 
-.graph:global(.lyra-ui) .dot[data-tone='1'] {
+.graph .dot[data-tone='1'] {
   --tone-bg: rgba(255, 160, 120, 0.22);
   --tone-text: #ffc9ad;
 }
 
-.graph:global(.lyra-ui) .dot[data-tone='2'] {
+.graph .dot[data-tone='2'] {
   --tone-bg: rgba(110, 220, 160, 0.2);
   --tone-text: #aeebc8;
+}
+
+/* A speaker's round mark, as the app draws it; .voice .dot sets the size. */
+.dot {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--tone-text, var(--accent-soft-text));
+  font-weight: 600;
 }
 
 .canvas {

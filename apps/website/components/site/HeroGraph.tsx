@@ -470,7 +470,7 @@ export function HeroGraph() {
   const colorOf = (key: keyof Palette): string => palette?.[key] ?? 'var(--accent)'
 
   return (
-    <div ref={rootRef} className={cx('lyra-ui', styles.graph)} aria-hidden="true">
+    <div ref={rootRef} className={styles.graph} aria-hidden="true">
       <canvas ref={canvasRef} className={styles.canvas} />
       {INPUTS.map((input) => (
         <div
@@ -479,7 +479,7 @@ export function HeroGraph() {
           className={cx(styles.voice, lit === input.id && styles.speaking)}
           style={place(STARS[input.id].x, STARS[input.id].y, colorOf(input.id))}
         >
-          <span className={cx('speaker-avatar', styles.dot)} data-tone={input.tone ?? undefined}>
+          <span className={styles.dot} data-tone={input.tone ?? undefined}>
             {input.mark}
           </span>
           <span className={styles.voiceName}>{input.name}</span>

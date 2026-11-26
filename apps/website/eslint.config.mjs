@@ -8,7 +8,7 @@ import tseslint from 'typescript-eslint'
 // The same TypeScript rules as apps/lyra (see .agents/rules/typescript.md), plus Next's own rules.
 // eslint-config-next is not used: its React, import and a11y plugins lag behind ESLint 10.
 export default tseslint.config(
-  { ignores: ['.next/**', 'node_modules/**', 'next-env.d.ts', 'components/demo/app-styles.generated.css'] },
+  { ignores: ['.next/**', 'node_modules/**', 'next-env.d.ts'] },
 
   js.configs.recommended,
   ...tseslint.configs.strictTypeChecked,
