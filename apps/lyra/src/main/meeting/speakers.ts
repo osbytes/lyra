@@ -131,7 +131,7 @@ function send(request: Request, timeoutMs: number): Promise<DiarizeResult | Roll
 }
 
 /** Seconds of audio in a recording's WAV files (16-bit mono), from their size. */
-async function audioSeconds(paths: readonly (string | null)[]): Promise<number> {
+export async function audioSeconds(paths: readonly (string | null)[]): Promise<number> {
   let bytes = 0
   for (const path of paths) if (path) bytes = Math.max(bytes, (await stat(path)).size)
   return bytes / (SAMPLE_RATE * 2)

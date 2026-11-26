@@ -4,17 +4,15 @@ import {
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
-  type PointerEvent as ReactPointerEvent,
-  type ReactNode
+  type PointerEvent as ReactPointerEvent
 } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
-import type { WhisperStatus } from '../../../shared/types'
 import { SYSTEM_AUDIO_BLOCKED_NOTICE, type DictationPhase, type Levels } from '../hooks/useDictation'
 import { notify } from '../lib/toast'
 import { useMicrophones } from '../hooks/useMicrophones'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { formatDuration, shortcutLabel } from '../lib/format'
-import { phaseAnnouncement } from '../lib/status'
+import { DOCK_LABELS, dockLabel, phaseAnnouncement } from '../lib/status'
 import { Floating, ScrollArea, Switch } from './Controls'
 import { ChevronDownIcon, GripIcon, MicIcon, MicSmallIcon, SpeakerIcon, StopIcon } from './Icons'
 import { MicrophoneSelect } from './MicrophoneSelect'
@@ -34,14 +32,9 @@ type SubscribeLevel = (listener: (levels: Levels) => void) => () => void
 type Props = {
   phase: DictationPhase
   micName: string
-  status: WhisperStatus
-  error: string | null
-  notice: string | null
   subscribeLevel: SubscribeLevel
   /** Speech is waiting to be transcribed. */
   transcribing: boolean
-  /** Set when transcription has fallen well behind the recording ("Transcribing… 20 s behind"). */
-  behind: string | null
   /** Starts or stops recording into the open session (or stops the one recording elsewhere). */
   onToggle: () => void
   /** When the recording began (ms since epoch), so the timer survives switching sessions. */
@@ -52,8 +45,6 @@ type Props = {
   onMicChange: (deviceId: string | null) => void
   systemAudio: boolean
   onSystemAudioChange: (on: boolean) => void
-  /** Banners and toasts that float above the dock. */
-  children?: ReactNode
 }
 
 /**
@@ -123,21 +114,24 @@ function useElapsed(startedAt: number | null): number {
   return startedAt === null ? 0 : Math.max(0, now - startedAt)
 }
 
-function statusText(
-  phase: DictationPhase,
-  status: WhisperStatus,
-  transcribing: boolean,
-  behind: string | null
-): string {
-  if (status.state === 'downloading') {
-    const pct = status.total ? Math.round((status.received / status.total) * 100) : 0
-    return `Downloading speech model… ${String(pct)}%`
-  }
-  if (phase === 'starting') return 'Warming up…'
-  if (phase === 'finishing') return 'Finishing transcript…'
-  if (phase === 'listening') return behind ?? (transcribing ? 'Transcribing…' : 'Listening')
-  // Idle: the mic button's tooltip says what it does.
-  return ''
+/**
+ * The dock's status word. Every possible word sits in the same grid cell, hidden but for the
+ * current one, so the slot keeps the width of the longest and the dock never shifts.
+ */
+function DockStatus({ label, hint }: { label: string; hint: boolean }) {
+  return (
+    <span className="dock-status" {...(hint ? tip('Say “new paragraph” to break') : {})}>
+      {DOCK_LABELS.map((word) => (
+        <span
+          key={word}
+          aria-hidden={word !== label}
+          className={word === label ? undefined : 'is-sizer'}
+        >
+          {word}
+        </span>
+      ))}
+    </span>
+  )
 }
 
 /** What the session records, and a popover to change it (microphone, computer audio). */
@@ -371,14 +365,14 @@ function usePhaseAnnouncement(phase: DictationPhase): string {
 }
 
 export function DictationDock(props: Props) {
-  const { phase, status, error, notice, subscribeLevel, transcribing, onToggle, elsewhere } = props
+  const { phase, subscribeLevel, transcribing, onToggle, elsewhere } = props
   const listening = phase === 'listening'
   const starting = phase === 'starting'
   const busy = starting || phase === 'finishing'
   const elapsed = useElapsed(listening ? props.startedAt : null)
   const button = useRef<HTMLButtonElement>(null)
   const drag = useDockDrag()
-  const label = statusText(phase, status, transcribing, props.behind)
+  const label = dockLabel(phase, transcribing)
   const announcement = usePhaseAnnouncement(phase)
 
   useEffect(() => {
@@ -390,35 +384,6 @@ export function DictationDock(props: Props) {
 
   return (
     <div ref={drag.area} className={`dock-area${drag.nearTop ? ' is-top' : ''}`}>
-      {props.children}
-      {error ? (
-        <p className="dock-error" role="alert">
-          {error}
-        </p>
-      ) : notice ? (
-        <p className="dock-notice" role="status">
-          {notice}
-          {notice === SYSTEM_AUDIO_BLOCKED_NOTICE ? (
-            <button
-              type="button"
-              className="btn dock-notice-action"
-              onClick={() => {
-                window.api.openPermissionSettings('screen').then(
-                  (opened) => {
-                    if (!opened) notify('Open your system settings to change this.')
-                  },
-                  () => {
-                    notify('Couldn’t open system settings.')
-                  }
-                )
-              }}
-            >
-              Open Settings
-            </button>
-          ) : null}
-        </p>
-      ) : null}
-
       {/* Says when recording starts and stops; the status text beside the button isn't read. */}
       <span className="visually-hidden" aria-live="polite">
         {announcement}
@@ -463,14 +428,7 @@ export function DictationDock(props: Props) {
           {listening || starting ? <StopIcon /> : <MicIcon />}
         </button>
 
-        {label ? (
-          <span
-            className="dock-status"
-            {...(listening ? tip('Say “new paragraph” to break') : {})}
-          >
-            {label}
-          </span>
-        ) : null}
+        {label ? <DockStatus label={label} hint={listening} /> : null}
 
         {elsewhere && (listening || busy) ? (
           <button
@@ -503,4 +461,35 @@ export function DictationDock(props: Props) {
       </div>
     </div>
   )
+}
+
+/** The recorder's error or notice, shown in the toast stack rather than on the dock. */
+export function DictationMessage({ error, notice }: { error: string | null; notice: string | null }) {
+  return error ? (
+    <p className="dock-error" role="alert">
+      {error}
+    </p>
+  ) : notice ? (
+    <p className="dock-notice" role="status">
+      {notice}
+      {notice === SYSTEM_AUDIO_BLOCKED_NOTICE ? (
+        <button
+          type="button"
+          className="btn dock-notice-action"
+          onClick={() => {
+            window.api.openPermissionSettings('screen').then(
+              (opened) => {
+                if (!opened) notify('Open your system settings to change this.')
+              },
+              () => {
+                notify('Couldn’t open system settings.')
+              }
+            )
+          }}
+        >
+          Open Settings
+        </button>
+      ) : null}
+    </p>
+  ) : null
 }

@@ -23,7 +23,8 @@ import { getSettings } from '../settings'
 import { notifyLabeled } from './events'
 import { learnSamples, mergeSamePerson, mergeTinySpeakers, nameSpeakers, nextPassId } from './pipeline'
 import type { DiarizedSegment } from './protocol'
-import { diarize, ensureSpeakerModels } from './speakers'
+import { audioSeconds, diarize, ensureSpeakerModels } from './speakers'
+import { startEstimate } from './estimate'
 import { MIC_SIDE } from './clustering'
 import { SPEAKER_EMBEDDING } from './speakerModel'
 import { movedLines, pinnedSpeakers } from './speakerRules'
@@ -336,7 +337,8 @@ async function relabel(pageId: string): Promise<void> {
   const started = Date.now()
 
   const models = await ensureSpeakerModels()
-  broadcast({ pageId, task: 'speakers', state: 'diarizing', progress: 0 })
+  const timing = startEstimate(await audioSeconds([micPath, systemPath]))
+  broadcast({ pageId, task: 'speakers', state: 'diarizing', progress: 0, estimate: timing.estimate })
   const result = await mergeSamePerson(
     mergeTinySpeakers(
       await diarize({
@@ -447,6 +449,7 @@ async function relabel(pageId: string): Promise<void> {
     ...manifest,
     passes: [...manifest.passes, { id: passId, kind: 'diarized', createdAt: pass.createdAt, model: pass.model }]
   }))
+  timing.finish()
   broadcast({ pageId, task: 'speakers', state: 'done', progress: 1 })
   log('relabel', 'labeled', { pageId, pass: passId, speakers: fields.size, lines: segments.length })
   if (fields.size >= 2) notifyLabeled(pageId)
