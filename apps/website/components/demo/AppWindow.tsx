@@ -331,24 +331,36 @@ export function AppWindow() {
                 hint={hint}
               >
                 {listening && state.settings.systemAudio && !state.settings.noticeSeen ? (
-                  <div className="banner" role="status">
-                    <span className="banner-dot" aria-hidden="true" />
-                    Recording the computer’s audio too. Make sure everyone on the call is OK with it.
-                    <button
-                      className="btn"
-                      type="button"
-                      onClick={() => dispatch({ type: 'settings', patch: { noticeSeen: true } })}
-                    >
-                      Got it
-                    </button>
+                  <div className="toast" role="status">
+                    <div className="toast-row">
+                      <span className="toast-dot" aria-hidden="true" />
+                      <span className="toast-text">
+                        Recording the computer’s audio too. Make sure everyone on the call is OK with it.
+                      </span>
+                      <button
+                        className="toast-action"
+                        type="button"
+                        onClick={() => dispatch({ type: 'settings', patch: { noticeSeen: true } })}
+                      >
+                        Got it
+                      </button>
+                    </div>
                   </div>
                 ) : null}
                 {state.trashed ? (
                   <div className="toast" role="status">
-                    <span>Deleted session “{state.trashed.session.title || 'Untitled'}”</span>
-                    <button type="button" onClick={() => dispatch({ type: 'undoRemove' })}>
-                      Undo
-                    </button>
+                    <div className="toast-row">
+                      <span className="toast-text">
+                        Deleted session “{state.trashed.session.title || 'Untitled'}”
+                      </span>
+                      <button
+                        className="toast-action"
+                        type="button"
+                        onClick={() => dispatch({ type: 'undoRemove' })}
+                      >
+                        Undo
+                      </button>
+                    </div>
                   </div>
                 ) : null}
               </DictationDock>

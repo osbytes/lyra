@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState, type HTMLAttributes, type ReactNode } from 'react'
 import { dismissMeetingStatus, useMeetingStatus } from '../hooks/useMeetingStatus'
 import { processingActivity, type Activity } from '../lib/status'
 import { CloseIcon } from './Icons'
@@ -18,34 +18,52 @@ export function ToastStack({ children }: { children: ReactNode }) {
   )
 }
 
-/** Background work: a spinner or progress bar, its words, and how far along it is. */
-export function ActivityToast({
-  activity,
-  onDismiss
-}: {
-  activity: Activity
-  onDismiss?: () => void
-}) {
+type ToastProps = {
+  /** Errors are tinted red; everything else looks the same. */
+  tone?: 'normal' | 'error' | undefined
+  /** A small mark before the text: a spinner for work in progress, a dot for recording. */
+  icon?: 'spinner' | 'dot' | undefined
+  text: ReactNode
+  /** Secondary words at the end of the line: a percentage, or how long is left. */
+  detail?: string | null | undefined
+  /** 0–1 draws a bar under the line. */
+  progress?: number | null | undefined
+  /** A `.toast-action` button (Undo, Got it, Open Settings). */
+  action?: ReactNode
+  onDismiss?: (() => void) | undefined
+} & Omit<HTMLAttributes<HTMLDivElement>, 'className' | 'children'>
+
+/**
+ * Every message in the stack, so they all look alike: Undo confirmations, background work and
+ * recorder notices differ only in their words, an optional mark, button or bar.
+ */
+export function Toast({
+  tone = 'normal',
+  icon,
+  text,
+  detail,
+  progress,
+  action,
+  onDismiss,
+  ...rest
+}: ToastProps) {
   return (
-    <div
-      className={`activity-toast is-${activity.tone}`}
-      {...(activity.tone === 'error' ? { role: 'alert' } : {})}
-    >
-      <div className="activity-row">
-        {activity.tone === 'busy' && activity.progress === null ? (
-          <span className="activity-spinner" aria-hidden="true" />
-        ) : null}
-        <span className="activity-text">{activity.text}</span>
+    <div className={tone === 'error' ? 'toast is-error' : 'toast'} {...rest}>
+      <div className="toast-row">
+        {icon === 'spinner' ? <span className="toast-spinner" aria-hidden="true" /> : null}
+        {icon === 'dot' ? <span className="toast-dot" aria-hidden="true" /> : null}
+        <span className="toast-text">{text}</span>
         {/* Ticks every second or percent; reading each one out would drown everything else. */}
-        {activity.detail ? (
-          <span className="activity-detail" aria-hidden="true">
-            {activity.detail}
+        {detail ? (
+          <span className="toast-detail" aria-hidden="true">
+            {detail}
           </span>
         ) : null}
+        {action}
         {onDismiss ? (
           <button
             type="button"
-            className="activity-dismiss"
+            className="toast-dismiss"
             aria-label="Dismiss"
             {...tip('Dismiss')}
             onClick={onDismiss}
@@ -54,12 +72,33 @@ export function ActivityToast({
           </button>
         ) : null}
       </div>
-      {activity.progress === null ? null : (
-        <span className="activity-progress" aria-hidden="true">
-          <span style={{ width: `${String(activity.progress * 100)}%` }} />
+      {progress === null || progress === undefined ? null : (
+        <span className="toast-progress" aria-hidden="true">
+          <span style={{ width: `${String(progress * 100)}%` }} />
         </span>
       )}
     </div>
+  )
+}
+
+/** Background work: its words, a spinner or progress bar, and how far along it is. */
+export function ActivityToast({
+  activity,
+  onDismiss
+}: {
+  activity: Activity
+  onDismiss?: () => void
+}) {
+  return (
+    <Toast
+      tone={activity.tone === 'error' ? 'error' : 'normal'}
+      icon={activity.tone === 'busy' && activity.progress === null ? 'spinner' : undefined}
+      text={activity.text}
+      detail={activity.detail}
+      progress={activity.progress}
+      onDismiss={onDismiss}
+      {...(activity.tone === 'error' ? { role: 'alert' } : {})}
+    />
   )
 }
 

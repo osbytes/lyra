@@ -4,7 +4,7 @@ import type { PageSummary, UpdateStatus, WhisperStatus } from '../../shared/type
 import type { TranscriptSegment } from '../../shared/sessionDoc'
 import { DetailsPanel } from './components/DetailsPanel'
 import { DictationDock, DictationMessage } from './components/DictationDock'
-import { ActivityToast, ProcessingToast, ToastStack } from './components/ToastStack'
+import { ActivityToast, ProcessingToast, Toast, ToastStack } from './components/ToastStack'
 import { Summary } from './components/Summary'
 import { NotesEditor, type NotesHandle } from './components/NotesEditor'
 import { TagRow } from './components/TagRow'
@@ -422,9 +422,9 @@ export default function App(): React.JSX.Element {
 
   // Hovering or focusing the toast holds it; F6 reaches its button from anywhere (see onKey).
   const toastElement = toast ? (
-    <div
-      className="toast"
+    <Toast
       role="status"
+      text={toast.text}
       onMouseMove={() => {
         if (heldToast !== toast) setHeldToast(toast)
       }}
@@ -437,24 +437,25 @@ export default function App(): React.JSX.Element {
         setToast(null)
         leaveToast()
       }}
-    >
-      <span>{toast.text}</span>
-      {toast.action ? (
-        <button
-          ref={toastButton}
-          type="button"
-          aria-keyshortcuts="F6"
-          {...tip(toast.action.label, 'F6')}
-          onClick={() => {
-            toast.action?.run()
-            setToast(null)
-            leaveToast()
-          }}
-        >
-          {toast.action.label}
-        </button>
-      ) : null}
-    </div>
+      action={
+        toast.action ? (
+          <button
+            ref={toastButton}
+            type="button"
+            className="toast-action"
+            aria-keyshortcuts="F6"
+            {...tip(toast.action.label, 'F6')}
+            onClick={() => {
+              toast.action?.run()
+              setToast(null)
+              leaveToast()
+            }}
+          >
+            {toast.action.label}
+          </button>
+        ) : null
+      }
+    />
   ) : null
 
   const copy = (): void => {
@@ -907,17 +908,20 @@ export default function App(): React.JSX.Element {
               <ProcessingToast pageId={current.id} />
               {activityElement}
               {dictation.recording && systemAudio && settings && !settings.meetingNoticeSeen ? (
-                <div className="banner" role="status">
-                  <span className="banner-dot" aria-hidden="true" />
-                  Recording the computer’s audio too. Make sure everyone on the call is OK with it.
-                  <button
-                    className="btn"
-                    type="button"
-                    onClick={() => void updateSettings({ meetingNoticeSeen: true })}
-                  >
-                    Got it
-                  </button>
-                </div>
+                <Toast
+                  role="status"
+                  icon="dot"
+                  text="Recording the computer’s audio too. Make sure everyone on the call is OK with it."
+                  action={
+                    <button
+                      className="toast-action"
+                      type="button"
+                      onClick={() => void updateSettings({ meetingNoticeSeen: true })}
+                    >
+                      Got it
+                    </button>
+                  }
+                />
               ) : null}
               <DictationMessage error={dictation.error} notice={dictation.notice} />
               {toastElement}

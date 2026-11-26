@@ -16,6 +16,7 @@ import { DOCK_LABELS, dockLabel, phaseAnnouncement } from '../lib/status'
 import { Floating, ScrollArea, Switch } from './Controls'
 import { ChevronDownIcon, GripIcon, MicIcon, MicSmallIcon, SpeakerIcon, StopIcon } from './Icons'
 import { MicrophoneSelect } from './MicrophoneSelect'
+import { Toast } from './ToastStack'
 import { tip } from './Tooltip'
 
 const BAR_COUNT = 20
@@ -465,31 +466,31 @@ export function DictationDock(props: Props) {
 
 /** The recorder's error or notice, shown in the toast stack rather than on the dock. */
 export function DictationMessage({ error, notice }: { error: string | null; notice: string | null }) {
-  return error ? (
-    <p className="dock-error" role="alert">
-      {error}
-    </p>
-  ) : notice ? (
-    <p className="dock-notice" role="status">
-      {notice}
-      {notice === SYSTEM_AUDIO_BLOCKED_NOTICE ? (
-        <button
-          type="button"
-          className="btn dock-notice-action"
-          onClick={() => {
-            window.api.openPermissionSettings('screen').then(
-              (opened) => {
-                if (!opened) notify('Open your system settings to change this.')
-              },
-              () => {
-                notify('Couldn’t open system settings.')
-              }
-            )
-          }}
-        >
-          Open Settings
-        </button>
-      ) : null}
-    </p>
-  ) : null
+  if (error) return <Toast tone="error" role="alert" text={error} />
+  if (!notice) return null
+  return (
+    <Toast
+      text={notice}
+      action={
+        notice === SYSTEM_AUDIO_BLOCKED_NOTICE ? (
+          <button
+            type="button"
+            className="toast-action"
+            onClick={() => {
+              window.api.openPermissionSettings('screen').then(
+                (opened) => {
+                  if (!opened) notify('Open your system settings to change this.')
+                },
+                () => {
+                  notify('Couldn’t open system settings.')
+                }
+              )
+            }}
+          >
+            Open Settings
+          </button>
+        ) : null
+      }
+    />
+  )
 }
