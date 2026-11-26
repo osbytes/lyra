@@ -3,30 +3,17 @@
 # (apps/lyra/scripts/eval/baselines/). A change that hands words to the wrong speaker, loses
 # words or relabels more of the live transcript fails here instead of sitting unread in a table.
 #
-# Only on PRs that touch what the evals measure: the run downloads the models and a 126 MB
-# corpus (both cached) and takes several minutes on a macOS runner. The baseline is per machine
-# kind (Whisper hears a little differently on each backend); this job uses the darwin-arm64 one,
-# the same as an Apple-silicon Mac. To accept a change in the numbers, run
-# `LYRA_SESSIONS_CORPUS=mini pnpm eval:sessions --quick --update-baseline` on such a Mac and
-# commit the file with the PR, saying why in its description.
+# Started by hand, not on pull requests: a GitHub-hosted macOS runner gives Whisper a
+# paravirtual GPU on which one four-minute session takes about 35 minutes (it is under a minute
+# on an Apple-silicon Mac), so the five quick sessions don't fit a job. Use it on a self-hosted
+# Apple-silicon runner (change `runs-on`), or run the same command on your own Mac before a
+# pull request, which AGENTS.md asks for. The baseline is per machine kind (Whisper hears a
+# little differently on each backend); this job uses the darwin-arm64 one. To accept a change in
+# the numbers, run `LYRA_SESSIONS_CORPUS=mini pnpm eval:sessions --quick --update-baseline` on
+# such a Mac and commit the file with the PR, saying why in its description.
 name: evals
 
 on:
-  pull_request:
-    paths:
-      - apps/lyra/src/main/meeting/**
-      - apps/lyra/src/main/recorder.ts
-      - apps/lyra/src/main/takeWriter.ts
-      - apps/lyra/src/main/transcriber.ts
-      - apps/lyra/src/main/speechVad.ts
-      - apps/lyra/src/main/models.ts
-      - apps/lyra/src/main/whisper.ts
-      - apps/lyra/src/main/livePass.ts
-      - apps/lyra/src/shared/sessionDoc.ts
-      - apps/lyra/scripts/eval/**
-      - apps/lyra/scripts/run-eval.cjs
-      - apps/lyra/scripts/run-meeting-smoke.cjs
-      - .github/workflows/evals.yml
   workflow_dispatch:
 
 concurrency:
@@ -40,7 +27,7 @@ jobs:
   sessions:
     name: evals (sessions, quick)
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 240
     env:
       LYRA_SESSIONS_CORPUS: mini
       LYRA_MODELS_DIR: ${{ github.workspace }}/.eval-cache/models
