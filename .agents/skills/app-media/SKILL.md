@@ -65,7 +65,7 @@ math.
 
 | Destination | Shot | Size and format | Where it goes |
 |---|---|---|---|
-| README | The app's main page, light | PNG from `pnpm screenshot` (shown at 920 wide) | `docs/screenshot.png` (the task writes it) |
+| README | The website's app shot, dark | Reuses the website's `.webp` (shown at 920 wide) | `apps/website/public/screenshots/meeting-details-dark.webp` |
 | Website | Full frame or one element | Stills `.webp` from the 2x capture, under 500 KB, shown with `next/image`; video `.mp4` (H.264) with a `.webp` poster, never GIF or animated WebP | `apps/website/public/<section>/<what-it-shows>.webp` / `.mp4` |
 | Release notes (GitHub) | Headline change, still or video | `.png` under 500 KB, or `.mp4` under 10 MB, 1920 wide | Scratchpad; give the file to the user to attach to the release |
 | Social | Full frame, or element on the frame background | 1080×1080 or 1920×1080 `.mp4`/`.png` | Scratchpad; give the file to the user |
@@ -202,7 +202,7 @@ Zoom on the result after the menu closes.
 
 ## Embed
 
-- README: `docs/screenshot.png` is already linked; keep its `alt` true to what it shows.
+- README: shows the website's `meeting-details-dark.webp`. When that still is renamed or replaced, update the README paths too, and keep its `alt` true to what it shows.
 - Website: `next/image` with the file's `width` and `height` and real alt text for stills; `<video src poster muted loop playsInline autoPlay>` for clips. Files are served from `public/`, so the site still makes no third-party requests. Run `pnpm --filter web check` and `pnpm --filter web build`. Delete files the page no longer uses.
 
 ## Clean up
