@@ -9,6 +9,7 @@ import { assignWords, buildLines, liveWords, matchSpeakers, writeLines, type Hea
 import { ensureSpeakerModels, rollDiarize } from './speakers'
 import { movedLines, pinnedSpeakers } from './speakerRules'
 import { DIARIZE_THRESHOLD } from './thresholds'
+import { snapTurns } from './turnEdges'
 import { passClusters } from './voiceprints'
 
 /**
@@ -95,7 +96,13 @@ async function label(take: LiveTake): Promise<void> {
     const words: HeardWord[] = [...earlier, ...own]
     const moved = movedLines(transcript, origins)
     const pins = pinnedSpeakers(words, moved)
-    const speakers = liveSpeakers(words, merged.segments, merged.seconds)
+    const heardAsSpeaker = liveSpeakers(words, merged.segments, merged.seconds)
+    // As the pass after the stop does; words not settled yet stay where they are.
+    const speakers = snapTurns(
+      words,
+      heardAsSpeaker,
+      heardAsSpeaker.map((speaker, index) => speaker < 0 || pins[index] !== null)
+    )
     const lines = buildLines(words, speakers, pins)
     // The lines hold these same word objects; this gets back the track each was heard on.
     const heardAs = new Map<object, HeardWord>(words.map((word) => [word, word]))

@@ -30,6 +30,7 @@ import { MIC_SIDE } from './clustering'
 import { SPEAKER_EMBEDDING } from './speakerModel'
 import { movedLines, pinnedSpeakers } from './speakerRules'
 import { DIARIZE_THRESHOLD } from './thresholds'
+import { snapTurns } from './turnEdges'
 import { passClusters, type WrittenPass } from './voiceprints'
 
 /**
@@ -357,7 +358,12 @@ async function relabel(pageId: string): Promise<void> {
   // that speaker, live lines from a take never relabeled included.
   const moved = movedLines(before.transcript, await passClusters(pageId))
   const pins = pinnedSpeakers(words, moved)
-  const speakers = assignWords(words, result.segments)
+  // Each change of speaker then moves to the pause or sentence end beside it (`turnEdges.ts`).
+  const speakers = snapTurns(
+    words,
+    assignWords(words, result.segments),
+    pins.map((pin) => pin !== null)
+  )
   const lines = buildLines(words, speakers, pins)
   // Diarized speakers left with words of their own; one whose words were all moved isn't named.
   const voices = new Set(speakers.filter((_, index) => pins[index] === null))

@@ -19,6 +19,8 @@ import type {
   WorkerResponse
 } from './protocol'
 import {
+  MIC_SIDE,
+  centroids,
   clusterLongWindows,
   foldShortSpeakers,
   labelTimeline,
@@ -28,6 +30,7 @@ import {
   type Span
 } from './clustering'
 import { advance, emptyRolling, rollingResult, type RollingState } from './rollingDiarizer'
+import { refineEdges } from './turnEdges'
 import { energy, mixTracks, readWav, SAMPLE_RATE } from './wav'
 
 /** Audio per speaker used for their voiceprint: enough to be stable, cheap to compute. */
@@ -204,16 +207,24 @@ async function diarize(request: DiarizeRequest): Promise<DiarizeResult> {
     minSpeakerSeconds(windows.reduce((sum, w) => sum + w.end - w.start, 0)),
     { micShares, words: request.words, minWords: MIN_OWN_WORDS, distinct: request.threshold }
   )
-  const raw: SpeakerDiarizationSegment[] = labelTimeline(windows, labels)
+  const micShareOf = ({ start, end }: Span): number => {
+    const from = Math.floor(start * SAMPLE_RATE)
+    const to = Math.ceil(end * SAMPLE_RATE)
+    const micEnergy = energy(mic, from, to)
+    const total = micEnergy + (system ? energy(system, from, to) : 0)
+    return total > 0 ? micEnergy / total : 1
+  }
+  // The windows say who; where one turn ends and the next begins is then found more finely
+  // (`turnEdges.ts`). A change between the mic and the far end is left to the tracks.
+  const raw: SpeakerDiarizationSegment[] = refineEdges(
+    labelTimeline(windows, labels),
+    centroids(labels, prints),
+    (start, end) =>
+      unit(embed(request.models, audio.subarray(Math.floor(start * SAMPLE_RATE), Math.ceil(end * SAMPLE_RATE)))),
+    (a, b) => micShareOf(a) >= MIC_SIDE === micShareOf(b) >= MIC_SIDE
+  )
 
-  const segments: DiarizedSegment[] = raw.map((segment) => {
-    const start = Math.floor(segment.start * SAMPLE_RATE)
-    const end = Math.ceil(segment.end * SAMPLE_RATE)
-    const micEnergy = energy(mic, start, end)
-    const systemEnergy = system ? energy(system, start, end) : 0
-    const total = micEnergy + systemEnergy
-    return { ...segment, micShare: total > 0 ? micEnergy / total : 1 }
-  })
+  const segments: DiarizedSegment[] = raw.map((segment) => ({ ...segment, micShare: micShareOf(segment) }))
 
   return {
     seconds: audio.length / SAMPLE_RATE,
