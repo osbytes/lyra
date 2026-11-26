@@ -360,9 +360,16 @@ export async function captureScreenshot(win: BrowserWindow, reviewDir: string | 
         await win.webContents.executeJavaScript(`document.querySelector('.transcript')?.scrollIntoView()`)
         await settle()
         await save(reviewDir, `meeting-${theme}.png`)
-        // Still processing, scrolled to the end: the status must stay in view in the header bar.
+        // Still processing, scrolled to the end: the status stays in view in the toast stack, with
+        // the time left, and the sidebar marks the session.
         if (meetingId) {
-          const busy: MeetingStatus = { pageId: meetingId, task: 'speakers', state: 'diarizing', progress: 0.4 }
+          const busy: MeetingStatus = {
+            pageId: meetingId,
+            task: 'speakers',
+            state: 'diarizing',
+            progress: 0,
+            estimate: { startedAt: Date.now() - 40_000, expectedMs: 160_000 }
+          }
           win.webContents.send('meeting:status', busy)
           await win.webContents.executeJavaScript(
             `document.querySelector('.transcript-pane')?.scrollTo({ top: 1e6 })`

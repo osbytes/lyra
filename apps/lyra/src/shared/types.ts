@@ -137,6 +137,11 @@ export type MeetingStatus = {
   /** 0–1 within the current state. */
   progress: number
   message?: string
+  /**
+   * For a step that can't count its own progress (finding who spoke when): when it began and how
+   * long it's expected to take, from the audio's length, so the UI can say how long is left.
+   */
+  estimate?: { startedAt: number; expectedMs: number }
 }
 
 export type PageSummary = {
