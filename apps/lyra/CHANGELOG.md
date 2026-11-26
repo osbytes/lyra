@@ -1,5 +1,21 @@
 # lyra
 
+## 0.6.0
+
+### Minor Changes
+
+- [#77](https://github.com/osbytes/lyra/pull/77) [`f3c92ce`](https://github.com/osbytes/lyra/commit/f3c92ce734f19cce2535283f83cf499877ac2dd7) Thanks [@dillonstreator](https://github.com/dillonstreator)! - New "Larger speaker model" setting (Recording): a larger model works out who spoke when, while you record and once the session ends, and the names you see while recording no longer change afterwards. In meeting rooms with several people it finds the right number of speakers far more often and gives about half as many words to the wrong person. Off by default; turning it on downloads 121 MB. Not available on Intel Macs.
+
+### Patch Changes
+
+- [#74](https://github.com/osbytes/lyra/pull/74) [`a78815c`](https://github.com/osbytes/lyra/commit/a78815c36823070fe0fece12812b883f2e14bd5a) Thanks [@dillonstreator](https://github.com/dillonstreator)! - Undo confirmations, recorder notices and errors, and finished or failed processing can now be closed from their toast.
+
+- [#75](https://github.com/osbytes/lyra/pull/75) [`cc3b1aa`](https://github.com/osbytes/lyra/commit/cc3b1aa0a37608ca3a695b89d6a3efc0ef8da847) Thanks [@adavila0703](https://github.com/adavila0703)! - Lyra has a new icon: a single bright star on the night sky.
+
+- [#72](https://github.com/osbytes/lyra/pull/72) [`a531212`](https://github.com/osbytes/lyra/commit/a5312127f43bc13ef207008ec33d5c6bbe362efd) Thanks [@dillonstreator](https://github.com/dillonstreator)! - Messages now stack in the bottom-right corner, apart from the record dock, so nothing moves the dock or its button: Undo confirmations, model downloads, recorder notices, and a session's processing, which shows how long is left. The dock's status keeps one width from Listening to Transcribing, and the sidebar marks sessions still being processed.
+
+- [#76](https://github.com/osbytes/lyra/pull/76) [`672ce4e`](https://github.com/osbytes/lyra/commit/672ce4e6b7a82926840aabffe35b8b48b45c8af9) Thanks [@dillonstreator](https://github.com/dillonstreator)! - The first and last words of a turn now stay with the person who said them. When two people traded short remarks, Lyra often gave a word or two at each change to the other speaker; it now looks for the exact point where the voice changes and moves it to the pause or sentence end beside it.
+
 ## 0.5.0
 
 ### Minor Changes
