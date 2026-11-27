@@ -148,6 +148,8 @@ async function handle(request: IndexRequest): Promise<unknown> {
       return db.readSession(open(), request.id)
     case 'readPeople':
       return db.readPeople(open())
+    case 'peopleActivity':
+      return db.peopleActivity(open())
     case 'stats':
       return { ...(await db.stats(open(), embedder?.space ?? null)), embedError }
     case 'close':

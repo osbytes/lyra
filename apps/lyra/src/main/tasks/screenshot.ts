@@ -311,6 +311,13 @@ export async function captureScreenshot(win: BrowserWindow, reviewDir: string | 
         await click('.home-link')
         await settle()
         await save(reviewDir, `home-${theme}.png`)
+        // People under Home: the list, then the first person's page.
+        await click('.people-link')
+        await settle()
+        await save(reviewDir, `people-${theme}.png`)
+        await click('.people-page li button')
+        await settle()
+        await save(reviewDir, `person-${theme}.png`)
         await reload()
         await pressShortcut('k')
         await settle()

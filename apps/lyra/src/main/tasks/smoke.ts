@@ -76,6 +76,7 @@ import { classifyMicUser, meetingFromTitles } from '../meetingApps'
 import { MeetingDetector, type DetectorPolicy } from '../meetingDetector'
 import { exportIgnoredAppsTo, importIgnoredAppsFrom } from '../ignoredAppsFile'
 import { mergeIgnoredApps } from '../../shared/ignoredApps'
+import { PeopleActivity } from '../../shared/peopleActivity'
 import { ConfigError, parseConfig } from '../config'
 import { parseTask } from './args'
 import { MockLanguageModelV4 } from 'ai/test'
@@ -1452,6 +1453,48 @@ async function checkSessionEdits(win: BrowserWindow): Promise<void> {
 }
 
 /** Copy buttons: the sandboxed preload has no clipboard module, so text goes through main. */
+/** The People pages' numbers: who spoke where, through the bridge, from the index. */
+async function checkPeopleActivity(win: BrowserWindow): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`people activity: ${message}`)
+  }
+  const page = await createPage({ startedAt: '2026-05-06T07:08:09' })
+  await editSession(page.id, (doc) => {
+    editDoc(doc, { title: 'People smoke', summary: 'Summary\nWe met.\n\nAction items\n- [ ] Ana: send the deck' })
+    addTag(doc, 'Planning')
+    upsertSpeaker(doc, 'c0', { name: 'Ana', personId: 'smoke-people-ana', confirmed: true })
+    upsertSpeaker(doc, 'c1', { name: 'Ben', personId: 'smoke-people-ben', confirmed: true })
+    upsertSpeaker(doc, 'c2', { name: 'Speaker 3' })
+    // Named by hand, with no saved voice: still someone.
+    upsertSpeaker(doc, 'c3', { name: 'Dillon' })
+    replaceTranscript(doc, [
+      { id: 's1', rawId: null, start: 0.5, end: 4, cluster: 'c0', confidence: null, text: 'The budget is ready to go.' },
+      { id: 's2', rawId: null, start: 4, end: 6, cluster: 'c1', confidence: null, text: 'Thanks Ana.' },
+      { id: 's3', rawId: null, start: 6, end: 7, cluster: 'c2', confidence: null, text: 'Bye.' },
+      { id: 's4', rawId: null, start: 7, end: 8, cluster: 'c3', confidence: null, text: 'See you.' }
+    ])
+  })
+  try {
+    const raw: unknown = await win.webContents.executeJavaScript('window.api.peopleActivity()')
+    const activity = PeopleActivity.parse(raw)
+    const session = activity.sessions.find((entry) => entry.id === page.id)
+    // Everyone's talk counts toward the session, the unnamed speaker too.
+    if (session?.title !== 'People smoke' || session.talkSeconds !== 7.5 || session.tags.join() !== 'planning') {
+      fail(`session wrong: ${JSON.stringify(session)}`)
+    }
+    const mine = activity.appearances
+      .filter((entry) => entry.sessionId === page.id)
+      .map((entry) => `${entry.personId ?? '-'}/${entry.name}:${String(entry.talkSeconds)}:${String(entry.lines)}:${String(entry.words)}`)
+      .sort()
+    // "Speaker 3" is nobody yet, so it's left out.
+    if (mine.join('|') !== '-/Dillon:1:1:2|smoke-people-ana/Ana:3.5:1:6|smoke-people-ben/Ben:2:1:2') fail(`appearances wrong: ${mine.join('|')}`)
+    const items = activity.actionItems.filter((item) => item.sessionId === page.id)
+    if (items.length !== 1 || items[0]?.owner !== 'Ana' || items[0].done) fail(`action items wrong: ${JSON.stringify(items)}`)
+  } finally {
+    await deletePage(page.id)
+  }
+}
+
 async function checkCopy(win: BrowserWindow): Promise<void> {
   const text = `lyra smoke copy ${String(Date.now())}`
   await win.webContents.executeJavaScript(`window.api.copyText(${JSON.stringify(text)})`)
@@ -1513,6 +1556,7 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
     await checkUnfinishedWav()
     // Last of the index checks: the rebuilt index holds only what changed since (see the report).
     await checkSearchIndexRecovery()
+    await checkPeopleActivity(win)
     await checkCopy(win)
     await checkPromptApps(win)
     await checkRecordingManifest(win)

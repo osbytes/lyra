@@ -103,7 +103,7 @@ import { broadcastStatus, warmUp } from './whisper'
 import { log, logPath } from './log'
 import { searchSessions } from './search'
 import { appUsage, startUsageSampler } from './usage'
-import { closeSearchIndex, setIndexBusy, startSearchIndex } from './searchIndex/service'
+import { closeSearchIndex, peopleActivity, setIndexBusy, startSearchIndex } from './searchIndex/service'
 import type { Task } from './tasks/args'
 import { isTaskLaunch, prepareTaskProfile, runTaskIn, taskFromArgv } from './tasks/run'
 import { rememberWindowBounds, savedWindowBounds } from './windowState'
@@ -348,6 +348,7 @@ function registerIpc(): void {
   ipcMain.handle('pages:search', (_event, query: unknown) =>
     typeof query === 'string' ? searchSessions(query.slice(0, 200)) : []
   )
+  ipcMain.handle('people:activity', () => peopleActivity())
   ipcMain.handle('app:usage', () => appUsage())
   ipcMain.handle('pages:get', (_event, id: unknown) => getPage(PageIdArg.parse(id)))
   ipcMain.handle('pages:create', (_event, options: unknown) => createPage(CreatePageArg.parse(options)))
