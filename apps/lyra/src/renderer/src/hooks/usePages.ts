@@ -1,32 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import * as Y from 'yjs'
-import type { PageSummary } from '../../../shared/types'
+import type { PageSummary, SessionChangeEvent, SessionOpened } from '../../../shared/types'
 import {
-  addTag,
-  docSummary,
-  docTitle,
-  docTranscript,
-  docMeta,
-  editDoc,
   newSpeakerId,
-  ORIGIN_REMOTE,
-  ORIGIN_USER,
-  mergeSpeakers,
-  removeTag,
-  speakerToMergeInto,
-  setSegmentEdits,
-  setSegmentsCluster,
-  setSegmentText,
-  snapshotOf,
-  transcriberCursor,
-  liveModeOf,
-  type LiveMode,
-  upsertSpeaker,
+  type SessionOp,
   type SpeakerEntry,
   type TranscriptSegment
 } from '../../../shared/sessionDoc'
 import type { TranscriptEdit } from '../../../shared/transcriptOverlay'
 import { log } from '../lib/log'
+import { SessionReplica } from '../lib/sessionReplica'
 import { notify } from '../lib/toast'
 import { latest } from './latest'
 
@@ -39,10 +21,6 @@ export type OpenPage = {
   /** Generated meeting notes, above the user's notes. */
   summary: string
   tags: string[]
-  /** Where live transcription lands in `body`, or null before the first recording. */
-  transcriberAt: number | null
-  /** Where the recording's words are going: the notes, or the speaker-labeled transcript. */
-  liveMode: LiveMode | null
   transcript: TranscriptSegment[]
   speakers: SpeakerEntry[]
 }
@@ -50,35 +28,28 @@ export type OpenPage = {
 /** A speaker made from the transcript: named by the user, or a blank one to name after a split. */
 export type NewSpeaker = { name: string; personId: string | null; confirmed: boolean }
 
-
 type Edit = { title?: string; body?: string }
 
-const STAMP = 'at'
-
-/** When the top step of an undo or redo stack was made, or null when it's empty. */
-function stampOf(stack: readonly { meta: Map<unknown, unknown> }[]): number | null {
-  const at = stack.at(-1)?.meta.get(STAMP)
-  return typeof at === 'number' ? at : null
-}
-
-type Replica = {
-  id: string
-  doc: Y.Doc
-  undo: Y.UndoManager
+type Open = {
+  replica: SessionReplica
+  /** Draws the session's current state. */
+  render: () => void
+  /** An edit main refused: it's gone from the view; the user is told once. */
+  failed: (error: unknown) => void
   dispose: () => void
 }
 
 /**
- * The page list, plus the open session as a Yjs replica of main's document. Edits go to the
- * replica and stream to main as updates; changes made elsewhere (meeting labeling, notes,
- * another window) arrive the same way and merge instead of overwriting.
+ * The page list, plus the open session. Main owns each session; this window shows main's copy
+ * with its own edits on top until main confirms them (`SessionReplica`), and changes made
+ * elsewhere (meeting labeling, notes, another window) arrive as change events.
  */
 export function usePages() {
   const [pages, setPages] = useState<PageSummary[]>([])
   const [current, setCurrent] = useState<OpenPage | null>(null)
   const currentRef = useRef<OpenPage | null>(null)
-  const replica = useRef<Replica | null>(null)
-  /** Updates main hasn't confirmed yet; `flush` waits for all of them. */
+  const session = useRef<Open | null>(null)
+  /** Edits main hasn't confirmed yet; `flush` waits for all of them. */
   const pending = useRef(new Set<Promise<void>>())
   const [opens] = useState(latest)
   /** The session the newest `attach` is opening. */
@@ -100,58 +71,64 @@ export function usePages() {
   }, [])
 
   const detach = useCallback(async () => {
-    const open = replica.current
+    const open = session.current
     if (!open) return
-    replica.current = null
+    session.current = null
     await flush()
     open.dispose()
-    window.api.closeSession(open.id)
+    window.api.closeSession(open.replica.id)
   }, [flush])
 
   const attach = useCallback(
     async (id: string) => {
       // Opening sessions quickly (clicks, search, a create) overlaps these awaits; only the
-      // newest open may become the replica, or the view and `edit` could point at different docs.
+      // newest open may become the open session, or the view and `edit` could disagree.
       const token = opens.begin()
       wanted.current = id
       await detach()
       if (!opens.isCurrent(token)) return
-      const state = await window.api.openSession(id)
+      // Listening before opening, so a change between main's reply and here isn't missed.
+      const early: SessionChangeEvent[] = []
+      let open: Open | null = null
+      const onChange = (change: SessionChangeEvent): void => {
+        if (change.id !== id) return
+        if (!open) {
+          early.push(change)
+          return
+        }
+        const mine = open
+        if (!mine.replica.receive(change)) {
+          log('pages', 'missed a session change; reopening', { rev: change.rev })
+          void window.api.openSession(id).then(
+            (state) => {
+              mine.replica.reset(state)
+              mine.render()
+            },
+            (error: unknown) => {
+              log('pages', 'could not reopen session', String(error))
+            }
+          )
+        }
+        mine.render()
+      }
+      const stop = window.api.onSessionChange(onChange)
+      let state: SessionOpened
+      try {
+        state = await window.api.openSession(id)
+      } catch (error) {
+        stop()
+        throw error
+      }
       if (!opens.isCurrent(token)) {
+        stop()
         // Main keeps one subscription per window and session, so this one is only let go of when
         // the open that won isn't for the same session.
-        if (wanted.current !== id && replica.current?.id !== id) window.api.closeSession(id)
+        if (wanted.current !== id && session.current?.replica.id !== id) window.api.closeSession(id)
         return
       }
-      const doc = new Y.Doc()
-      Y.applyUpdate(doc, state, ORIGIN_REMOTE)
-      const title = docTitle(doc)
-      const transcriptType = docTranscript(doc)
-      let transcript: TranscriptSegment[] | null = null
-      let warnedUnsaved = false
-      const render = (transcriptChanged: boolean): void => {
-        // A replaced replica's late updates must never draw over the session now open.
-        if (replica.current?.doc !== doc) return
-        const snapshot = snapshotOf(doc)
-        // Typing in the notes leaves the transcript as it was: keep the same array so the
-        // transcript's memoized work sees nothing new.
-        if (transcriptChanged || !transcript) transcript = snapshot.transcript
-        show({
-          id,
-          title: snapshot.title,
-          body: snapshot.notes,
-          summary: snapshot.summary,
-          tags: snapshot.tags,
-          transcriberAt: transcriberCursor(doc),
-          liveMode: liveModeOf(doc),
-          transcript,
-          speakers: snapshot.speakers
-        })
-      }
-
-      const send = (update: Uint8Array): Promise<void> => {
-        const sent = window.api.updateSession(id, update)
-        // `flush` waits on these and must not throw; the caller handles the failure.
+      const send = (seq: number, ops: SessionOp[]): Promise<number> => {
+        const sent = window.api.editSession(id, seq, ops)
+        // `flush` waits on these and must not throw; the edit's caller handles the failure.
         const settled = sent.then(
           () => undefined,
           () => undefined
@@ -162,153 +139,125 @@ export function usePages() {
         })
         return sent
       }
-      /**
-       * A change main didn't take leaves this replica ahead of the file. Sending the whole
-       * document once more catches main up after a passing failure (Yjs merges it idempotently);
-       * if that fails too, the user has to know their edits aren't being saved.
-       */
-      const resync = (error: unknown): void => {
-        log('pages', 'could not save change', String(error))
-        // Closed meanwhile: main's copy is what the next open shows.
-        if (replica.current?.doc !== doc) return
-        send(Y.encodeStateAsUpdate(doc)).catch((again: unknown) => {
-          log('pages', 'could not resync session', String(again))
+      const replica = new SessionReplica(id, state, send)
+      let warnedUnsaved = false
+      const opened: Open = {
+        replica,
+        render: () => {
+          // A replaced session's late changes must never draw over the one now open.
+          if (session.current !== opened) return
+          const doc = replica.doc
+          show({
+            id,
+            title: doc.title,
+            body: doc.notes,
+            summary: doc.summary,
+            tags: doc.tags,
+            transcript: doc.transcript,
+            speakers: doc.speakers
+          })
+        },
+        failed: (error) => {
+          log('pages', 'could not save change', String(error))
+          opened.render()
           if (warnedUnsaved) return
           warnedUnsaved = true
           notify('Lyra couldn’t save your latest changes to this session. Copy anything important, then reopen it.')
-        })
+        },
+        dispose: stop
       }
-      const onUpdate = (
-        update: Uint8Array,
-        origin: unknown,
-        _doc: Y.Doc,
-        transaction: Y.Transaction | undefined
-      ): void => {
-        render(!transaction || transaction.changedParentTypes.has(transcriptType))
-        if (origin === ORIGIN_REMOTE) return
-        send(update).catch(resync)
-      }
-      doc.on('update', onUpdate)
-      const stopRemote = window.api.onSessionUpdate((change) => {
-        if (change.id === id) Y.applyUpdate(doc, change.update, ORIGIN_REMOTE)
-      })
-      // Undo covers this window's own edits only, never text that arrived from elsewhere. The
-      // notes editor keeps its own history (it knows the user's selection), so they're not here.
-      const undo = new Y.UndoManager([title, docSummary(doc), docTranscript(doc), docMeta(doc)], {
-        trackedOrigins: new Set([ORIGIN_USER]),
-        captureTimeout: 600
-      })
-      // Stamp each step with when it was done or undone, so App's Ctrl+Z can order document
-      // edits against actions outside the document (see lib/history).
-      const stamp = ({ stackItem }: { stackItem: { meta: Map<unknown, unknown> } }): void => {
-        stackItem.meta.set(STAMP, Date.now())
-      }
-      undo.on('stack-item-added', stamp)
-      undo.on('stack-item-updated', stamp)
-
-      replica.current = {
-        id,
-        doc,
-        undo,
-        dispose: () => {
-          stopRemote()
-          undo.destroy()
-          doc.off('update', onUpdate)
-          doc.destroy()
-        }
-      }
-      render(true)
+      open = opened
+      session.current = opened
+      for (const change of early) onChange(change)
+      opened.render()
     },
     [opens, detach]
   )
 
-  const edit = useCallback((changes: Edit) => {
-    const open = replica.current
+  /** Applies an edit to the open session and sends it to main. */
+  const apply = useCallback((ops: SessionOp[], undoable: 'step' | 'typing' | 'none') => {
+    const open = session.current
     if (!open) return
-    editDoc(open.doc, { title: changes.title, notes: changes.body }, ORIGIN_USER)
+    open.replica.edit(ops, undoable).catch(open.failed)
+    open.render()
   }, [])
 
-  /** Runs a change on the open document as the user's own (undoable) edit. */
-  const change = useCallback((apply: (doc: Y.Doc) => void) => {
-    const open = replica.current
-    if (open) apply(open.doc)
-  }, [])
+  const edit = useCallback(
+    (changes: Edit) => {
+      const ops: SessionOp[] = []
+      if (changes.title !== undefined) ops.push({ op: 'title', title: changes.title })
+      if (changes.body !== undefined) ops.push({ op: 'notes', notes: changes.body })
+      // The notes editor keeps its own undo; typing in the title is one step per pause.
+      if (ops.length) apply(ops, changes.title !== undefined ? 'typing' : 'none')
+    },
+    [apply]
+  )
 
   const editSummary = useCallback(
-    (summary: string) => change((doc) => editDoc(doc, { summary }, ORIGIN_USER)),
-    [change]
+    (summary: string) => {
+      apply([{ op: 'summary', summary }], 'typing')
+    },
+    [apply]
   )
-  /**
-   * A transcript action (correct, remove, highlight, rewrite, reassign) as one undo step of its
-   * own: typing merges keystrokes into a step, but two quick menu actions must undo separately.
-   */
-  const step = useCallback((apply: (doc: Y.Doc) => void) => {
-    const open = replica.current
-    if (!open) return
-    open.undo.stopCapturing()
-    apply(open.doc)
-    open.undo.stopCapturing()
-  }, [])
-
+  /** A transcript action (correct, remove, highlight, rewrite, reassign) is one undo step. */
   const editSegment = useCallback(
-    (id: string, text: string) => step((doc) => setSegmentText(doc, id, text, ORIGIN_USER)),
-    [step]
+    (id: string, text: string) => {
+      apply([{ op: 'lineText', id, text }], 'step')
+    },
+    [apply]
   )
   /** Sets a line's corrections, removals and highlights over its raw words. */
   const editLineOverlay = useCallback(
-    (id: string, edits: readonly TranscriptEdit[]) =>
-      step((doc) => setSegmentEdits(doc, id, edits, ORIGIN_USER)),
-    [step]
+    (id: string, edits: readonly TranscriptEdit[]) => {
+      apply([{ op: 'lineEdits', id, edits: edits.map((one) => ({ ...one })) }], 'step')
+    },
+    [apply]
   )
   /** Moves lines to a speaker, creating it first when given a name. Returns the speaker's id. */
   const assignLines = useCallback(
     (ids: readonly string[], speaker: string | NewSpeaker): string | null => {
-      const open = replica.current
+      const open = session.current
       if (!open) return null
-      const id = typeof speaker === 'string' ? speaker : newSpeakerId(open.doc)
-      open.undo.stopCapturing()
-      open.doc.transact(() => {
-        if (typeof speaker !== 'string') {
-          upsertSpeaker(open.doc, id, {
-            name: speaker.name,
-            personId: speaker.personId,
-            confirmed: speaker.confirmed,
-            confidence: null,
-            matches: []
-          }, ORIGIN_USER)
-        }
-        setSegmentsCluster(open.doc, ids, id, ORIGIN_USER)
-      }, ORIGIN_USER)
-      open.undo.stopCapturing()
+      const id = typeof speaker === 'string' ? speaker : newSpeakerId(open.replica.doc)
+      const create = typeof speaker === 'string' ? {} : { create: speaker }
+      apply([{ op: 'assign', ids: [...ids], speaker: id, ...create }], 'step')
       return id
     },
-    []
+    [apply]
   )
   /** Names a speaker (merging into one with the same name or person), as one undo step. */
   const nameSpeaker = useCallback(
-    (id: string, name: string, personId: string | null) =>
-      step((doc) => {
-        doc.transact(() => {
-          const into = speakerToMergeInto(doc, id, name, personId)
-          upsertSpeaker(doc, into ?? id, { name, personId, confirmed: true }, ORIGIN_USER)
-          if (into) mergeSpeakers(doc, id, into, ORIGIN_USER)
-        }, ORIGIN_USER)
-      }),
-    [step]
+    (id: string, name: string, personId: string | null) => {
+      apply([{ op: 'name', id, name, personId }], 'step')
+    },
+    [apply]
   )
   const tag = useCallback(
-    (name: string) => change((doc) => addTag(doc, name, ORIGIN_USER)),
-    [change]
+    (name: string) => {
+      apply([{ op: 'tag', tag: name }], 'step')
+    },
+    [apply]
   )
   const untag = useCallback(
-    (name: string) => change((doc) => removeTag(doc, name, ORIGIN_USER)),
-    [change]
+    (name: string) => {
+      apply([{ op: 'untag', tag: name }], 'step')
+    },
+    [apply]
   )
 
-  const undo = useCallback(() => !!replica.current?.undo.undo(), [])
-  const redo = useCallback(() => !!replica.current?.undo.redo(), [])
-  const undoAt = useCallback(() => stampOf(replica.current?.undo.undoStack ?? []), [])
-  const redoAt = useCallback(() => stampOf(replica.current?.undo.redoStack ?? []), [])
+  const history = useCallback((again: boolean): boolean => {
+    const open = session.current
+    if (!open) return false
+    const done = again ? open.replica.redo() : open.replica.undo()
+    if (done === false) return false
+    done.catch(open.failed)
+    open.render()
+    return true
+  }, [])
+  const undo = useCallback(() => history(false), [history])
+  const redo = useCallback(() => history(true), [history])
+  const undoAt = useCallback(() => session.current?.replica.undoAt() ?? null, [])
+  const redoAt = useCallback(() => session.current?.replica.redoAt() ?? null, [])
 
   const open = useCallback((id: string) => attach(id), [attach])
 
@@ -332,7 +281,7 @@ export function usePages() {
 
   const remove = useCallback(
     async (id: string) => {
-      const wasOpen = replica.current?.id === id
+      const wasOpen = session.current?.replica.id === id
       if (wasOpen) await detach()
       await window.api.deletePage(id)
       const list = await refreshList()
@@ -357,7 +306,7 @@ export function usePages() {
   useEffect(() => {
     void refreshList().then(async (list) => {
       const first = list[0]
-      if (first && !replica.current) await attach(first.id)
+      if (first && !session.current) await attach(first.id)
     })
     return () => {
       opens.cancel()
@@ -366,12 +315,12 @@ export function usePages() {
   }, [opens, refreshList, attach, detach])
 
   // Notes added or removed outside Lyra, or a title or preview changed: refresh the list. The
-  // open session's content itself syncs through its document.
+  // open session's content itself arrives as change events.
   useEffect(
     () =>
       window.api.onPagesChanged(() => {
         void refreshList().then(async (list) => {
-          const openId = replica.current?.id
+          const openId = session.current?.replica.id
           if (!openId || list.some((page) => page.id === openId)) return
           // The open note's file was removed outside Lyra.
           await detach()

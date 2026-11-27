@@ -31,7 +31,8 @@ import {
   RevealTargetArg,
   SavePageArg,
   ServerUrlArg,
-  SessionUpdateArg
+  SessionOpsArg,
+  SessionSeqArg
 } from './ipcSchemas'
 import { migrateLegacyPages, resolveInNotes, startWatchingNotes } from './pages'
 import {
@@ -41,7 +42,7 @@ import {
   switchNotesFolder
 } from './notesFolder'
 import {
-  applySessionUpdate,
+  applySessionOps,
   closeSessionFor,
   createSession as createPage,
   deleteSession as deletePage,
@@ -378,8 +379,13 @@ function registerIpc(): void {
   ipcMain.handle('sessions:open', (event, id: unknown) =>
     openSessionFor(PageIdArg.parse(id), event.sender.id)
   )
-  ipcMain.handle('sessions:update', (event, id: unknown, update: unknown) =>
-    applySessionUpdate(PageIdArg.parse(id), SessionUpdateArg.parse(update), event.sender.id)
+  ipcMain.handle('sessions:edit', (event, id: unknown, seq: unknown, ops: unknown) =>
+    applySessionOps(
+      PageIdArg.parse(id),
+      SessionOpsArg.parse(ops),
+      event.sender.id,
+      SessionSeqArg.parse(seq)
+    )
   )
   ipcMain.on('sessions:close', (event, id: unknown) => {
     const parsed = PageIdArg.safeParse(id)

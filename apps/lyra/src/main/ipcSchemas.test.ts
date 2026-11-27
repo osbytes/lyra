@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest'
 import { isLoopbackUrl } from '../shared/settings'
 import {
   CreatePageArg,
-  MAX_SESSION_UPDATE_BYTES,
+  MAX_SESSION_EDIT_CHARS,
   PageIdArg,
   SavePageArg,
-  SessionUpdateArg,
+  SessionOpsArg,
+  SessionSeqArg,
   parseSettingsPatch
 } from './ipcSchemas'
 
@@ -79,12 +80,17 @@ describe('channel arguments', () => {
     expect(SavePageArg.safeParse({ id: 'a.txt', title: 1, body: 'B' }).success).toBe(false)
   })
 
-  it('takes only non-empty, bounded binary session updates', () => {
-    expect(SessionUpdateArg.safeParse(new Uint8Array([1, 2])).success).toBe(true)
-    expect(SessionUpdateArg.safeParse(new Uint8Array(0)).success).toBe(false)
-    expect(SessionUpdateArg.safeParse('not an update').success).toBe(false)
-    expect(SessionUpdateArg.safeParse([1, 2]).success).toBe(false)
-    expect(SessionUpdateArg.safeParse(new Uint8Array(MAX_SESSION_UPDATE_BYTES + 1)).success).toBe(false)
+  it('takes only known, bounded session edits', () => {
+    expect(SessionOpsArg.safeParse([{ op: 'title', title: 'Hi' }]).success).toBe(true)
+    expect(SessionOpsArg.safeParse([{ op: 'assign', ids: ['s1'], speaker: 'c2' }]).success).toBe(true)
+    expect(SessionOpsArg.safeParse([]).success).toBe(false)
+    expect(SessionOpsArg.safeParse([{ op: 'title' }]).success).toBe(false)
+    expect(SessionOpsArg.safeParse([{ op: 'wipe' }]).success).toBe(false)
+    expect(SessionOpsArg.safeParse(new Uint8Array([1, 2])).success).toBe(false)
+    expect(SessionOpsArg.safeParse([{ op: 'notes', notes: 'x'.repeat(MAX_SESSION_EDIT_CHARS) }]).success).toBe(false)
+    expect(SessionSeqArg.safeParse(3).success).toBe(true)
+    expect(SessionSeqArg.safeParse(-1).success).toBe(false)
+    expect(SessionSeqArg.safeParse(1.5).success).toBe(false)
   })
 
   it('defaults createPage options', () => {

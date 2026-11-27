@@ -1,7 +1,9 @@
 # Session data model
 
 Status: implemented (2026-11-23), phases 1–4. Replaces the page model in
-`apps/lyra/src/main/pages.ts` and the meeting sidecars in `.audio/` and `.meta/`.
+`apps/lyra/src/main/pages.ts` and the meeting sidecars in `.audio/` and `.meta/`. The document
+was a Yjs CRDT until 2026-11-26; it is now plain data owned by main (see
+[Why plain data](#why-plain-data)).
 
 Decisions:
 - **Audio is kept for 30 days by default**, configurable (Always / N days / Delete after
@@ -42,7 +44,7 @@ Three layers, from least to most mutable:
 | --- | --- | --- | --- |
 | **Audio** | The raw capture, one track per source (`mic`, `system`) | Write once, append while recording | `audio/*.wav` |
 | **Raw transcript** | What the models produced: segments, words with timings, confidence, diarization | Immutable per *pass*. A re-run adds a new pass, it never edits one | `raw/<pass>.json` |
-| **Document** | What the user sees and edits: title, tags, notes, transcript, speaker names | Fully editable. A Yjs CRDT | `doc.yjs` |
+| **Document** | What the user sees and edits: title, tags, notes, transcript, speaker names | Fully editable, through main | `doc.json` |
 
 Plus a readable **export**: the familiar `.txt`/`.md` file in the notes folder, rendered from the
 document, and a **metadata file** beside it. Together they are what other tools, scripts and
@@ -57,7 +59,8 @@ agents open, grep and sync.
     audio/mic.wav  audio/system.wav        ← raw capture
     raw/live.json                          ← words transcribed during recording, per track
     raw/pass-1.json                        ← diarization + per-turn re-transcription
-    doc.yjs                                ← Yjs update log (the editable document)
+    doc.json                               ← the editable document
+    doc.yjs.migrated                       ← the document as Lyra 0.6 and earlier kept it (Yjs), once migrated
 ```
 
 The session folder is named after the export's full file name, which is today's page id, so
@@ -141,66 +144,103 @@ This is `TranscriptWord[]` (already returned by `whisper:transcribe`) plus what
 original", re-running a better model, or diffing an edit against what was heard is always
 possible.
 
-### The Yjs document
+### The document (`doc.json`)
+
+One zod schema, `SessionDoc` in `src/shared/sessionDoc.ts`; the file is that object plus a
+`version`. It's rewritten whole (atomically, like the manifest, without blocking the main
+process) once changes pause for a quarter second, and at least every second while they don't.
 
 ```
-Y.Doc
-├─ meta: Y.Map
-│   ├─ title: string
-│   ├─ tags: Y.Array<string>
-│   └─ speakers: Y.Map<clusterId, Y.Map { name, personId, confirmed: boolean }>
-├─ notes: Y.Text                      ← free writing, dictation lands here, AI notes go here
-└─ transcript: Y.Array<Y.Map>         ← one entry per segment, in time order
-    ├─ id, rawId                       (rawId → the RawPass segment it came from)
-    ├─ start, end                      (seconds; audio playback and the margin timestamp)
-    ├─ cluster                         (→ meta.speakers; a per-line reassignment overrides it)
-    ├─ text: Y.Text                    ← the user edits this
-    ├─ edited: boolean                 (set on the first user edit; shows the "edited" mark)
-    └─ userCluster: boolean            (the user chose this line's speaker; later passes keep it)
+SessionDoc
+├─ title, summary, notes: string      ← notes are the user's markdown; summary is generated notes
+├─ tags: string[]
+├─ speakers: { id, name, personId, confirmed, confidence, matches }[]
+├─ transcript: segment[]              ← one per line, in time order
+│   ├─ id, rawId                       (rawId → the RawPass segment it came from)
+│   ├─ start, end                      (seconds; audio playback and the margin timestamp)
+│   ├─ cluster                         (→ speakers; a per-line reassignment overrides it)
+│   ├─ original                        what the model heard; never changed once written
+│   ├─ edits, text, edited             the user's overlay over `original`, and its result
+│   └─ userCluster                     (the user chose this line's speaker; later passes keep it)
+├─ speakerSeq                          the next free speaker number, only ever raised
+└─ notesGenerated, notesRun            the last generated summary's fingerprint, and how it was made
 ```
 
-- **Speakers are data, not text.** Renaming Speaker 2 to Sam sets one `Y.Map` field. The
-  regex relabel in `pipeline.ts` goes away, and per-line reassignment and Split (from the
-  redesign) become small, exact edits.
+- **Speakers are data, not text.** Renaming Speaker 2 to Sam sets one field. Per-line
+  reassignment and Split are small, exact edits.
 - **Edits keep their audio.** Each segment keeps `start`/`end`, so an edited line still plays its
   audio. Word-level seek works on unedited segments by reading `rawId`'s words; once a segment is
   edited, seek falls back to the segment's start.
 - **Notes and transcript are separate.** The `──── Transcript ────` divider and
-  `splitNotes()`/`withNotes()` string surgery go away.
-
-## Why Yjs
-
-- **Concurrent writers, no lost edits.** The live transcriber appends, the pipeline relabels, AI
-  notes arrive and the user types, all on the same session. A CRDT merges them. Today the last
-  whole-file write wins.
-- **Undo that respects authorship.** `Y.UndoManager` with `trackedOrigins: ['user']` undoes the
-  user's edits without undoing transcription that arrived in between.
-- **Incremental, crash-safe persistence.** Each change is a small binary update appended to
-  `doc.yjs`, instead of rewriting the whole file every 400 ms. A crash loses at most the last
-  update.
-- **Multiple views stay in sync.** The main window, the recording pill and a future second window
-  hold replicas of one document.
-- **Room to grow without a server.** Sync across devices (`y-webrtc`, or update files in a synced
-  folder) and richer editors (`y-prosemirror`, `y-codemirror.next`) plug into the same document
-  later. Nothing here sends data anywhere; Yjs is a local library.
-
-Dependency: `yjs` (MIT, about 80 KB, its only dependency is `lib0`). Nothing else is required for
-phase 1. `y-protocols`, `y-indexeddb` and the like are not needed because main owns persistence.
+  `splitNotes()`/`withNotes()` string surgery went away; they're only read when migrating.
 
 ## Process ownership
 
-- **Main owns the authoritative `Y.Doc`** per open session (it has the disk). A
-  `SessionStore` in `src/main/sessionStore.ts` loads `doc.yjs`, applies updates, appends them to
-  disk, and compacts on close (`Y.encodeStateAsUpdate` → rewrite the file).
-- **The renderer holds a replica.** It is synced over IPC with
-  `Y.encodeStateVector`/`encodeStateAsUpdate` on open, then `session:update` messages each way,
-  carrying a `Uint8Array` update and an origin. It follows the four-place rule in the
-  `add-ipc-channel` skill. Updates from the renderer are `unknown` until checked as `Uint8Array`
-  and applied inside a try.
-- **The pipeline, notes generator and live transcriber write to main's doc** with their own
-  origins (`'pipeline'`, `'notes'`, `'live'`), not by saving text.
-- **The export file** is re-rendered from the document, debounced (about 1 s), and written with
-  the existing `markOwnWrite` so the watcher ignores it.
+- **Main owns the document** of every open session (`src/main/sessionStore.ts`). Every change is
+  a function run on a copy of the committed document, which is then committed whole: a writer
+  that throws leaves the session as it was. Each commit counts up the session's `rev`, saves the
+  file, schedules the export, and sends every window that holds the session the top-level fields
+  that changed (`sessions:changed`).
+- **Windows send edits, not state.** An edit is a `SessionOp` (zod, validated in main): set the
+  title, notes or summary, add or remove a tag, set a line's overlay, move lines to a speaker
+  (creating it), name a speaker (merging it into a same-named one), or put back what an undo step
+  changed. Each one *sets* a value rather than changing one by an amount, so applying it twice
+  does nothing more. `sessions:edit` applies a window's ops in order as one commit and resolves
+  to its `rev`; the change event echoes the window's own count (`seq`) back as `ack`.
+- **A window shows its own edits at once** (`src/renderer/src/lib/sessionReplica.ts`): main's
+  latest state with the edits main hasn't confirmed yet applied on top, dropped as their `ack`
+  arrives. A change event whose `rev` skips one means a change was missed, and the window
+  reopens the session. Typing never waits on a round trip, and an edit from another window, a
+  live line or a summary that lands meanwhile shows beside it.
+- **Main-process writers** (live transcription, relabeling, notes, speaker naming) call
+  `editSession`/`changeSession` with a function of the document. It runs synchronously, so a
+  check and the write it guards can't be split by another edit: notes check `mayWriteSummary`
+  against the summary as it is at that moment, and relabeling checks that the lines it diarized
+  are still the session's before replacing them. The user's own choices are data the passes
+  respect (`userCluster`, `edited` lines, `confirmed` speakers), not authorship of a change.
+- **Undo** is per window and per session. Each step is a `SessionPatch`: what an edit changed,
+  from and to, for the title, summary, tags, speakers and lines it touched. Undo sends the
+  patch back (`restore`), and each part is put back only where the session still holds what the
+  edit left, so undo never takes back a live line, a relabel or another window's edit that came
+  after. Quick typing in the title or summary merges into one step. The notes editor (Tiptap)
+  keeps its own history, which knows the selection, so notes aren't in these steps.
+- **The export file** is re-rendered from the document, debounced (about 300 ms), and written
+  with the existing `markOwnWrite` so the watcher ignores it. The search index follows the same
+  commits through the store's change events (`onSessionChange`).
+
+## Why plain data
+
+The document was a Yjs CRDT, chosen so the transcript and the notes could one day share one
+editor, with concurrent writers merged character by character. They stay separate (the notes are
+a Tiptap markdown editor, the transcript its own component), and without that the CRDT was
+overhead:
+
+- **Nothing merges inside a string any more.** The notes have one writer at a time (the user's
+  editor); the summary is replaced whole by the notes pipeline, behind its edit check; the title
+  is a field. Transcript and speaker edits were always whole values on one line or speaker.
+- **One process already decides.** Main holds the disk and every machine writer, so it can apply
+  changes in order; replicas with their own clocks bought nothing a sequence number doesn't.
+- **Undo is simpler as data.** "Put this back if it's still what I left" covers what
+  `Y.UndoManager`'s origin tracking did, for the parts undo covers.
+- **The files are readable.** `doc.json` can be opened, diffed and read by an agent; `doc.yjs`
+  needed Yjs and a frame reader.
+
+What it costs: two windows typing in the *same* notes at the same moment keep the later one's
+text (each edit sets the whole field), and a crash loses up to the last second of changes rather
+than the last update. Neither happens in practice: one window edits notes at a time, and the
+export, the manifest's `dirty` flag and the debounce were already the recovery story.
+
+### Migrating sessions from Lyra 0.6 and earlier
+
+A session folder with `doc.yjs` and no `doc.json` is read once when it's first opened (or listed):
+`src/main/legacyYjs.ts` decodes the update log without the `yjs` package (the v1 update format,
+Yjs's item ordering for concurrent edits, delete sets, nested maps, arrays and text), checked
+against yjs 13.6 on random concurrent histories and on every real log available when it was
+written. The document becomes `doc.json` and the log is renamed `doc.yjs.migrated`, never
+deleted. A torn log keeps what came before the tear (and a copy, as before); one with nothing
+readable is set aside and the document is rebuilt from the export. Live-transcription ranges in
+the notes from before transcript lines (`meta.liveRanges`) are dropped: that text stays in the
+notes. The search index reads an unmigrated session's log the same way, without migrating it.
 
 ## External edits to the export
 
@@ -213,10 +253,10 @@ creating notes from outside keeps working.
 step, and the model supports it:
 
 1. Parse the changed file with the export's own rules (title line, notes, transcript lines).
-2. Diff each part against the last export (stored hash and text), using a minimal Myers diff.
-3. Apply the diff as `Y.Text` operations with origin `'file'`, so it merges with anything Lyra
-   wrote at the same time. Transcript lines map to segments by order and timestamp; a line that
-   can't be matched becomes notes text rather than being dropped.
+2. Diff each part against the last export (stored hash and text).
+3. Apply the differences as `SessionOp`s from a `'file'` writer, through the same commit path
+   as a window. Transcript lines map to segments by order and timestamp; a line that can't be
+   matched becomes notes text rather than being dropped.
 4. Flip `editable` to `true` in the metadata so readers know edits are honoured.
 
 ## Audio capture and retention
@@ -250,7 +290,7 @@ One-time, on first launch of the new version, logged, never destructive:
 | Today | Becomes |
 | --- | --- |
 | `listPages` → `PageSummary[]` | `listSessions` → `SessionSummary[]` (adds `tags`, `seconds`, `speakers`, `hasAudio`) |
-| `getPage` / `savePage` (whole body) | `openSession(id)` → initial update; `sessionUpdate(id, update)`; `onSessionUpdate` |
+| `getPage` / `savePage` (whole body) | `openSession(id)` → `{ rev, doc }`; `editSession(id, seq, ops)` → `rev`; `onSessionChange` |
 | `createPage` | `createSession({ startedAt })` |
 | `deletePage` | `deleteSession` (moves the folder and export to the OS trash via `shell.trashItem`, which also backs Undo) |
 | `assignSpeaker`, `getMeetingSpeakers` | Plain document edits to `meta.speakers` / segment `cluster` |
@@ -292,10 +332,9 @@ from the plan above:
   out wrong. `processMeeting` (diarize, then transcribe each turn) remains for
   `pnpm smoke:meeting <file.wav> --offline` and the eval.
 - **Notes are only what the user types.** Earlier versions wrote live text into the notes and
-  replaced it with the labeled transcript afterwards (`meta.liveRanges`, `removeLiveNotes`); that
-  path remains for documents made that way.
-- **Generated notes live in `summary`**, a separate `Y.Text`, so "Rewrite notes" never touches
-  the user's notes. The export renders summary, notes, then transcript.
+  replaced it with the labeled transcript afterwards; that text now stays as notes.
+- **Generated notes live in `summary`**, a separate field, so "Rewrite notes" never touches the
+  user's notes. The export renders summary, notes, then transcript.
 - **Per-line confidence** is the cosine similarity between a line's own voiceprint and its
   speaker's. Lines below 0.6 are flagged and pre-ticked in Split.
 - **A re-run keeps edits**: a new pass replaces the transcript, but a line the user edited keeps
@@ -312,11 +351,10 @@ from the plan above:
   back as markdown, so the export stays plain text. The notes sit above the transcript in their
   own pane.
 
-1. **Session store and Yjs document.** Add `sessionStore.ts` (manifest, `doc.yjs` log and compaction,
-   export rendering), migration, and the IPC sync. Plain notes only: `notes`, `title`, `tags`.
-   The renderer editor binds `notes` to a `Y.Text` (textarea diffing is enough for now; a rich
-   editor binding comes later). Smoke cases go in `runUiSmoke`: create, edit from two origins,
-   reopen, export matches.
+1. **Session store and document.** Add `sessionStore.ts` (manifest, the document, export
+   rendering), migration, and the IPC sync. Plain notes only: `notes`, `title`, `tags`. (Built
+   on Yjs at first; plain data since.) Smoke cases go in `runUiSmoke`: create, edit from two
+   windows, reopen, export matches.
 2. **Raw capture for every session.** Always record audio; write `raw/live.json` from the
    streaming transcriber's committed words; add retention.
 3. **Meeting pipeline on the document.** `processMeeting` writes a `RawPass` and fills
@@ -331,4 +369,4 @@ from the plan above:
 - **Export format for the transcript**: keep `[hh:mm:ss] Name: text`, or switch to
   `Name (00:02): text`? It only affects readability in other editors.
 - **Two-way export**: when to turn it on, and whether agents should edit the text file or write
-  through a small API (the Yjs update channel) instead.
+  through a small API (the `SessionOp` channel) instead.

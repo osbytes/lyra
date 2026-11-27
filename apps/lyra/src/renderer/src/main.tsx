@@ -15,8 +15,8 @@ import { Overlay } from './components/Overlay'
 import { applyDensity } from './lib/density'
 import { log } from './lib/log'
 
-// The overlay window shares this bundle; loading the app on demand keeps the editor, Yjs and
-// search out of the small floating pill.
+// The overlay window shares this bundle; loading the app on demand keeps the editor and search
+// out of the small floating pill.
 const App = lazy(() => import('./App'))
 
 const root = document.getElementById('root')

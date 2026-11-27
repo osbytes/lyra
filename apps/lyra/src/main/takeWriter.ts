@@ -1,6 +1,5 @@
-import type * as Y from 'yjs'
 import type { AudioTrack, TranscriptWord } from '../shared/types'
-import { appendLiveSegment, ORIGIN_TRANSCRIBER, snapshotOf, startTranscriber } from '../shared/sessionDoc'
+import { appendLiveSegment, type SessionDoc } from '../shared/sessionDoc'
 import { log } from './log'
 import { changeSession } from './sessionStore'
 import type { TranscribedChunk } from './transcriber'
@@ -50,11 +49,9 @@ export class TakeWriter {
 
   /** Opens the take in the session and returns the text before it, as Whisper's context. */
   async begin(): Promise<string> {
-    return changeSession(this.pageId, (doc) => {
-      startTranscriber(doc, ORIGIN_TRANSCRIBER, 'transcript')
-      const { title, transcript } = snapshotOf(doc)
-      return promptFor(title, transcript.map((line) => line.text).join(' '))
-    })
+    return changeSession(this.pageId, ({ title, transcript }) =>
+      promptFor(title, transcript.map((line) => line.text).join(' '))
+    )
   }
 
   write(chunk: TranscribedChunk): void {
@@ -76,7 +73,7 @@ export class TakeWriter {
    * them at that moment: a rewrite of its lines can't lose a chunk written just before it or
    * double one written just after. Null once the take has ended, when nothing was changed.
    */
-  rewrite<T>(change: (doc: Y.Doc, words: readonly TakeWord[]) => T): Promise<T | null> {
+  rewrite<T>(change: (doc: SessionDoc, words: readonly TakeWord[]) => T): Promise<T | null> {
     const result = this.writes.then(() =>
       this.open ? changeSession(this.pageId, (doc) => change(doc, this.words)) : null
     )
@@ -120,8 +117,7 @@ export class TakeWriter {
           confidence: null,
           text
         },
-        { joinGap, maxLine: MAX_LINE_SECONDS },
-        ORIGIN_TRANSCRIBER
+        { joinGap, maxLine: MAX_LINE_SECONDS }
       )
     })
     this.lastTrack = chunk.track

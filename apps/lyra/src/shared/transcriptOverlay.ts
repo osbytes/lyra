@@ -1,3 +1,5 @@
+import { z } from 'zod'
+
 /**
  * The user's edits to a transcript line, kept as an overlay on what the model heard. The raw
  * line (`original`) never changes once written; corrections, removals and highlights are ranges
@@ -8,13 +10,17 @@
 /** A range of the original line, as UTF-16 offsets: `[start, end)`. */
 export type Span = { start: number; end: number }
 
-export type TranscriptEdit =
+const span = { start: z.number().int().nonnegative(), end: z.number().int().nonnegative() }
+
+export const TranscriptEdit = z.discriminatedUnion('kind', [
   /** The words in the range were heard wrong; `text` is what was said. An empty range inserts. */
-  | (Span & { kind: 'replace'; text: string })
+  z.object({ kind: z.literal('replace'), ...span, text: z.string() }),
   /** The words in the range shouldn't be in the transcript (filler, crosstalk). */
-  | (Span & { kind: 'delete' })
+  z.object({ kind: z.literal('delete'), ...span }),
   /** Marked as important. Doesn't change the text. */
-  | (Span & { kind: 'highlight' })
+  z.object({ kind: z.literal('highlight'), ...span })
+])
+export type TranscriptEdit = z.infer<typeof TranscriptEdit>
 
 type TextEdit = Extract<TranscriptEdit, { kind: 'replace' | 'delete' }>
 

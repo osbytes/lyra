@@ -18,7 +18,7 @@ export function tempPathFor(path: string): string {
   return join(dirname(path), `.${basename(path)}.${randomBytes(6).toString('hex')}.tmp`)
 }
 
-/** A file-name-safe timestamp for copies set aside (`doc.yjs.corrupt-<stamp>`). */
+/** A file-name-safe timestamp for copies set aside (`doc.json.corrupt-<stamp>`). */
 export function asideStamp(date: Date = new Date()): string {
   return date.toISOString().replace(/[:.]/g, '-')
 }

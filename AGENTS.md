@@ -42,10 +42,11 @@ self-hosted; GitHub is called from the server only).
 - `src/preload/` — the `window.api` bridge. Thin: `ipcRenderer.invoke`/`on` wrappers, no logic.
 - `src/renderer/src/` — React UI, audio capture (`audio/`), hooks, text helpers. Browser APIs only.
 - `src/shared/types.ts` — types shared across processes, including the `VoicePagesApi` contract.
-- `src/main/sessionStore.ts` + `src/shared/sessionDoc.ts` — sessions: each note is a Yjs document
-  (main owns it, windows hold replicas over IPC), exported to the `.txt`/`.md` file plus a
-  `.lyra.json` metadata file. Audio and raw model passes live in `.sessions/<id>/`.
-  `components/Transcript.tsx` edits the transcript and speakers through the same document.
+- `src/main/sessionStore.ts` + `src/shared/sessionDoc.ts` — sessions: each note is a plain
+  document (`doc.json`; main owns it, windows send typed edits over IPC and are sent what
+  changed), exported to the `.txt`/`.md` file plus a `.lyra.json` metadata file. Audio and raw
+  model passes live in `.sessions/<id>/`. `components/Transcript.tsx` edits the transcript and
+  speakers through the same edits (`hooks/usePages.ts`).
   Design: [docs/SESSION-MODEL.md](docs/SESSION-MODEL.md) (repo root).
 - `src/main/searchIndex/` — the search index: a local libSQL database in `userData/index/`
   that mirrors sessions and people (derived data; deleting it loses nothing). It's owned by a

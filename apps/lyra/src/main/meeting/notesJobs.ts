@@ -3,7 +3,7 @@
  * session, time limits on model calls, and whether the summary is still the one Lyra wrote.
  */
 import { createHash } from 'node:crypto'
-import { z } from 'zod'
+import { NotesRun } from '../../shared/sessionDoc'
 import type { NotesState } from '../../shared/types'
 
 /** A model call that hasn't answered in this long is treated as hung. */
@@ -71,9 +71,6 @@ export function createJobs(): {
   }
 }
 
-/** Where the fingerprint of the last generated summary lives in the session doc's meta map. */
-export const GENERATED_SUMMARY_KEY = 'notesGenerated'
-
 /** Line endings and outer whitespace don't count as an edit. */
 export function summaryFingerprint(summary: string): string {
   return createHash('sha256').update(summary.replace(/\r\n?/g, '\n').trim()).digest('hex')
@@ -109,16 +106,8 @@ export function mayWriteSummary(
   }
 }
 
-/** Where the record of how a session's notes were made lives in the session doc's meta map. */
-export const NOTES_RUN_KEY = 'notesRun'
-
-/**
- * How a session's notes were made: the pipeline's version (`NOTES_PIPELINE`), the writer that
- * ran it, and when. Kept beside the summary so notes made by an older pipeline can be found and
- * rewritten later.
- */
-export const NotesRun = z.strictObject({ pipeline: z.number().int(), writer: z.string(), at: z.string() })
-export type NotesRun = z.infer<typeof NotesRun>
+/** How a session's notes were made, kept in the session beside the summary. */
+export { NotesRun }
 
 /** Notes written before Lyra kept a record were made by the first pipeline. */
 const UNRECORDED_PIPELINE = 1
