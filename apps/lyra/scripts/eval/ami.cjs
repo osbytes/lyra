@@ -149,4 +149,4 @@ async function prepare(dataDir, meeting, { mic = MICS[0], minutes = 10 } = {}) {
   return { id: `${meeting}.${mic}`, wav, seconds, reference: reference(wordsDir, meeting, seconds) }
 }
 
-module.exports = { DEFAULT_MEETINGS, MICS, prepare, parseWords, reference }
+module.exports = { DEFAULT_MEETINGS, MICS, download, prepare, parseWords, reference }

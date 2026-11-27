@@ -10,6 +10,8 @@ claims about accuracy quote this file, with its date and sample size, or are not
 | `pnpm eval:sessions` | Real voices (LibriSpeech dev-clean + test-clean, 80 speakers, CC BY 4.0) laid out as conversations: 2 to 6 people at one desk mic in different seats, hybrid meetings and calls with Opus remote audio and speaker bleed, music or a video playing, a fan, backchannels, crosstalk, a speaker who moves, an hour-long meeting when named. Versioned and seeded (`--seeds`); `--enroll` saves the owner's voice first | WER, cpWER, DER, speaker count | ffmpeg; downloads ~690 MB of LibriSpeech once and the models |
 | `pnpm eval:calls` | Synthetic calls and rooms made with system text-to-speech: speaker bleed, clipping, quick turns, crosstalk, similar voices | WER, cpWER, DER, speaker count | Windows (SAPI voices) or macOS (`say`, no similar-voice cases); downloads the models |
 | `pnpm eval:ami` | Real meetings from the AMI corpus (`--meetings`, `--minutes`, `--mic`) | WER, cpWER, DER | Downloads AMI audio and the models |
+| `pnpm eval:voxconverse` | Real clips from VoxConverse v0.3 test (CC BY 4.0; debates, news, talk shows from YouTube) with hand-checked speaker turns: six files of 4–7 minutes, 2 to 6 people and one of 8 (`--files`, `--minutes`; `--quick`: 2, 3 and 5 people). Nothing in Lyra was tuned on them, so it is the held-out check on speakers | DER, speaker count (no words in the reference: WER and cpWER show n/a) | Downloads the labels (~3 MB) and ~10 MB of audio per file, and the models |
+| `pnpm eval:zoom` | Recorded Zoom meetings from YouTube in gallery view (by default four of GitLab's public Key Meetings, 18–24 minutes each). The reference is read off the video (`scripts/eval/zoom.cjs`): the tile with Zoom's green active-speaker border, its name read with Windows' own OCR, moved earlier by the border's measured lag and cut to where the audio has speech. Stretches with no border (speaker view, screen share) are cut from the audio. Zoom outlines one person at a time, so overlapped speech isn't in the reference. Audio and names stay in `eval-data/zoom/`, never in the repo (standard YouTube license) | DER, speaker count (no words: WER and cpWER show n/a) | Windows, yt-dlp, ffmpeg; downloads ~70 MB per video and the models |
 | `node scripts/eval/cluster-lab.cjs` | The sessions, without Whisper | DER and speaker count for each voice model, window size and clustering bar | The models |
 | `node scripts/eval/voice-scores.cjs` | The sessions' enroll.wav against each speaker | How a saved voice scores against its owner and everyone else | The models |
 | `pnpm replay:session <id>` | A recorded session's kept audio | Who spoke each line; scores with `--reference` | The session's audio still kept |
@@ -70,6 +72,8 @@ the number of sessions or scenarios. Sessions WER is driven by overlapping speec
 | 2026-11-25 | before the larger speaker model | AMI far-field (ES2004a, IS1009a, TS3003a, EN2002a; 10 min each) | live | 4 (40 min) | 39.2% | 47.6% | 31.1% |
 | 2026-11-25 | larger speaker model on (`--larger-speaker-model`) | AMI far-field, the same four | live | 4 (40 min) | 39.3% | 42.6% | 25.1% |
 | 2026-11-25 | larger speaker model on | sessions v2 mini, quick | live | 5 | 20.5% | 26.5% | 17.3% |
+| 2026-11-27 | 2617f5e | VoxConverse test, quick (tkhgs, fyqoe, rpkso: 2, 3, 5 people) | live | 3 (15 min) | n/a | n/a | 11.7% |
+| 2026-11-27 | 2617f5e | Zoom, quick (GitLab qGFoZ8yodc4; 9 speakers) | live | 1 (22 min) | n/a | n/a | 5.1% |
 
 ## The larger speaker model
 
@@ -131,8 +135,9 @@ results above with them in mind:
 
 - **Tuned on the test set.** The speaker thresholds (`src/main/meeting/thresholds.ts`, the
   clustering bars) were tuned with `cluster-lab.cjs` and `voice-scores.cjs` on the same sessions
-  `eval:sessions` scores. There is no held-out set, so the sessions numbers are optimistic for
-  voices and rooms they haven't seen.
+  `eval:sessions` scores, so the sessions numbers are optimistic for voices and rooms they
+  haven't seen. `eval:voxconverse` and `eval:zoom` are the held-out checks: keep tuning off them, or they stop being
+  held out.
 - **`cluster-lab.cjs` is a copy.** It re-implements the clustering instead of importing the app's
   `clustering.ts`, so a sweep can disagree with what the app does after either one changes.
 - **Speaker naming is not scored.** cpWER and DER only check that lines are grouped by the right
