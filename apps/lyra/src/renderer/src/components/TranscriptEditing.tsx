@@ -128,6 +128,8 @@ export type Actions = {
   copy: (text: string) => void
   listen: (line: TranscriptSegment) => void
   speaker: ((line: TranscriptSegment, anchor: DOMRect) => void) | null
+  /** Gives the selected words to another speaker, splitting the line around them. */
+  attribute: ((line: TranscriptSegment, span: Span, anchor: DOMRect) => void) | null
 }
 
 const touchesEdit = (edits: readonly TranscriptEdit[], span: Span): boolean =>
@@ -208,6 +210,7 @@ export function SelectionBar({
   onCorrect: () => void
 }) {
   const { span, rect } = selection
+  const { attribute } = actions
   const lit = isHighlighted(line.edits, span)
   const text = visibleText(line.original, line.edits, expandToEdits(line.edits, span))
   const top = rect.top - 44 < 8 ? rect.bottom + 8 : rect.top - 44
@@ -229,6 +232,11 @@ export function SelectionBar({
       <button type="button" onClick={() => actions.setEdits(line.id, toggleHighlight(line.edits, span))}>
         {lit ? 'Unhighlight' : 'Highlight'}
       </button>
+      {attribute && line.cluster ? (
+        <button type="button" onClick={() => attribute(line, span, rect)}>
+          Speaker…
+        </button>
+      ) : null}
       <button type="button" onClick={() => actions.quote(line, text)}>
         Add to notes
       </button>
@@ -269,6 +277,7 @@ export function LineMenu({
   onClose: () => void
 }) {
   const { span, edit } = request
+  const { attribute } = actions
   const items: MenuItem[] = []
   if (edit) {
     const heard = line.original.slice(edit.start, edit.end)
@@ -288,6 +297,9 @@ export function LineMenu({
       { label: <>Correct “{short(text)}”…</>, run: () => onCorrect(span, request.rect ?? new DOMRect(request.x, request.y)) },
       { label: 'Remove from transcript', danger: true, run: () => actions.setEdits(line.id, removeRange(line.edits, span)) },
       { label: lit ? 'Remove highlight' : 'Highlight', run: () => actions.setEdits(line.id, toggleHighlight(line.edits, span)) },
+      ...(attribute && line.cluster
+        ? [{ label: <>Who said “{short(text)}”…</>, run: () => attribute(line, span, request.rect ?? new DOMRect(request.x, request.y)) }]
+        : []),
       { label: 'Add selection to notes', run: () => actions.quote(line, text) },
       { label: 'Copy selection', run: () => actions.copy(text) }
     )

@@ -6,7 +6,7 @@ import {
   type SpeakerEntry,
   type TranscriptSegment
 } from '../../../shared/sessionDoc'
-import type { TranscriptEdit } from '../../../shared/transcriptOverlay'
+import type { Span, TranscriptEdit } from '../../../shared/transcriptOverlay'
 import { log } from '../lib/log'
 import { SessionReplica } from '../lib/sessionReplica'
 import { notify } from '../lib/toast'
@@ -225,6 +225,21 @@ export function usePages() {
     },
     [apply]
   )
+  /**
+   * Gives some of a line's words (a range of its original) to a speaker, creating it first when
+   * given a name; the line splits around them. Returns the speaker's id.
+   */
+  const splitLine = useCallback(
+    (id: string, span: Span, speaker: string | NewSpeaker): string | null => {
+      const open = session.current
+      if (!open) return null
+      const to = typeof speaker === 'string' ? speaker : newSpeakerId(open.replica.doc)
+      const create = typeof speaker === 'string' ? {} : { create: speaker }
+      apply([{ op: 'splitLine', id, start: span.start, end: span.end, speaker: to, ...create }], 'step')
+      return to
+    },
+    [apply]
+  )
   /** Names a speaker (merging into one with the same name or person), as one undo step. */
   const nameSpeaker = useCallback(
     (id: string, name: string, personId: string | null) => {
@@ -341,6 +356,7 @@ export function usePages() {
     editSegment,
     editLineOverlay,
     assignLines,
+    splitLine,
     nameSpeaker,
     tag,
     untag,

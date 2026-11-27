@@ -187,6 +187,7 @@ export default function App(): React.JSX.Element {
     editSegment,
     editLineOverlay,
     assignLines,
+    splitLine,
     nameSpeaker,
     tag,
     untag,
@@ -852,6 +853,7 @@ export default function App(): React.JSX.Element {
           onEditOverlay={editLineOverlay}
           onQuote={quote}
           onAssign={assignLines}
+          onSplitLine={splitLine}
           onName={nameSpeaker}
           onUndo={() => void undo()}
           showSpeakersBar={false}

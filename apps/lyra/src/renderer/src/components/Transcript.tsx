@@ -17,7 +17,7 @@ import {
   type SpeakerEntry,
   type TranscriptSegment
 } from '../../../shared/sessionDoc'
-import type { TranscriptEdit } from '../../../shared/transcriptOverlay'
+import { expandToEdits, visibleText, type Span, type TranscriptEdit } from '../../../shared/transcriptOverlay'
 import type { NewSpeaker } from '../hooks/usePages'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { rovingIndex } from '../lib/focus'
@@ -83,6 +83,8 @@ type Props = {
   /** Adds words from the transcript to the notes. */
   onQuote: (line: TranscriptSegment, text: string) => void
   onAssign: (ids: readonly string[], speaker: string | NewSpeaker) => string | null
+  /** Gives some of a line's words to a speaker, splitting the line around them. */
+  onSplitLine: (id: string, span: Span, speaker: string | NewSpeaker) => string | null
   /** Names a speaker in the document (after main has worked out who it is). */
   onName: (id: string, name: string, personId: string | null) => void
   onUndo: () => void
@@ -98,7 +100,8 @@ type Props = {
   transcribing: Pending | null
 }
 
-type Picker = { speaker: string; line: string | null; anchor: DOMRect }
+/** `span`: only these words of the line (a range of its original), not all of it. */
+type Picker = { speaker: string; line: string | null; span?: Span; anchor: DOMRect }
 
 /** Where transcription stands while recording: speech waiting for Whisper, or the last of it. */
 export type Pending = { working: boolean; finishing: boolean }
@@ -178,6 +181,7 @@ function usePlayingKey(pageId: string): string | null {
 type Option =
   | { kind: 'person'; person: Person; score: number | null }
   | { kind: 'new'; name: string }
+  | { kind: 'speaker'; speaker: SpeakerEntry }
   | { kind: 'keep' }
 
 /**
@@ -213,6 +217,7 @@ function SpeakerPicker({
   people,
   onClose,
   onAssign,
+  onSplitLine,
   onName,
   onSplit
 }: {
@@ -224,6 +229,7 @@ function SpeakerPicker({
   people: Person[]
   onClose: () => void
   onAssign: Props['onAssign']
+  onSplitLine: Props['onSplitLine']
   onName: Props['onName']
   onSplit: () => void
 }) {
@@ -239,6 +245,12 @@ function SpeakerPicker({
   const state = stateOf(speaker)
   const own = lines.filter((line) => line.cluster === speaker.id)
   const line = picker.line ? lines.find((entry) => entry.id === picker.line) : undefined
+  // Some of the line's words: always just those, never the speaker's other lines.
+  const words =
+    line && picker.span
+      ? visibleText(line.original, line.edits, expandToEdits(line.edits, picker.span))
+      : null
+  const justLine = scope === 'line' && !!line
   const odd = own.filter((entry) => entry.confidence !== null && entry.confidence < LOW_CONFIDENCE)
   const matched = speaker.personId
     ? people.find((person) => person.id === speaker.personId)
@@ -254,12 +266,21 @@ function SpeakerPicker({
       .sort(
         (a, b) => (b.score ?? -1) - (a.score ?? -1) || a.person.name.localeCompare(b.person.name)
       )
-    const out: Option[] = ranked
-    const exact = people.some((person) => person.name.toLowerCase() === needle)
+    // A line or some of its words can go to a speaker already here who isn't a saved voice.
+    const here: Option[] = justLine
+      ? allSpeakers
+          .filter((entry) => entry.id !== speaker.id && !entry.personId)
+          .filter((entry) => entry.name.toLowerCase().includes(needle))
+          .map((entry) => ({ kind: 'speaker' as const, speaker: entry }))
+      : []
+    const out: Option[] = [...here, ...ranked]
+    const exact =
+      people.some((person) => person.name.toLowerCase() === needle) ||
+      here.some((option) => option.kind === 'speaker' && option.speaker.name.toLowerCase() === needle)
     if (needle && !exact) out.push({ kind: 'new', name: query.trim() })
     out.push({ kind: 'keep' })
     return out
-  }, [people, query, speaker.matches])
+  }, [allSpeakers, justLine, people, query, speaker.id, speaker.matches])
 
   const run = async (option: Option | undefined): Promise<void> => {
     if (!option) return
@@ -269,17 +290,32 @@ function SpeakerPicker({
         onClose()
         return
       }
-      if (scope === 'line' && line) {
+      if (justLine) {
         // Just this line: move it to whoever that is, reusing their speaker if present.
         const personId = option.kind === 'person' ? option.person.id : null
-        const name = option.kind === 'person' ? option.person.name : option.name
-        const existing = allSpeakers.find((entry) =>
-          personId ? entry.personId === personId : entry.name.toLowerCase() === name.toLowerCase()
-        )
-        const created = onAssign([line.id], existing ? existing.id : { name, personId, confirmed: true })
+        const name =
+          option.kind === 'person' ? option.person.name : option.kind === 'speaker' ? option.speaker.name : option.name
+        const existing =
+          option.kind === 'speaker'
+            ? option.speaker
+            : allSpeakers.find((entry) =>
+                personId ? entry.personId === personId : entry.name.toLowerCase() === name.toLowerCase()
+              )
+        const target = existing ? existing.id : { name, personId, confirmed: true }
+        if (picker.span) {
+          onSplitLine(line.id, picker.span, target)
+          onClose()
+          return
+        }
+        const created = onAssign([line.id], target)
         onClose()
         const to = existing?.id ?? created
         if (to) offerSimilarLines(pageId, line.id, speaker.id, to, name, onAssign)
+        return
+      }
+      if (option.kind === 'speaker') {
+        onAssign(own.map((entry) => entry.id), option.speaker.id)
+        onClose()
         return
       }
       const who = await window.api.resolveSpeaker(
@@ -313,7 +349,9 @@ function SpeakerPicker({
   }
 
   const title =
-    scope === 'line' && line
+    words !== null
+      ? `Who said “${words.length > 32 ? `${words.slice(0, 31).trimEnd()}…` : words}”?`
+      : justLine
       ? 'Who said this?'
       : state === 'likely' && matched
         ? `Is this ${matched.name}?`
@@ -325,7 +363,7 @@ function SpeakerPicker({
   const left = Math.min(picker.anchor.left, window.innerWidth - 356)
 
   const active = options[highlight]
-  const count = scope === 'line' && line ? 1 : own.length
+  const count = justLine ? 1 : own.length
   const sampleButton = sample ? (
     <Button
       size="icon-sm"
@@ -371,7 +409,7 @@ function SpeakerPicker({
           <div className="grid min-w-0 flex-1">
             <b className="truncate text-body-sm font-semibold">{title}</b>
             <small className="text-label text-text-3">
-              {scope === 'line' && line
+              {justLine
                 ? `${clock(line.start)}${line.confidence === null ? '' : ` · ${percent(line.confidence)} like ${speaker.name}`}`
                 : `${String(own.length)} ${own.length === 1 ? 'line' : 'lines'}${speaker.confidence === null ? '' : ` · ${percent(speaker.confidence)} voice match`}`}
             </small>
@@ -382,7 +420,7 @@ function SpeakerPicker({
           </Button>
         </div>
 
-        {line && own.length > 1 ? (
+        {line && own.length > 1 && !picker.span ? (
           <Segmented
             className="picker-scope mb-2 flex w-full [&>button]:flex-1"
             label="Change"
@@ -448,7 +486,7 @@ function SpeakerPicker({
         <ul className="m-0 list-none p-0" id="picker-options" role="listbox" aria-label="People">
           {options.map((option, index) => (
             <li
-              key={option.kind === 'person' ? option.person.id : option.kind}
+              key={option.kind === 'person' ? option.person.id : option.kind === 'speaker' ? `s:${option.speaker.id}` : option.kind}
               id={`picker-option-${String(index)}`}
               role="option"
               aria-selected={index === highlight}
@@ -467,6 +505,11 @@ function SpeakerPicker({
                     {option.person.self ? ' (you)' : ''}
                   </span>
                   <MatchStrength score={option.score} />
+                </>
+              ) : option.kind === 'speaker' ? (
+                <>
+                  <SpeakerBadge name={option.speaker.name} slot={speakerSlot(allSpeakers, option.speaker.id)} />
+                  <span className="min-w-0 flex-1 truncate">{option.speaker.name}</span>
                 </>
               ) : option.kind === 'new' ? (
                 <>
@@ -510,7 +553,7 @@ function SpeakerPicker({
           )}
           {active && active.kind !== 'keep' ? (
             <Button size="sm" variant="primary" onClick={() => void run(active)}>
-              {scope === 'line' && line ? 'Move this line' : `Name ${String(count)} ${count === 1 ? 'line' : 'lines'}`}
+              {words !== null ? 'Move these words' : justLine ? 'Move this line' : `Name ${String(count)} ${count === 1 ? 'line' : 'lines'}`}
             </Button>
           ) : null}
         </div>
@@ -809,6 +852,7 @@ export function Transcript({
   onEditOverlay,
   onQuote,
   onAssign,
+  onSplitLine,
   onName,
   onUndo,
   showSpeakersBar,
@@ -915,6 +959,12 @@ export function Transcript({
       if (!line.cluster) return
       setSplit(null)
       setPicker({ speaker: line.cluster, line: line.id, anchor })
+    },
+    attribute: (line, span, anchor) => {
+      if (!line.cluster) return
+      settle()
+      setSplit(null)
+      setPicker({ speaker: line.cluster, line: line.id, span, anchor })
     }
   }
 
@@ -1257,7 +1307,7 @@ export function Transcript({
       {picker && pickedSpeaker ? (
         <Floating>
           <SpeakerPicker
-            key={`${picker.speaker}:${picker.line ?? ''}`}
+            key={`${picker.speaker}:${picker.line ?? ''}:${picker.span ? `${String(picker.span.start)}-${String(picker.span.end)}` : ''}`}
             pageId={pageId}
             picker={picker}
             speaker={pickedSpeaker}
@@ -1266,6 +1316,7 @@ export function Transcript({
             people={people}
             onClose={() => setPicker(null)}
             onAssign={onAssign}
+            onSplitLine={onSplitLine}
             onName={onName}
             onSplit={() => {
               setSplit({ speaker: picker.speaker, anchor: picker.anchor })
