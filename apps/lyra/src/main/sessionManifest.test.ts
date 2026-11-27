@@ -19,7 +19,8 @@ const good = {
   tags: ['team'],
   speakers: 2,
   exportHash: 'abc',
-  dirty: false
+  dirty: false,
+  pending: ['speakers', 'notes']
 }
 
 describe('parseManifest', () => {
@@ -62,6 +63,19 @@ describe('parseManifest', () => {
       dirty: false
     })
     expect(read.idMismatch).toBe(true)
+  })
+
+  it('keeps the pending steps it knows, once each', () => {
+    const read = parseManifest({ ...good, pending: ['notes', 'mystery', 'notes', 7] }, ID, NOW)
+    if (read.kind !== 'ok') throw new Error('expected ok')
+    expect(read.manifest.pending).toEqual(['notes'])
+  })
+
+  it('reads a manifest from before pending work as owing nothing', () => {
+    const { pending: _, ...older } = good
+    const read = parseManifest(older, ID, NOW)
+    if (read.kind !== 'ok') throw new Error('expected ok')
+    expect(read.manifest.pending).toEqual([])
   })
 
   it('refuses what is not a manifest', () => {

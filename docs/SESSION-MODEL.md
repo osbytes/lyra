@@ -59,6 +59,7 @@ agents open, grep and sync.
     audio/mic.wav  audio/system.wav        ← raw capture
     raw/live.json                          ← words transcribed during recording, per track
     raw/pass-1.json                        ← diarization + per-turn re-transcription
+    checkpoint/diarize.json                ← a long step's work so far, until it finishes (derived)
     doc.json                               ← the editable document
     doc.yjs.migrated                       ← the document as Lyra 0.6 and earlier kept it (Yjs), once migrated
 ```
@@ -115,8 +116,36 @@ type SessionManifest = {
   tracks: { name: 'mic' | 'system'; file: string; sampleRate: 16000; seconds: number }[]
   passes: { id: string; kind: 'live' | 'diarized'; createdAt: string; model: string }[]
   audio: 'kept' | 'deleted'  // retention outcome, so the UI can say why playback is missing
+  pending: ('transcribe' | 'speakers' | 'notes')[]  // steps a recording still owes, until they end
 }
 ```
+
+### Resuming interrupted work
+
+A quit or crash part way through a session's work is picked up at the next start
+(`src/main/resume.ts`), one session at a time:
+
+- **Only what's owed is read.** Startup looks at each manifest's `pending` and reads nothing else
+  of a session that owes nothing. An unreadable `live.json` is left where it is and its step stays
+  owed.
+- **Transcription.** `pending` gets `transcribe` when a take starts, and the take's stop clears it
+  once all of its audio is transcribed. While recording, `raw/live.json` is saved every few
+  seconds with an `untranscribed` mark per track, open-ended, from where the words handed out so
+  far end (from the take's start before the first words). A quit that can't wait for Whisper
+  leaves closed marks. At the next start the marked audio is transcribed again from
+  `audio/*.wav`, with the words heard just before it as Whisper's prompt, and only the words after
+  each mark are kept. Recovered words are always relabeled, even if the speakers were already
+  settled. Without a relabel they're added as lines where no line of their track covers them yet.
+- **Speakers and summary.** `pending` gets `speakers` when a take starts. Relabeling swaps it for
+  `notes` when it finds speakers, and writing the summary clears that. A step that fails is
+  cleared too, since retrying it at every launch would only report it again. A step cut off by the
+  quit itself stays owed.
+- **Checkpoints.** The long steps keep what they have done in `checkpoint/`: the whole
+  recording's diarization, keyed by the audio's length, the words and the settings, and each
+  answer the notes model gave, keyed by prompt and writer. A retry reuses what matches, and each
+  file is deleted once its step is done. They're kept apart from `raw/`, where every file is a
+  pass.
+- **Downloads** resume from their `.part` file once a step needs the model again.
 
 Small, rewritten atomically (temp file + rename, as `settings.ts` does). The list view reads
 manifests plus each document's title and tags, never the audio.

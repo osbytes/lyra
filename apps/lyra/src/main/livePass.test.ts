@@ -2,7 +2,16 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { heardSpans, mergeLivePass, parseLiveFile, readLiveFile, writeLiveFile, type LiveSegment } from './livePass'
+import {
+  closeOpenMarks,
+  heardSpans,
+  marksToResume,
+  mergeLivePass,
+  parseLiveFile,
+  readLiveFile,
+  writeLiveFile,
+  type LiveSegment
+} from './livePass'
 
 function segment(id: string, start: number, track: 'mic' | 'system' = 'mic'): LiveSegment {
   return { id, start, end: start + 1, track, cluster: null, confidence: null, words: [{ text: ' hi', start, end: start + 1 }] }
@@ -80,5 +89,34 @@ describe('live.json on disk', () => {
     const read = await readLiveFile(dir)
     expect(read.state === 'ok' ? read.file.segments : null).toHaveLength(1)
     expect(JSON.parse(await readFile(join(dir, 'live.json'), 'utf8'))).toMatchObject({ id: 'live', kind: 'live' })
+  })
+})
+
+describe('untranscribed marks', () => {
+  const file = {
+    segments: [],
+    untranscribed: [
+      { take: 0, track: 'mic' as const, start: 40, end: 40, open: true },
+      { take: 0, track: 'system' as const, start: 38.5, end: 38.5, open: true },
+      { take: 100, track: 'mic' as const, start: 120, end: 130 }
+    ]
+  }
+
+  it('closes the open marks of a take a crash cut short where the next take starts', () => {
+    expect(closeOpenMarks(file, 60)?.untranscribed).toEqual([
+      { take: 0, track: 'mic', start: 40, end: 60 },
+      { take: 0, track: 'system', start: 38.5, end: 60 },
+      { take: 100, track: 'mic', start: 120, end: 130 }
+    ])
+    expect(closeOpenMarks({ segments: [], untranscribed: [{ take: 0, track: 'mic', start: 1, end: 2 }] }, 60)).toBeNull()
+  })
+
+  it('runs open marks to the end of their audio, and drops what has none left', () => {
+    const seconds = { mic: 125, system: 38.5 }
+    expect(marksToResume(file.untranscribed, (track) => seconds[track])).toEqual([
+      { take: 0, track: 'mic', start: 40, end: 125 },
+      // The audio stops before the closed mark's end: only what's on disk is transcribed.
+      { take: 100, track: 'mic', start: 120, end: 125 }
+    ])
   })
 })

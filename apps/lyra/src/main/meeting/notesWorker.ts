@@ -113,7 +113,12 @@ async function promptOnce(
 
 type Work = Exclude<NotesWorkerRequest, { kind: 'cancel' } | { kind: 'release' }>
 
-async function answer(request: Work, signal: AbortSignal, onProgress: (done: number, total: number) => void): Promise<unknown> {
+async function answer(
+  request: Work,
+  signal: AbortSignal,
+  onProgress: (done: number, total: number) => void,
+  onAnswer: (key: string, answer: unknown) => void
+): Promise<unknown> {
   signal.throwIfAborted()
   const { llama: runtime, model } = await getModel(request.modelPath)
   // Chunks are measured with the model's own tokenizer: a character count is ~4x off for
@@ -142,6 +147,7 @@ async function answer(request: Work, signal: AbortSignal, onProgress: (done: num
         count,
         signal,
         onProgress,
+        answers: { known: request.known, save: onAnswer },
         ask: async (call) =>
           prompt(model, {
             grammar: await grammarFor(call.schema),
@@ -202,7 +208,10 @@ process.parentPort.on('message', (event: Electron.MessageEvent) => {
       const onProgress = (done: number, total: number): void => {
         reply({ kind: 'progress', id: request.id, done, total })
       }
-      enqueue(() => answer(request, controller.signal, onProgress))
+      const onAnswer = (key: string, value: unknown): void => {
+        reply({ kind: 'answer', id: request.id, key, answer: value })
+      }
+      enqueue(() => answer(request, controller.signal, onProgress, onAnswer))
         .then(
           (result) => {
             reply({ kind: 'result', id: request.id, result })

@@ -5,7 +5,7 @@
  */
 import { z } from 'zod'
 
-export const ActivityKind = z.enum(['model', 'notes', 'speakers', 'backfill', 'update'])
+export const ActivityKind = z.enum(['model', 'notes', 'speakers', 'transcribe', 'backfill', 'update'])
 export type ActivityKind = z.infer<typeof ActivityKind>
 
 /**
