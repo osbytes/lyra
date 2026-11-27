@@ -65,4 +65,5 @@ export type RollResult = DiarizeResult & {
 
 export type WorkerResponse =
   | { id: number; ok: true; result: DiarizeResult | RollResult | number[] }
-  | { id: number; ok: false; error: string }
+  /** `activityModel`: the larger speaker model failed, and the standard one can take over. */
+  | { id: number; ok: false; error: string; activityModel: boolean }

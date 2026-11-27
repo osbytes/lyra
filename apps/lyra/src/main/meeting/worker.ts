@@ -29,7 +29,8 @@ import {
   unit,
   type Span
 } from './clustering'
-import { activityStep } from './activityModel'
+import { activityClient } from './activityClient'
+import { ActivityModelError } from './activityFallback'
 import { advance, emptyRolling, rollingResult, type RollingState } from './rollingDiarizer'
 import { MEL_BANDS, MEL_HOP, logMel } from './melFeatures'
 import {
@@ -63,6 +64,13 @@ const MIN_WINDOW_SECONDS = 1
 const MIN_OWN_WORDS = 5
 /** Lets the segmentation step cut at every change of voice; our clustering decides who is who. */
 const SEGMENTATION_THRESHOLD = 0.5
+
+/**
+ * The larger speaker model runs in a worker of its own (`activityWorker.ts`): its ONNX Runtime
+ * and sherpa-onnx's can't be loaded in one process. Main sends the port before the first request
+ * that needs it.
+ */
+const activityWorker = activityClient()
 
 let extractor: { model: string; instance: SpeakerEmbeddingExtractor } | null = null
 
@@ -178,7 +186,7 @@ async function rollActivity(request: RollRequest, model: string): Promise<RollRe
   }
   const mel = logMel(mixTracks(mic, system))
   const features = { data: mel.data.subarray(lead * MEL_BANDS), frames: mel.frames - lead }
-  const activity = await current.reader.advance(features, activityStep(model, ACTIVITY_THREADS), false)
+  const activity = await current.reader.advance(features, activityWorker.step(model, ACTIVITY_THREADS), false)
   // Energies for the frames now settled are kept; the rest are this round's only.
   const micNow = [...current.mic, ...frameEnergies(mic).slice(lead)]
   const systemNow = system ? [...current.system, ...frameEnergies(system).slice(lead)] : null
@@ -342,7 +350,7 @@ async function diarize(request: DiarizeRequest): Promise<DiarizeResult> {
     )
   }
   const raw: SpeakerDiarizationSegment[] = request.models.activity
-    ? turnsOf(await readActivity(audio, activityStep(request.models.activity, ACTIVITY_THREADS)), request.words)
+    ? turnsOf(await readActivity(audio, activityWorker.step(request.models.activity, ACTIVITY_THREADS)), request.words)
     : clustered()
 
   const segments: DiarizedSegment[] = raw.map((segment) => ({ ...segment, micShare: micShareOf(segment) }))
@@ -364,11 +372,21 @@ async function handle(request: WorkerRequest): Promise<WorkerResponse> {
           : embed(request.models, request.samples)
     return { id: request.id, ok: true, result }
   } catch (error) {
-    return { id: request.id, ok: false, error: error instanceof Error ? error.message : String(error) }
+    return {
+      id: request.id,
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      activityModel: error instanceof ActivityModelError
+    }
   }
 }
 
 process.parentPort.on('message', (event: Electron.MessageEvent) => {
+  const [port] = event.ports
+  if (port) {
+    activityWorker.connect(port)
+    return
+  }
   const request = event.data as WorkerRequest
   void handle(request).then((response) => {
     process.parentPort.postMessage(response)

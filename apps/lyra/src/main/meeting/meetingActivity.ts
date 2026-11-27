@@ -58,3 +58,30 @@ export function reportMeetingStatus(status: MeetingStatus, announce = false): vo
       return
   }
 }
+
+const LARGER_MODEL = { id: 'speakers:larger-model', kind: 'speakers', origin: 'settings', pageId: null } as const
+
+/**
+ * The larger speaker model couldn't run, so sessions are labeled with the standard one. The
+ * labels are still there, so the session itself didn't fail: this row says what changed and
+ * offers the two ways on (the raw reason is in the log).
+ */
+export function reportLargerModelFailure(): void {
+  end(
+    {
+      ...LARGER_MODEL,
+      title: "Couldn't start the larger speaker model",
+      detail: 'Speakers were labeled with the standard model instead.',
+      actions: ['retry', 'turnOff']
+    },
+    'failed'
+  )
+}
+
+export function reportLargerModelCheck(): void {
+  report({ ...LARGER_MODEL, title: 'Checking the larger speaker model', detail: null, progress: null })
+}
+
+export function clearLargerModelFailure(): void {
+  clear(LARGER_MODEL.id)
+}

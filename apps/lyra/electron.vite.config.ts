@@ -13,6 +13,9 @@ export default defineConfig({
           index: resolve('src/main/index.ts'),
           // Runs in a utilityProcess: speaker diarization off the main thread.
           speakerWorker: resolve('src/main/meeting/worker.ts'),
+          // Runs in a utilityProcess: the larger speaker model, whose ONNX Runtime can't share
+          // the speaker worker's process with sherpa-onnx's (meeting/activityProtocol.ts).
+          activityWorker: resolve('src/main/meeting/activityWorker.ts'),
           // Runs in a utilityProcess: local meeting notes with llama.cpp.
           notesWorker: resolve('src/main/meeting/notesWorker.ts'),
           // Runs in a utilityProcess: the search index database (libSQL).
