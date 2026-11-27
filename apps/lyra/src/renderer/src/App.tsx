@@ -80,7 +80,8 @@ import { drawAttention, scrollBehavior } from './lib/motion'
 import { behindLabel, dockActivity } from './lib/status'
 import { notify, onToast, replacesToast, type ToastMessage } from './lib/toast'
 import { tip } from './components/Tooltip'
-import { RecordingReadout, SessionWork, StatusBar } from './components/SessionChrome'
+import { SessionWork, StatusBar } from './components/SessionChrome'
+import { RecordingReadout } from './components/Recording'
 import { Kbd } from './components/ui/status'
 import { overallProvenance } from './lib/provenance'
 import { Button } from './components/ui/button'
@@ -354,7 +355,9 @@ export default function App(): React.JSX.Element {
   }, [startSession])
 
   // Mirror recorder state to main for the tray and the overlay pill.
-  const { phase, progress, micName, subscribeLevel } = dictation
+  const { phase, micName, subscribeLevel } = dictation
+  // The source choice is locked while recording, so the setting is what's being captured.
+  const reportedSystemAudio = settings?.captureSystemAudio ?? true
   const [listeningSince, setListeningSince] = useState<number | null>(null)
   const sinceRef = useRef<number | null>(null)
   useEffect(() => {
@@ -364,20 +367,18 @@ export default function App(): React.JSX.Element {
     window.api.reportSession({
       phase,
       startedAt: sinceRef.current,
-      micName
+      micName,
+      systemAudio: reportedSystemAudio
     })
-  }, [phase, micName])
+  }, [phase, micName, reportedSystemAudio])
 
-  const transcribing = (progress?.queued ?? 0) > 0
-  const statusRef = useRef('')
-  statusRef.current = transcribing ? 'Transcribing…' : ''
   useEffect(() => {
     let last = 0
     return subscribeLevel((levels) => {
       const now = performance.now()
       if (now - last < OVERLAY_FRAME_MS) return
       last = now
-      window.api.reportOverlayFrame({ level: Math.max(levels.mic, levels.system ?? 0), status: statusRef.current })
+      window.api.reportOverlayFrame({ mic: levels.mic, system: levels.system })
     })
   }, [subscribeLevel])
 
@@ -503,7 +504,7 @@ export default function App(): React.JSX.Element {
     })
   }
 
-  const activity = dockActivity(status, progress ? behindLabel(progress) : null)
+  const activity = dockActivity(status, dictation.progress ? behindLabel(dictation.progress) : null)
   const activityElement = activity ? <ActivityToast activity={activity} /> : null
 
   // Hovering or focusing the toast holds it; F6 reaches its button from anywhere (see onKey).
@@ -682,6 +683,7 @@ export default function App(): React.JSX.Element {
           onShow: () => void openPage(recordingId)
         }
       : null
+  const transcribing = (dictation.progress?.queued ?? 0) > 0
   const pending = recordingHere ? { working: transcribing, finishing: dictation.phase === 'finishing' } : null
   const hasTranscript = !!current && (current.transcript.length > 0 || pending !== null)
   const summaryText = current?.summary ?? ''
@@ -766,6 +768,7 @@ export default function App(): React.JSX.Element {
       onToggle={toggleDictation}
       elsewhere={elsewhere}
       size={width === 'compact' ? 'sm' : 'lg'}
+      subscribeLevel={dictation.subscribeLevel}
       readout={
         recordingHere && listening ? (
           <RecordingReadout

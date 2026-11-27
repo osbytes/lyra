@@ -51,6 +51,8 @@
   --local-soft: #dff3f0;
   --cloud: #8b3fbf;
   --cloud-soft: #f3e8fa;
+  /* Computer audio in the recording meter: this computer's own sound, beside the mic's ink. */
+  --source-system: var(--local);
   /* The machine's guesses: suggested speakers, lines that may be mislabeled. */
   --suggested: #8a5200;
   --speaker-1: #2f6fdb;
@@ -725,79 +727,6 @@ code {
   }
 }
 
-.dock {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 52px;
-  padding: 6px 6px 6px 2px;
-  border: var(--border-width) solid var(--border);
-  border-radius: 999px;
-  background: var(--surface-overlay);
-  box-shadow: var(--shadow-lg);
-  cursor: grab;
-  touch-action: none;
-  user-select: none;
-  transition: box-shadow 160ms;
-}
-
-.dock.is-dragging {
-  box-shadow: var(--shadow-lg);
-  cursor: grabbing;
-}
-
-.dock.is-listening {
-  padding-right: 14px;
-}
-
-.dock-status {
-  max-width: 200px;
-  overflow: hidden;
-  font-size: 13px;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Every label stacked in one cell: the slot keeps the longest one's width (DockStatus). */
-.dock .dock-status {
-  display: inline-grid;
-}
-
-.dock .dock-status > * {
-  grid-area: 1 / 1;
-}
-
-.dock .dock-status > .is-sizer {
-  visibility: hidden;
-}
-
-.waveform {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  height: 20px;
-}
-
-.waveform span {
-  width: 2px;
-  height: 100%;
-  border-radius: 1px;
-  background: var(--success);
-  transform: scaleY(0.12);
-  transition: transform 80ms linear;
-}
-
-.waveform.is-system span {
-  background: var(--accent);
-}
-
-.dock-timer {
-  /* Room for 100:00 and beyond, so the dock doesn't grow as the minutes do. */
-  min-width: 6ch;
-  color: var(--text);
-  font-variant-numeric: tabular-nums;
-}
 
 @keyframes rise {
   from {
@@ -1337,18 +1266,20 @@ code {
 .overlay-pill {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
   height: 100vh;
-  padding: 4px 4px 4px 2px;
+  padding: 0 5px 0 2px;
   border: var(--border-width) solid var(--border);
   border-radius: 999px;
   background: var(--surface-overlay);
+  color: var(--text);
   font-size: 12.5px;
   cursor: grab;
   user-select: none;
   -webkit-app-region: drag;
 }
 
+/* Only a hint until the pointer is on the pill; the whole pill drags. */
 .overlay-grip {
   display: grid;
   flex: 0 0 auto;
@@ -1356,16 +1287,16 @@ code {
   width: 12px;
   height: 100%;
   color: var(--text-subtle);
-  opacity: 0.6;
+  opacity: 0.35;
+  transition: opacity 120ms;
 }
 
-/* The dock's mic button, as Stop: shares .mic-btn and its level ring (.is-listening). */
+.overlay-pill:hover .overlay-grip {
+  opacity: 0.8;
+}
+
 .overlay-stop {
   -webkit-app-region: no-drag;
-}
-
-.overlay-stop:disabled {
-  cursor: default;
 }
 
 .overlay-body {
@@ -1374,8 +1305,8 @@ code {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  height: 100%;
-  padding: 0 12px 0 4px;
+  height: calc(100% - 8px);
+  padding: 0 10px 0 6px;
   border: 0;
   border-radius: 999px;
   background: transparent;
@@ -1389,20 +1320,9 @@ code {
   background: var(--surface-hover);
 }
 
-.overlay-body .dock-status {
-  flex: 1;
-  min-width: 0;
-}
-
-.overlay-body .dock-timer {
-  font-family: var(--font-mono);
-  font-weight: 500;
-  text-align: right;
-}
-
-/* After a recording ends: no stop button, so the text starts further in. */
+/* After a recording ends: no Stop, so the text starts further in. */
 .overlay-saved {
-  padding-left: 12px;
+  padding-left: 8px;
 }
 
 .overlay-open {
@@ -1410,6 +1330,15 @@ code {
   color: var(--accent-soft-text);
   font-size: 12px;
   font-weight: 600;
+}
+
+/*
+ * Stop's live signal: a soft ring that grows with the louder source (--level, set by
+ * useLevelHalo), in place of a separate pulsing dot. Still while starting or idle. The button
+ * carries the transition (a utility, which outranks this layer).
+ */
+.level-halo {
+  box-shadow: 0 0 0 calc(var(--level, 0) * 5px) color-mix(in srgb, var(--record) 30%, transparent);
 }
 
 .overlay-prompt {
