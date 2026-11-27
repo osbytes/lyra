@@ -1315,8 +1315,12 @@ async function checkSessionEdits(win: BrowserWindow): Promise<void> {
     const id = ${id}
     const state = window.__smokeEdits
     for (let i = 0; i < 50 && state.changes.length < 2; i++) await new Promise((done) => setTimeout(done, 20))
+    // Some of the live line's words, said by someone else: the line splits around them.
+    await window.api.editSession(id, 2, [
+      { op: 'splitLine', id: 'w0', start: 2, end: 6, speaker: 'c9', create: { name: 'Ana', personId: null, confirmed: true } }
+    ])
     let refused = ''
-    await window.api.editSession(id, 2, [{ op: 'wipe' }]).catch((error) => { refused = String(error) })
+    await window.api.editSession(id, 3, [{ op: 'wipe' }]).catch((error) => { refused = String(error) })
     state.stop()
     window.api.closeSession(id)
     return { opened: state.opened.rev, rev: state.rev, changes: state.changes, refused }
@@ -1345,7 +1349,12 @@ async function checkSessionEdits(win: BrowserWindow): Promise<void> {
   }
   if ('notes' in own.changes || 'transcript' in own.changes) fail('a change carried fields it did not change')
   if (!seen.refused) fail('an unknown edit was accepted')
-  if ((await readSession(page.id)).title !== 'Edited in a window') fail('the edit did not land in main')
+  const saved = await readSession(page.id)
+  if (saved.title !== 'Edited in a window') fail('the edit did not land in main')
+  const split = saved.transcript.map((line) => [line.text, line.cluster])
+  if (JSON.stringify(split) !== JSON.stringify([['A', null], ['live', 'c9'], ['line', null]])) {
+    fail(`a split line: ${JSON.stringify(split)}`)
+  }
   await deletePage(page.id)
 }
 
