@@ -2,6 +2,7 @@ import { z } from 'zod'
 import type { Settings } from './settings'
 import type { KeySource, ProviderId } from './ai'
 import type { ActivityAction, ActivityItem } from './activity'
+import type { PromptApp, PromptAppRequest } from './promptApps'
 import type { SessionChanges, SessionDoc, SessionOp } from './sessionDoc'
 
 export type Page = {
@@ -497,6 +498,10 @@ export type VoicePagesApi = {
   permissionStatus: () => Promise<PermissionStatus>
   /** Main window only. Opens the system settings page for a permission; false if there is none. */
   openPermissionSettings: (kind: PermissionKind) => Promise<boolean>
+  /** The coding and chat apps installed here that open with a prompt filled in. */
+  promptApps: () => Promise<PromptApp[]>
+  /** Main window only. Opens an app with the text as its prompt, unsent; says if it was cut. */
+  openInPromptApp: (request: PromptAppRequest) => Promise<{ truncated: boolean }>
   /** Puts plain text on the system clipboard. */
   copyText: (text: string) => void
   platform: string

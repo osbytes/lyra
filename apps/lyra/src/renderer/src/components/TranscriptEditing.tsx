@@ -12,7 +12,21 @@ import {
   type Span,
   type TranscriptEdit
 } from '../../../shared/transcriptOverlay'
+import type { PromptApp } from '../../../shared/promptApps'
+import { sendToItems } from '../hooks/usePromptApps'
 import { ContextMenu, type MenuItem } from './ContextMenu'
+import {
+  CopyIcon,
+  EditIcon,
+  EraserIcon,
+  HighlightIcon,
+  PersonIcon,
+  PlayIcon,
+  QuoteIcon,
+  ReplaceIcon,
+  RestoreIcon,
+  StrikeIcon
+} from './Icons'
 import { tip } from './Tooltip'
 
 /**
@@ -126,6 +140,9 @@ export type Actions = {
   rewrite: (line: string) => void
   quote: (line: TranscriptSegment, text: string) => void
   copy: (text: string) => void
+  /** The apps installed here that open with a prompt filled in, and opening one with text. */
+  promptApps: readonly PromptApp[]
+  ask: (app: PromptApp, text: string) => void
   listen: (line: TranscriptSegment) => void
   speaker: ((line: TranscriptSegment, anchor: DOMRect) => void) | null
   /** Gives the selected words to another speaker, splitting the line around them. */
@@ -283,6 +300,7 @@ export function LineMenu({
     const heard = line.original.slice(edit.start, edit.end)
     items.push({
       label: heard ? <>Restore “{short(heard)}”</> : 'Remove added words',
+      icon: heard ? <RestoreIcon /> : <StrikeIcon />,
       run: () =>
         actions.setEdits(
           line.id,
@@ -294,46 +312,50 @@ export function LineMenu({
     const text = visibleText(line.original, line.edits, expandToEdits(line.edits, span))
     const lit = isHighlighted(line.edits, span)
     items.push(
-      { label: <>Correct “{short(text)}”…</>, run: () => onCorrect(span, request.rect ?? new DOMRect(request.x, request.y)) },
-      { label: 'Remove from transcript', danger: true, run: () => actions.setEdits(line.id, removeRange(line.edits, span)) },
-      { label: lit ? 'Remove highlight' : 'Highlight', run: () => actions.setEdits(line.id, toggleHighlight(line.edits, span)) },
+      { label: <>Correct “{short(text)}”…</>, icon: <ReplaceIcon />, run: () => onCorrect(span, request.rect ?? new DOMRect(request.x, request.y)) },
+      { label: 'Remove from transcript', icon: <StrikeIcon />, danger: true, run: () => actions.setEdits(line.id, removeRange(line.edits, span)) },
+      { label: lit ? 'Remove highlight' : 'Highlight', icon: <HighlightIcon />, run: () => actions.setEdits(line.id, toggleHighlight(line.edits, span)) },
       ...(attribute && line.cluster
-        ? [{ label: <>Who said “{short(text)}”…</>, run: () => attribute(line, span, request.rect ?? new DOMRect(request.x, request.y)) }]
+        ? [{ label: <>Who said “{short(text)}”…</>, icon: <PersonIcon />, run: () => attribute(line, span, request.rect ?? new DOMRect(request.x, request.y)) }]
         : []),
-      { label: 'Add selection to notes', run: () => actions.quote(line, text) },
-      { label: 'Copy selection', run: () => actions.copy(text) }
+      { label: 'Add selection to notes', icon: <QuoteIcon />, run: () => actions.quote(line, text) },
+      { label: 'Copy selection', icon: <CopyIcon />, run: () => actions.copy(text) },
+      ...sendToItems(actions.promptApps, [{ label: 'Selection', text }], actions.ask)
     )
     if (touchesEdit(line.edits, span)) {
-      items.push({ label: 'Restore what was heard', run: () => actions.setEdits(line.id, restoreRange(line.edits, span)) })
+      items.push({ label: 'Restore what was heard', icon: <RestoreIcon />, run: () => actions.setEdits(line.id, restoreRange(line.edits, span)) })
     }
     items.push('separator')
   }
-  items.push({ label: 'Edit line…', run: () => actions.rewrite(line.id) })
+  items.push({ label: 'Edit line…', icon: <EditIcon />, run: () => actions.rewrite(line.id) })
   if (!span && line.original) {
     // The keyboard's way to highlight: without a mouse there's no word selection to act on.
     const whole = { start: 0, end: line.original.length }
     if (!isHighlighted(line.edits, whole)) {
-      items.push({ label: 'Highlight line', run: () => actions.setEdits(line.id, toggleHighlight(line.edits, whole)) })
+      items.push({ label: 'Highlight line', icon: <HighlightIcon />, run: () => actions.setEdits(line.id, toggleHighlight(line.edits, whole)) })
     }
   }
   const { speaker } = actions
   if (speaker && line.cluster) {
-    items.push({ label: 'Who said this…', run: () => speaker(line, new DOMRect(request.x, request.y)) })
+    items.push({ label: 'Who said this…', icon: <PersonIcon />, run: () => speaker(line, new DOMRect(request.x, request.y)) })
   }
   items.push(
-    { label: 'Listen from here', run: () => actions.listen(line) },
-    { label: 'Add line to notes', run: () => actions.quote(line, line.text) },
-    { label: 'Copy line', run: () => actions.copy(line.text) }
+    { label: 'Listen from here', icon: <PlayIcon />, run: () => actions.listen(line) },
+    { label: 'Add line to notes', icon: <QuoteIcon />, run: () => actions.quote(line, line.text) },
+    { label: 'Copy line', icon: <CopyIcon />, run: () => actions.copy(line.text) },
+    ...(span ? [] : sendToItems(actions.promptApps, [{ label: 'Line', text: line.text }], actions.ask))
   )
   if (line.edited) {
     items.push({
       label: 'Restore original line',
+      icon: <RestoreIcon />,
       run: () => actions.setEdits(line.id, line.edits.filter((e) => e.kind === 'highlight'))
     })
   }
   if (line.edits.some((e) => e.kind === 'highlight')) {
     items.push({
       label: 'Clear highlights',
+      icon: <EraserIcon />,
       run: () => actions.setEdits(line.id, line.edits.filter((e) => e.kind !== 'highlight'))
     })
   }

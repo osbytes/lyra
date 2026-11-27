@@ -54,6 +54,25 @@ export function DropdownMenuItem({
   )
 }
 
+/** An item that toggles; draws like any item, with its check in the icon slot (`children`). */
+export function DropdownMenuCheckboxItem({
+  className,
+  ...props
+}: ComponentProps<typeof DropdownMenuPrimitive.CheckboxItem>) {
+  return (
+    <DropdownMenuPrimitive.CheckboxItem
+      data-slot="dropdown-menu-item"
+      className={cn(
+        'relative flex h-[30px] cursor-default items-center gap-2 rounded-sm px-2 outline-none select-none',
+        'data-highlighted:bg-brand-soft data-highlighted:text-brand-text hc:data-highlighted:outline-2 hc:data-highlighted:outline-ring',
+        'data-disabled:text-text-3 [&_svg]:shrink-0',
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
 export function DropdownMenuLabel({
   className,
   ...props
