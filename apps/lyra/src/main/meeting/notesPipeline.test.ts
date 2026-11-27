@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { estimateTokens } from './notesChunks'
 import { ActionItemsFound, NotesDraft, OverviewNotes, SectionNotes, type NotesLine } from './notesFormat'
-import { quotedFrom, sameItem, uniqueItems, writeNotes, type NotesCall } from './notesPipeline'
+import { callKey, quotedFrom, sameItem, uniqueItems, writeNotes, type NotesCall } from './notesPipeline'
 
 const TOPICS = [
   ['budget', 'spending', 'quarter', 'finance', 'invoice', 'forecast'],
@@ -201,5 +201,59 @@ describe('sameItem', () => {
     expect(sameItem('Send the budget to finance', 'send the budget to Finance.')).toBe(true)
     expect(sameItem('Ship on May 5', 'Ship on May 6')).toBe(false)
     expect(uniqueItems(['a b c d e', 'A B C D E', 'f'], String)).toEqual(['a b c d e', 'f'])
+  })
+})
+
+describe('answers kept from an earlier try', () => {
+  it('asks a retry only what the try it replaces had no answer to', async () => {
+    const whole = recorder()
+    const expected = await writeNotes({ lines: meeting(10), budget: 8000, count: estimateTokens, ask: whole.ask })
+    // The first try gets five answers, then the app quits.
+    const kept: Record<string, unknown> = {}
+    const first = recorder()
+    let answered = 0
+    const failing = async (call: NotesCall): Promise<unknown> => {
+      if (answered === 5) throw new Error('quit')
+      answered++
+      return first.ask(call)
+    }
+    const save = (key: string, answer: unknown): void => {
+      kept[key] = answer
+    }
+    await expect(
+      writeNotes({ lines: meeting(10), budget: 8000, count: estimateTokens, ask: failing, answers: { known: {}, save } })
+    ).rejects.toThrow('quit')
+    expect(Object.keys(kept)).toHaveLength(5)
+
+    const retry = recorder()
+    const notes = await writeNotes({
+      lines: meeting(10),
+      budget: 8000,
+      count: estimateTokens,
+      ask: retry.ask,
+      answers: { known: kept, save }
+    })
+    expect(retry.calls).toHaveLength(whole.calls.length - 5)
+    expect(retry.calls.map(callKey)).toEqual(whole.calls.slice(5).map(callKey))
+    expect(notes).toEqual(expected)
+  })
+
+  it('asks again where a kept answer no longer fits its call', async () => {
+    const lines: NotesLine[] = [{ speaker: 'Sam', text: 'We ship Friday.', start: 0, end: 2 }]
+    const first = recorder()
+    await writeNotes({ lines, budget: 1000, count: estimateTokens, ask: first.ask })
+    const [draft] = first.calls
+    if (!draft) throw new Error('expected a call')
+    const saved: string[] = []
+    const retry = recorder()
+    await writeNotes({
+      lines,
+      budget: 1000,
+      count: estimateTokens,
+      ask: retry.ask,
+      answers: { known: { [callKey(draft)]: { summary: 42 } }, save: (key) => saved.push(key) }
+    })
+    expect(retry.calls.map((call) => call.schema)).toEqual([NotesDraft, ActionItemsFound])
+    expect(saved).toEqual(retry.calls.map(callKey))
   })
 })

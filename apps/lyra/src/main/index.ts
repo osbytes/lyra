@@ -78,6 +78,8 @@ import { prefetchNotesModel, releaseNotesModel, reportNotesModel, stopNotesWorke
 import { stopSpeakerWorker } from './meeting/speakers'
 import { startLiveLabels } from './meeting/liveLabels'
 import { relabelSession } from './meeting/relabel'
+import { markQuitting } from './lifecycle'
+import { resumeUnfinishedWork } from './resume'
 import {
   finishRecordingForQuit,
   identifiesSpeakers,
@@ -598,6 +600,7 @@ void app.whenReady().then(() => {
     enabled: !isTestRun,
     beforeInstall: () => {
       quitting = true
+      markQuitting()
     }
   })
   saveForPower = registerPowerHandling(saveWork)
@@ -650,6 +653,15 @@ void app.whenReady().then(() => {
     })
     startAudioRetention()
     createWindow()
+    // What a quit or crash cut short: transcription, speakers, summaries. Task runs have their own work.
+    const notes = services?.notes
+    if (!isTestRun && notes) {
+      void resumeUnfinishedWork({
+        speakers: identifiesSpeakers(),
+        relabel: relabelSession,
+        writeNotes: (pageId) => notes.writeOwed(pageId)
+      })
+    }
   })
   broadcastStatus({ state: 'idle' })
 
@@ -707,6 +719,7 @@ async function shutdownWork(): Promise<void> {
 let flushed = false
 app.on('before-quit', (event) => {
   quitting = true
+  markQuitting()
   // Finish a recording in progress, write pending exports and compact session logs before the
   // process goes away, but never let a stuck disk or worker keep the app from quitting.
   if (flushed) return

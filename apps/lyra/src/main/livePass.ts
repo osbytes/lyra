@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { z } from 'zod'
 import type { AudioTrack } from '../shared/types'
+import type { TranscribedChunk } from './transcriber'
 
 /**
  * `raw/live.json`: every word transcribed while recording, across all of a session's takes. Each
@@ -25,15 +26,18 @@ export const LiveSegment = z.looseObject({
 export type LiveSegment = z.infer<typeof LiveSegment>
 
 /**
- * Audio of a take that was recorded but not transcribed, because the app quit before Whisper
- * caught up. Seconds on the session timeline; `take` is where that take starts, so the take's
- * own final save can replace its marker.
+ * Audio of a take that was recorded but not transcribed, because the app quit or crashed before
+ * Whisper caught up; the next start transcribes it (`resume.ts`). Seconds on the session
+ * timeline; `take` is where that take starts, so the take's own later saves replace its marker.
+ * `open`: saved while recording, before the end was known, so it runs to the end of the take's
+ * audio, whatever `end` says.
  */
 export const Untranscribed = z.object({
   take: z.number(),
   track: z.enum(['mic', 'system']),
   start: z.number(),
-  end: z.number()
+  end: z.number(),
+  open: z.boolean().optional()
 })
 export type Untranscribed = z.infer<typeof Untranscribed>
 
@@ -125,6 +129,46 @@ export async function writeLiveFile(dir: string, pass: Record<string, unknown>):
   const temp = `${path}.tmp`
   await writeFile(temp, JSON.stringify(pass), 'utf8')
   await rename(temp, path)
+}
+
+/** A transcribed chunk as kept in `raw/live.json`, labeled with the track it was heard on. */
+export function liveSegmentOf(chunk: TranscribedChunk): LiveSegment {
+  return {
+    id: `live-${chunk.track}-${String(Math.round(chunk.start * 1000))}`,
+    start: chunk.words[0]?.start ?? chunk.start,
+    end: chunk.words.at(-1)?.end ?? chunk.end,
+    track: chunk.track,
+    cluster: null,
+    confidence: null,
+    words: chunk.words
+  }
+}
+
+/**
+ * The file with its open markers closed at `end`: a new take starts there, so an earlier take a
+ * crash cut short ends there too. Null when nothing was open.
+ */
+export function closeOpenMarks(file: LiveFile, end: number): LiveFile | null {
+  const marks = file.untranscribed ?? []
+  if (!marks.some((mark) => mark.open)) return null
+  const closed = marks.map(({ open, ...mark }) =>
+    open ? { ...mark, end: Math.max(mark.start, end) } : mark
+  )
+  return { ...file, untranscribed: closed }
+}
+
+/**
+ * The spans to transcribe again, with open markers run to the end of their track's audio
+ * (`seconds`); empty ones (all of it was transcribed after all) left out.
+ */
+export function marksToResume(
+  marks: readonly Untranscribed[],
+  seconds: (track: AudioTrack) => number
+): Untranscribed[] {
+  return marks.flatMap(({ open, ...mark }) => {
+    const end = open ? seconds(mark.track) : Math.min(mark.end, seconds(mark.track))
+    return end > mark.start ? [{ ...mark, end: +end.toFixed(3) }] : []
+  })
 }
 
 /** Where each track was heard in the takes so far. */

@@ -19,6 +19,8 @@ import {
   editSession,
   readManifestOf,
   openSessionFor,
+  peekManifest,
+  sessionCheckpointDir,
   readSession,
   readSessionFromDisk,
   restoreSession,
@@ -61,6 +63,8 @@ import {
 import { getSettings, overrideSettings, updateSettings } from '../settings'
 import { assignSpeaker, sessionAudio } from '../meeting/pipeline'
 import { relabelSession } from '../meeting/relabel'
+import { resumeUnfinishedWork } from '../resume'
+import { readCheckpoint, writeCheckpoint } from '../checkpoints'
 import { MANIFEST_VERSION } from '../sessionManifest'
 import { wavHeader } from '../wavFile'
 import { defaultTitle, partOfDay } from '../sessionTitle'
@@ -823,6 +827,13 @@ async function checkChunkedTranscriber(): Promise<void> {
   if (cuts.some((cut) => cut.seconds > 28.5)) fail(`a chunk ran past Whisper's window: ${JSON.stringify(cuts)}`)
   if (tracks.filter((track) => track === 'mic').length < 3) fail(`a long stretch was not cut: ${out.join(' ')}`)
   if (transcriber.progress().queued !== 0) fail('chunks still queued after finishing')
+
+  // A later take's marks start where that take does, never at the session's start.
+  const later = new ChunkedTranscriber(['mic'], 300 * 16000, () => Promise.resolve([]), () => undefined)
+  const marks = later.handedOut()
+  if (marks.length !== 1 || marks[0]?.at !== 300) fail(`a new take's mark: ${JSON.stringify(marks)}`)
+  later.audio('mic', new Float32Array(16000))
+  if (later.unfinished().some((span) => span.start < 300)) fail(`unfinished before the take: ${JSON.stringify(later.unfinished())}`)
 }
 
 async function checkTranscriptModel(): Promise<void> {
@@ -1168,6 +1179,81 @@ async function checkRelabelKeepsAudio(): Promise<void> {
   }
 }
 
+/**
+ * What a quit or crash cut short is picked up at the next start: a summary still owed is
+ * written, owed speakers with no way to settle them are let go, untranscribed marks whose audio
+ * is gone are dropped (the words kept), and a summary's checkpoint goes once the summary is in.
+ * Only sessions that owe something are read, and an unreadable live.json is left where it is.
+ */
+async function checkResume(): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`resume: ${message}`)
+  }
+  const owesNotes = await createPage()
+  const owesSpeakers = await createPage()
+  const marked = await createPage()
+  const owesNothing = await createPage()
+  const unreadable = await createPage()
+  const pages = [owesNotes, owesSpeakers, marked, owesNothing, unreadable]
+  try {
+    await updateManifest(owesNotes.id, (manifest) => ({ ...manifest, pending: ['notes'] }))
+    await updateManifest(owesSpeakers.id, (manifest) => ({ ...manifest, pending: ['speakers'] }))
+    const segment = { id: 'live-mic-0', start: 0, end: 1, track: 'mic', cluster: null, confidence: null, words: [] }
+    const open = { take: 0, track: 'mic', start: 1, end: 1, open: true }
+    const markedFile = JSON.stringify({ segments: [segment], untranscribed: [open] })
+    const liveOf = (id: string): string => join(sessionRawDir(id), 'live.json')
+    for (const page of [marked, owesNothing, unreadable]) await mkdir(sessionRawDir(page.id), { recursive: true })
+    await writeFile(liveOf(marked.id), markedFile)
+    await writeFile(liveOf(owesNothing.id), markedFile)
+    await writeFile(liveOf(unreadable.id), '{"segments": [')
+    await updateManifest(marked.id, (manifest) => ({ ...manifest, pending: ['transcribe'] }))
+    await updateManifest(unreadable.id, (manifest) => ({ ...manifest, pending: ['transcribe'] }))
+
+    const notes: string[] = []
+    const relabeled: string[] = []
+    await resumeUnfinishedWork({
+      speakers: false,
+      relabel: (pageId) => {
+        relabeled.push(pageId)
+        return Promise.resolve('skipped' as const)
+      },
+      writeNotes: (pageId) => {
+        notes.push(pageId)
+        return Promise.resolve()
+      }
+    })
+    if (!notes.includes(owesNotes.id) || notes.includes(owesSpeakers.id)) fail(`notes asked for ${JSON.stringify(notes)}`)
+    if (relabeled.length) fail('relabeled without speaker models')
+    if (peekManifest(owesSpeakers.id)?.pending.length) fail('owed speakers were kept without a way to settle them')
+    const live: unknown = JSON.parse(await readFile(liveOf(marked.id), 'utf8'))
+    const kept = z.looseObject({ segments: z.array(z.unknown()) }).safeParse(live)
+    if (!kept.success || kept.data.segments.length !== 1 || 'untranscribed' in kept.data) {
+      fail(`marks with no audio left: ${JSON.stringify(live)}`)
+    }
+    if (peekManifest(marked.id)?.pending.length) fail('transcription still owed with nothing left to do')
+    if ((await readFile(liveOf(owesNothing.id), 'utf8')) !== markedFile) fail('read a session that owed nothing')
+    if (!existsSync(liveOf(unreadable.id))) fail('moved an unreadable live.json aside')
+    if (!peekManifest(unreadable.id)?.pending.includes('transcribe')) fail('gave up on an unreadable live.json')
+
+    // A summary written for good takes its checkpoint with it, and is no longer owed.
+    await editSession(owesNotes.id, (doc) => {
+      replaceTranscript(doc, [{ id: 'r0', rawId: 'r0', start: 0, end: 2, cluster: 'c0', confidence: null, text: 'We ship Friday.' }])
+    })
+    const writer = createFakeNotesWriter({
+      notes: { decisions: [], actionItems: [], openQuestions: [], summary: 'Shipping.' },
+      title: null
+    })
+    await writeCheckpoint(owesNotes.id, 'notes', { writer: writer.name, answers: { a: 1 } })
+    if (!(await readCheckpoint(owesNotes.id, 'notes', z.unknown()))) fail('the checkpoint was not saved')
+    await createMeetingNotes({ writer: () => Promise.resolve(writer) }).generateNotes(owesNotes.id)
+    if (existsSync(join(sessionCheckpointDir(owesNotes.id), 'notes.json'))) fail('a written summary kept its checkpoint')
+    await createMeetingNotes({ writer: () => Promise.resolve(null) }).writeOwed(owesNotes.id)
+    if (peekManifest(owesNotes.id)?.pending.includes('notes')) fail('a summary was still owed after its run')
+  } finally {
+    for (const page of pages) await deletePage(page.id)
+  }
+}
+
 /** A WAV whose header was never finalised (a crash) still plays: its audio runs to the end. */
 async function checkUnfinishedWav(): Promise<void> {
   const page = await createPage()
@@ -1403,6 +1489,7 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
     await checkVoices()
     await checkSettingsFile()
     await checkRelabelKeepsAudio()
+    await checkResume()
     await checkUnfinishedWav()
     // Last of the index checks: the rebuilt index holds only what changed since (see the report).
     await checkSearchIndexRecovery()
