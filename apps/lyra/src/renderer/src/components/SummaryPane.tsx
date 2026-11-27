@@ -8,7 +8,7 @@ import { play } from '../lib/playback'
 import { axisStep, lineAt } from '../lib/timeline'
 import { notify } from '../lib/toast'
 import { useContextMenu } from './ContextMenu'
-import { CopyIcon, PersonIcon, PlayIcon } from './Icons'
+import { ChevronDownIcon, ChevronUpIcon, CopyIcon, JumpIcon, PersonIcon, PlayIcon } from './Icons'
 import { SpeakerName, type Certainty } from './SpeakerBadge'
 import { tip } from './Tooltip'
 import { Badge } from './ui/badge'
@@ -111,9 +111,10 @@ export function SummaryPane({ page, summary, sections, onSpeaker, onSeek, view }
           onSeek(at)
         }
       },
-      { label: `Jump to ${clockLabel(at)}`, run: () => onSeek(at) },
+      { label: `Jump to ${clockLabel(at)}`, icon: <JumpIcon />, run: () => onSeek(at) },
       'separator',
       {
+        icon: <ChevronDownIcon />,
         label: next ? `Next turn by ${speaker.name} · ${clockLabel(next.start)}` : `No later turn by ${speaker.name}`,
         disabled: !next,
         run: () => {
@@ -121,6 +122,7 @@ export function SummaryPane({ page, summary, sections, onSpeaker, onSeek, view }
         }
       },
       {
+        icon: <ChevronUpIcon />,
         label: previous ? `Previous turn · ${clockLabel(previous.start)}` : 'No earlier turn',
         disabled: !previous,
         run: () => {

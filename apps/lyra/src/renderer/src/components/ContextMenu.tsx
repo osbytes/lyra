@@ -3,6 +3,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuShortcut,
   DropdownMenuTrigger
@@ -14,11 +15,26 @@ export type MenuItem =
       run: () => void
       /** Shown on the right, e.g. `shortcutLabel('Z')`. */
       shortcut?: string
-      icon?: ReactNode
+      /** Every item has one, so labels line up and the menu can be scanned by shape. */
+      icon: ReactNode
       danger?: boolean
       disabled?: boolean
     }
+  | {
+      label: ReactNode
+      /**
+       * Swaps the menu for these items in place ("Send to…" → the apps), rather than opening
+       * a submenu beside it, which a menu near the window's edge has no room for.
+       */
+      next: MenuPage
+      icon: ReactNode
+    }
+  /** A small caps heading over the items after it. */
+  | { heading: string }
   | 'separator'
+
+/** A menu's items; or, for a page with its own state (checkboxes), a component that draws them. */
+export type MenuPage = { label: string; items: MenuItem[] } | { label: string; content: ReactNode }
 
 export type MenuRequest = { x: number; y: number; label: string; items: MenuItem[] }
 
@@ -29,9 +45,13 @@ type Props = MenuRequest & { onClose: () => void }
  * people. A Radix menu anchored at the pointer: arrow keys, Home/End, type-ahead, Enter, Escape;
  * clicking outside closes it, and focus goes back to where it was.
  */
-export function ContextMenu({ x, y, label, items, onClose }: Props) {
+export function ContextMenu({ x, y, label: firstLabel, items: firstItems, onClose }: Props) {
+  const [page, setPage] = useState<MenuPage | null>(null)
+  const shown = page ?? { label: firstLabel, items: firstItems }
+  const { label } = shown
+  const items = 'items' in shown ? shown.items : []
   // When any item has an icon, every label lines up after the icon column.
-  const iconColumn = items.some((item) => item !== 'separator' && item.icon !== undefined)
+  const iconColumn = items.some((item) => item !== 'separator' && 'label' in item && item.icon !== undefined)
   return (
     <DropdownMenu
       open
@@ -59,15 +79,25 @@ export function ContextMenu({ x, y, label, items, onClose }: Props) {
           onClose()
         }}
       >
-        {items.map((item, index) =>
-          item === 'separator' ? (
-            <DropdownMenuSeparator key={`separator-${String(index)}`} />
-          ) : (
+        {'content' in shown ? shown.content : null}
+        {items.map((item, index) => {
+          if (item === 'separator') return <DropdownMenuSeparator key={`separator-${String(index)}`} />
+          if ('heading' in item) return <DropdownMenuLabel key={`heading-${String(index)}`}>{item.heading}</DropdownMenuLabel>
+          const next = 'next' in item ? item.next : null
+          return (
             <DropdownMenuItem
-              key={index}
-              danger={item.danger ?? false}
-              disabled={item.disabled ?? false}
-              onSelect={() => item.run()}
+              key={`${label}-${String(index)}`}
+              danger={'danger' in item ? (item.danger ?? false) : false}
+              disabled={'disabled' in item ? (item.disabled ?? false) : false}
+              onSelect={(event) => {
+                if (next) {
+                  // Keep the menu open on its next page.
+                  event.preventDefault()
+                  setPage(next)
+                } else if ('run' in item) {
+                  item.run()
+                }
+              }}
             >
               {iconColumn ? (
                 <span className="grid size-4 place-items-center" aria-hidden="true">
@@ -75,10 +105,10 @@ export function ContextMenu({ x, y, label, items, onClose }: Props) {
                 </span>
               ) : null}
               <span className="min-w-0 flex-1 truncate">{item.label}</span>
-              {item.shortcut ? <DropdownMenuShortcut>{item.shortcut}</DropdownMenuShortcut> : null}
+              {'shortcut' in item && item.shortcut ? <DropdownMenuShortcut>{item.shortcut}</DropdownMenuShortcut> : null}
             </DropdownMenuItem>
           )
-        )}
+        })}
       </DropdownMenuContent>
     </DropdownMenu>
   )

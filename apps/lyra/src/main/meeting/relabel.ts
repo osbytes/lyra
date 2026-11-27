@@ -32,7 +32,7 @@ import { SPEAKER_EMBEDDING } from './speakerModel'
 import { movedLines, pinnedSpeakers } from './speakerRules'
 import { DIARIZE_THRESHOLD } from './thresholds'
 import { snapTurns } from './turnEdges'
-import { passClusters, type WrittenPass } from './voiceprints'
+import { clearLiveVoiceprints, passClusters, type WrittenPass } from './voiceprints'
 import { reportMeetingStatus } from './meetingActivity'
 
 /**
@@ -512,6 +512,7 @@ async function relabel(pageId: string): Promise<RelabelOutcome> {
     ...manifest,
     passes: [...manifest.passes, { id: passId, kind: 'diarized', createdAt: pass.createdAt, model: pass.model }]
   }))
+  clearLiveVoiceprints(pageId)
   await clearCheckpoint(pageId, 'diarize')
   // The summary is owed before it is asked for, so a crash while it's written still resumes it.
   await speakersSettled(pageId, fields.size >= 1 ? 'notes' : null)

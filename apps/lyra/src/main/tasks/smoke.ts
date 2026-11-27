@@ -149,6 +149,13 @@ function checkSettingsSchema(): void {
   if (base.largerSpeakerModel || parseSettings({ largerSpeakerModel: 'yes' }, base).largerSpeakerModel) {
     throw new Error('settings: larger speaker model default')
   }
+  // What Send to… includes: the transcript alone at first; a bad stored value is refused.
+  if (base.sendToParts.join() !== 'transcript') {
+    throw new Error('settings: send-to parts default')
+  }
+  if (parseSettings({ sendToParts: ['summary', 'everything'] }, base).sendToParts.join() !== base.sendToParts.join()) {
+    throw new Error('settings: a bad send-to part was kept')
+  }
 }
 
 /**
@@ -1453,6 +1460,19 @@ async function checkCopy(win: BrowserWindow): Promise<void> {
 }
 
 /**
+ * Prompt apps: the window can ask which are installed, and an unknown app is refused at the
+ * boundary. Nothing is opened, so the smoke test never launches another app.
+ */
+async function checkPromptApps(win: BrowserWindow): Promise<void> {
+  const listed: unknown = await win.webContents.executeJavaScript('window.api.promptApps()')
+  if (!Array.isArray(listed)) throw new Error('promptApps did not return a list')
+  const refused: unknown = await win.webContents.executeJavaScript(
+    `window.api.openInPromptApp({ app: 'nope', text: 'x' }).then(() => false, () => true)`
+  )
+  if (refused !== true) throw new Error('openInPromptApp accepted an unknown app')
+}
+
+/**
  * The larger speaker model failed to start: Activity offers the standard model, and taking it
  * from the window turns the setting off and clears the row.
  */
@@ -1494,6 +1514,7 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
     // Last of the index checks: the rebuilt index holds only what changed since (see the report).
     await checkSearchIndexRecovery()
     await checkCopy(win)
+    await checkPromptApps(win)
     await checkRecordingManifest(win)
     await checkSessionSwitch(win)
     await checkSessionEdits(win)
