@@ -8,16 +8,13 @@ import type {
   NotesState
 } from '../../shared/types'
 import { log } from '../log'
-import { docMeta, docSummary, editDoc, snapshotOf } from '../../shared/sessionDoc'
 import { changeSession, editSession, listSessions } from '../sessionStore'
 import { notesLinesOf } from './notesChunks'
 import { renderNotes, type NotesLine } from './notesFormat'
 import {
   createJobs,
-  GENERATED_SUMMARY_KEY,
   isAbort,
   mayWriteSummary,
-  NOTES_RUN_KEY,
   notesState,
   SupersededError,
   summaryEdited,
@@ -30,8 +27,6 @@ import type { NotesWriter } from './notesWriter'
 import { onMeetingLabeled } from './events'
 import { reportMeetingStatus, SUMMARY_KEPT, SUMMARY_STOPPED } from './meetingActivity'
 import { clear as clearActivity, end as endActivity, onActivityAction, report as reportActivity } from '../activity'
-
-const ORIGIN_NOTES = 'notes'
 
 /**
  * Notes share the meeting status channel with speaker labeling. When `MeetingStatus` gains a
@@ -70,32 +65,27 @@ export type MeetingNotesService = {
 
 /** The session as notes need it, plus the fingerprint of the summary Lyra last wrote. */
 function readForNotes(pageId: string): Promise<{ lines: NotesLine[]; summary: string; fingerprint: unknown }> {
-  return changeSession(pageId, (doc) => {
-    const snapshot = snapshotOf(doc)
-    return {
-      lines: notesLinesOf(snapshot),
-      summary: snapshot.summary,
-      fingerprint: docMeta(doc).get(GENERATED_SUMMARY_KEY)
-    }
-  })
+  return changeSession(pageId, (doc) => ({
+    lines: notesLinesOf(doc),
+    summary: doc.summary,
+    fingerprint: doc.notesGenerated
+  }))
 }
 
 /** Where a session's notes stand against the current pipeline (see `notesState`). */
 function stateOf(pageId: string): Promise<NotesState> {
-  return changeSession(pageId, (doc) => {
-    const snapshot = snapshotOf(doc)
-    const meta = docMeta(doc)
-    return notesState(
+  return changeSession(pageId, (doc) =>
+    notesState(
       {
-        summary: snapshot.summary,
-        fingerprint: meta.get(GENERATED_SUMMARY_KEY),
-        run: meta.get(NOTES_RUN_KEY),
+        summary: doc.summary,
+        fingerprint: doc.notesGenerated,
+        run: doc.notesRun,
         // Notes are written on their own for labeled meetings only, so only those miss them.
-        meeting: snapshot.transcript.some((line) => line.cluster !== null)
+        meeting: doc.transcript.some((line) => line.cluster !== null)
       },
       NOTES_PIPELINE
     )
-  })
+  )
 }
 
 /** Every session by where its notes stand; one that can't be read is left out. */
@@ -159,14 +149,13 @@ export function createMeetingNotes(deps: {
       const summary = renderNotes(notes)
       const run: NotesRun = { pipeline: NOTES_PIPELINE, writer: writer.name, at: new Date().toISOString() }
       // Only the summary changes, so edits made elsewhere while the model worked are untouched.
+      // Checked and written in one synchronous edit, so an edit the user made meanwhile is seen.
       const written = await editSession(pageId, (doc) => {
-        const now = { summary: docSummary(doc).toJSON(), fingerprint: docMeta(doc).get(GENERATED_SUMMARY_KEY) }
+        const now = { summary: doc.summary, fingerprint: doc.notesGenerated }
         if (!mayWriteSummary(trigger, now, before.summary)) return false
-        doc.transact(() => {
-          editDoc(doc, { summary }, ORIGIN_NOTES)
-          docMeta(doc).set(GENERATED_SUMMARY_KEY, summaryFingerprint(summary))
-          docMeta(doc).set(NOTES_RUN_KEY, run)
-        }, ORIGIN_NOTES)
+        doc.summary = summary
+        doc.notesGenerated = summaryFingerprint(summary)
+        doc.notesRun = run
         return true
       })
       log('notes', written ? 'generated' : 'kept the summary edited during the run', {

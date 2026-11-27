@@ -2,13 +2,13 @@
 import { app, clipboard, type BrowserWindow } from 'electron'
 import { z } from 'zod'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
-import { appendFile, copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { notesDir } from '../pages'
 import { ChunkedTranscriber } from '../transcriber'
 import {
-  applySessionUpdate,
+  applySessionOps,
   closeSessionFor,
   createSession as createPage,
   deleteSession as deletePage,
@@ -29,32 +29,28 @@ import {
   setAutoTitle,
   sidecarPath
 } from '../sessionStore'
-import * as Y from 'yjs'
 import {
-  ORIGIN_TRANSCRIBER,
-  startTranscriber,
-  transcriberWrite,
+  applyOp,
   editDoc,
-  ORIGIN_USER,
-  readSegment,
-  removeLiveNotes,
+  emptyDoc,
+  invertPatch,
+  patchBetween,
   replaceTranscript,
   appendLiveSegment,
-  liveModeOf,
   joinSplitLines,
-  initDoc,
   mergeSpeakers,
   newSpeakerId,
   removeSpeaker,
   renumberSpeakers,
   setSegmentEdits,
   setSegmentText,
-  snapshotOf,
-  docMeta,
-  docTranscript,
+  copyDoc,
   upsertSpeaker,
-  addTag
+  addTag,
+  type SessionDoc,
+  type SessionOp
 } from '../../shared/sessionDoc'
+import { legacyLog, PLAIN, TORN } from '../legacyYjs.fixtures'
 import {
   correctRange,
   removeRange,
@@ -65,7 +61,6 @@ import {
 import { getSettings, overrideSettings, updateSettings } from '../settings'
 import { assignSpeaker, sessionAudio } from '../meeting/pipeline'
 import { relabelSession } from '../meeting/relabel'
-import { applyLog } from '../sessionLog'
 import { MANIFEST_VERSION } from '../sessionManifest'
 import { wavHeader } from '../wavFile'
 import { defaultTitle, partOfDay } from '../sessionTitle'
@@ -84,7 +79,6 @@ import type { ProviderId } from '../../shared/ai'
 import { parseSettings, type Settings } from '../../shared/settings'
 import { createMeetingNotes } from '../meeting/notes'
 import { activityItem, markSeen } from '../activity'
-import { NOTES_RUN_KEY, NotesRun } from '../meeting/notesJobs'
 import { NOTES_PIPELINE } from '../meeting/notesPipeline'
 import { createFakeNotesWriter, createModelNotesWriter } from '../meeting/notesWriter'
 import { chooseWriter } from '../meeting/writers'
@@ -235,7 +229,7 @@ async function checkNotesWriters(): Promise<void> {
   // The notes service writes what its writer returns into the session.
   const page = await createPage()
   await editSession(page.id, (doc) => {
-    replaceTranscript(doc, [{ id: 'n0', rawId: 'n0', start: 0, end: 2, cluster: null, confidence: null, text: 'We ship Friday.' }], 'seed')
+    replaceTranscript(doc, [{ id: 'n0', rawId: 'n0', start: 0, end: 2, cluster: null, confidence: null, text: 'We ship Friday.' }])
   })
   const service = createMeetingNotes({ writer: () => Promise.resolve(local) })
   await service.generateNotes(page.id)
@@ -243,13 +237,13 @@ async function checkNotesWriters(): Promise<void> {
   if (!summary.includes('Fix the installer') || local.asked.length !== 1) fail(`service summary: ${JSON.stringify(summary)}`)
 
   // Each run records how the notes were made, so notes from an older pipeline can be redone in bulk.
-  const run = NotesRun.safeParse(await changeSession(page.id, (doc) => docMeta(doc).get(NOTES_RUN_KEY)))
-  if (!run.success || run.data.pipeline !== NOTES_PIPELINE || run.data.writer !== local.name) {
-    fail(`notes run record: ${JSON.stringify(run)}`)
+  const run = (await readSession(page.id)).notesRun
+  if (run?.pipeline !== NOTES_PIPELINE || run.writer !== local.name) {
+    return fail(`notes run record: ${JSON.stringify(run)}`)
   }
   const fresh = await service.backfillStatus()
   await changeSession(page.id, (doc) => {
-    docMeta(doc).set(NOTES_RUN_KEY, { ...run.data, pipeline: NOTES_PIPELINE - 1 })
+    doc.notesRun = { ...run, pipeline: NOTES_PIPELINE - 1 }
   })
   const older = await service.backfillStatus()
   if (older.outdated !== fresh.outdated + 1 || older.running) fail(`backfill status: ${JSON.stringify([fresh, older])}`)
@@ -487,43 +481,46 @@ async function checkSessionStore(): Promise<void> {
     fail('an untouched title did not take a suggestion')
   }
   const state = await openSessionFor(page.id, -1)
+  if (state.doc.title !== 'Suggested') fail(`opened the wrong state: ${JSON.stringify(state.doc.title)}`)
 
-  // Two windows edit the same starting state; both edits must survive.
-  const replicas = [new Y.Doc(), new Y.Doc()]
-  for (const replica of replicas) Y.applyUpdate(replica, state)
-  const send = async (replica: Y.Doc, change: () => void): Promise<void> => {
-    const updates: Uint8Array[] = []
-    const collect = (update: Uint8Array): void => {
-      updates.push(update)
-    }
-    replica.on('update', collect)
-    change()
-    replica.off('update', collect)
-    for (const update of updates) await applySessionUpdate(page.id, update, -1)
-  }
-  const [a, b] = replicas
-  if (!a || !b) return fail('replicas')
-  await send(a, () => {
-    editDoc(a, { title: 'Merged', notes: 'first' }, ORIGIN_USER)
+  // Two windows edit at once, each from the state it opened, with Lyra writing between them:
+  // every edit survives, applied by main to what it holds.
+  await applySessionOps(page.id, [{ op: 'title', title: 'Merged' }, { op: 'tag', tag: 'Smoke' }], -1, 1)
+  await changeSession(page.id, (doc) => {
+    appendLiveSegment(
+      doc,
+      { id: 'm0', rawId: null, start: 0, end: 1, cluster: null, confidence: null, text: 'heard meanwhile' },
+      { joinGap: 8, maxLine: 30 }
+    )
   })
-  await send(b, () => {
-    editDoc(b, { notes: 'second' }, ORIGIN_USER)
-  })
+  await applySessionOps(page.id, [{ op: 'notes', notes: 'first then second' }], -2, 1)
+  // A window shows its own edit before main confirms it, so applying one twice changes nothing.
+  const rev = await applySessionOps(page.id, [{ op: 'tag', tag: 'Smoke' }], -1, 2)
   const merged = await getPage(page.id)
-  if (merged.title !== 'Merged' || !merged.body.includes('first') || !merged.body.includes('second')) {
-    fail(`concurrent edits did not merge: ${JSON.stringify(merged)}`)
+  const both = await readSession(page.id)
+  if (
+    merged.title !== 'Merged' ||
+    merged.body !== 'first then second' ||
+    JSON.stringify(both.tags) !== '["smoke"]' ||
+    both.transcript[0]?.text !== 'Heard meanwhile'
+  ) {
+    fail(`concurrent edits did not all land: ${JSON.stringify(both)}`)
   }
+  if (rev !== state.rev + 4) fail(`each change should count once: rev ${String(rev)}`)
   if (await setAutoTitle(page.id, 'Overwritten')) fail('a suggestion replaced the user’s title')
   closeSessionFor(page.id, -1)
 
-  // The log on disk rebuilds the same document.
+  // The document on disk is the same document.
+  await flushAllSessions()
   const fromDisk = await readSessionFromDisk(page.id)
-  if (fromDisk.notes !== merged.body || fromDisk.title !== 'Merged') fail('log did not persist')
+  if (fromDisk.notes !== merged.body || fromDisk.title !== 'Merged' || fromDisk.transcript.length !== 1) {
+    fail('the document did not persist')
+  }
 
   // The export and its metadata follow the document.
   await flushAllSessions()
   const exported = await readFile(join(notesDir(), page.id), 'utf8')
-  if (!exported.startsWith('Merged\n\n') || !exported.endsWith(merged.body)) {
+  if (!exported.startsWith('Merged\n\n') || !exported.includes(merged.body)) {
     fail(`export is wrong: ${JSON.stringify(exported)}`)
   }
   const sidecar: unknown = JSON.parse(await readFile(sidecarPath(page.id), 'utf8'))
@@ -577,21 +574,17 @@ async function checkSearchIndexMirror(): Promise<void> {
         title: 'Index smoke',
         notes: 'Budget review\n\nShip the release notes',
         summary: 'Summary\nWe met.\n\nAction items\n- [ ] Ana: send the deck\n- [x] wrap up'
-      },
-      'main'
-    )
-    addTag(doc, 'Planning', 'main')
-    upsertSpeaker(doc, 'c0', { name: 'Ana', confirmed: true, confidence: 0.91, matches: [{ personId: 'p1', score: 0.91 }] }, 'main')
-    upsertSpeaker(doc, 'c1', { name: 'Speaker 2' }, 'main')
+      })
+    addTag(doc, 'Planning')
+    upsertSpeaker(doc, 'c0', { name: 'Ana', confirmed: true, confidence: 0.91, matches: [{ personId: 'p1', score: 0.91 }] })
+    upsertSpeaker(doc, 'c1', { name: 'Speaker 2' })
     replaceTranscript(
       doc,
       [
         { id: 's1', rawId: 'pass-1-s1', start: 0.25, end: 3.7, cluster: 'c0', confidence: 0.83, text: 'The quarterly budget is ready.' },
         { id: 's2', rawId: null, start: 3.7, end: 6.1, cluster: 'c1', confidence: null, text: 'Great, thanks Ana.' }
-      ],
-      'main'
-    )
-    setSegmentEdits(doc, 's1', [{ kind: 'replace', start: 4, end: 13, text: 'yearly' }, { kind: 'highlight', start: 14, end: 20 }], ORIGIN_USER)
+      ])
+    setSegmentEdits(doc, 's1', [{ kind: 'replace', start: 4, end: 13, text: 'yearly' }, { kind: 'highlight', start: 14, end: 20 }])
   })
   await expectInSync('after an edit')
   const record = await readSessionFromDisk(page.id)
@@ -625,14 +618,12 @@ async function checkSearchQueries(): Promise<void> {
   ): Promise<string> => {
     const page = await createPage({ startedAt })
     await editSession(page.id, (doc) => {
-      editDoc(doc, { title: fields.title, notes: fields.notes }, 'main')
-      addTag(doc, fields.tag, 'main')
-      for (const line of lines) upsertSpeaker(doc, line.cluster, { name: line.name }, 'main')
+      editDoc(doc, { title: fields.title, notes: fields.notes })
+      addTag(doc, fields.tag)
+      for (const line of lines) upsertSpeaker(doc, line.cluster, { name: line.name })
       replaceTranscript(
         doc,
-        lines.map((line, i) => ({ id: `q${String(i)}`, rawId: null, start: i * 5, end: i * 5 + 4, cluster: line.cluster, confidence: null, text: line.text })),
-        'main'
-      )
+        lines.map((line, i) => ({ id: `q${String(i)}`, rawId: null, start: i * 5, end: i * 5 + 4, cluster: line.cluster, confidence: null, text: line.text })))
     })
     return page.id
   }
@@ -697,16 +688,14 @@ async function checkSemanticSearch(): Promise<void> {
   await useTestEmbedder(true)
   const garage = await createPage({ startedAt: '2026-08-01T09:00:00' })
   await editSession(garage.id, (doc) => {
-    editDoc(doc, { title: 'Garage visit', notes: 'The car needs new tires and an oil change before the road trip.' }, 'main')
-    upsertSpeaker(doc, 'c0', { name: 'Ana' }, 'main')
+    editDoc(doc, { title: 'Garage visit', notes: 'The car needs new tires and an oil change before the road trip.' })
+    upsertSpeaker(doc, 'c0', { name: 'Ana' })
     // Four lines over a minute: two windows of at most 45 s, the second repeating the third line.
     replaceTranscript(
       doc,
       [0, 20, 40, 60].map((start, i) => ({
         id: `w${String(i)}`, rawId: null, start, end: start + 4, cluster: 'c0', confidence: null, text: `Line ${String(i)} about the garage.`
-      })),
-      'main'
-    )
+      })))
   })
   const windows = chunksOf(await readSessionFromDisk(garage.id))
     .filter((chunk) => chunk.field === 'transcript')
@@ -839,110 +828,85 @@ async function checkTranscriptModel(): Promise<void> {
   const fail = (message: string): never => {
     throw new Error(`transcript: ${message}`)
   }
-  const doc = new Y.Doc()
-  // The transcriber writes at its own cursor while the user types around it, and the user's
-  // undo never takes transcribed words back.
-  const notesText = (): string => snapshotOf(doc).notes
-  editDoc(doc, { notes: 'Agenda' }, ORIGIN_USER)
-  const undo = new Y.UndoManager(doc.getText('notes'), { trackedOrigins: new Set([ORIGIN_USER]) })
-  startTranscriber(doc, ORIGIN_TRANSCRIBER)
-  transcriberWrite(doc, '\n\nHello', ORIGIN_TRANSCRIBER)
-  editDoc(doc, { notes: `My ${notesText()}` }, ORIGIN_USER)
-  undo.stopCapturing()
-  editDoc(doc, { notes: `${notesText()} typed` }, ORIGIN_USER)
-  transcriberWrite(doc, ' there.', ORIGIN_TRANSCRIBER)
-  if (notesText() !== 'My Agenda\n\nHello there. typed') fail(`transcriber cursor: ${JSON.stringify(notesText())}`)
-  undo.undo()
-  if (notesText() !== 'My Agenda\n\nHello there.') fail(`undo took transcribed text: ${JSON.stringify(notesText())}`)
-  undo.destroy()
-  // Once labeled, untouched transcribed text comes back out; edited text stays.
-  removeLiveNotes(doc, 'pipeline')
-  if (notesText() !== 'My Agenda') fail(`live notes: ${JSON.stringify(notesText())}`)
-  startTranscriber(doc, ORIGIN_TRANSCRIBER)
-  transcriberWrite(doc, ' kept', ORIGIN_TRANSCRIBER)
-  editDoc(doc, { notes: 'My Agenda KEPT' }, ORIGIN_USER)
-  removeLiveNotes(doc, 'pipeline')
-  if (notesText() !== 'My Agenda KEPT') fail('edited live text was removed')
+  const doc = emptyDoc({ title: '', notes: '' })
   replaceTranscript(doc, [
     { id: 'a', rawId: 'a', start: 0, end: 4, cluster: 'c0', confidence: 0.9, text: 'Hello there.' },
     { id: 'b', rawId: 'b', start: 4, end: 8, cluster: 'c1', confidence: 0.4, text: 'Hi.' }
-  ], 'pipeline')
-  setSegmentText(doc, 'b', 'Hi, all.', ORIGIN_USER)
+  ])
+  setSegmentText(doc, 'b', 'Hi, all.')
   replaceTranscript(doc, [
     { id: 'a2', rawId: 'a2', start: 0, end: 4.2, cluster: 'c0', confidence: 0.9, text: 'Hello there.' },
     { id: 'b2', rawId: 'b2', start: 4.1, end: 8, cluster: 'c1', confidence: 0.5, text: 'Hi' }
-  ], 'pipeline')
-  const kept = snapshotOf(doc).transcript.find((segment) => segment.id === 'b2')
+  ])
+  const kept = doc.transcript.find((segment) => segment.id === 'b2')
   // The kept line keeps the raw words its edits were made over, so the overlay still lines up.
   if (kept?.text !== 'Hi, all.' || !kept.edited || kept.original !== 'Hi.') {
     fail(`an edit did not survive a new pass: ${JSON.stringify(kept)}`)
   }
 
   // The transcript is locked: edits overlay the raw line, which never changes, and each
-  // action undoes on its own.
+  // action undoes on its own (as a window's undo does it: the change, put back).
   replaceTranscript(doc, [
     { id: 'o', rawId: 'o', start: 10, end: 14, cluster: 'c0', confidence: 0.9, text: 'So um the cat sat on teh mat.' }
-  ], 'pipeline')
+  ])
   const heard = 'So um the cat sat on teh mat.'
-  const lineEdits = (): TranscriptEdit[] =>
-    snapshotOf(doc).transcript.find((segment) => segment.id === 'o')?.edits ?? []
-  const overlayUndo = new Y.UndoManager(docTranscript(doc), { trackedOrigins: new Set([ORIGIN_USER]), captureTimeout: 60_000 })
+  const lineEdits = (): TranscriptEdit[] => doc.transcript.find((segment) => segment.id === 'o')?.edits ?? []
   const at = (word: string): { start: number; end: number } => {
     const start = heard.indexOf(word)
     return { start, end: start + word.length }
   }
+  const steps: SessionOp[] = []
   const act = (edits: TranscriptEdit[]): void => {
-    overlayUndo.stopCapturing()
-    setSegmentEdits(doc, 'o', edits, ORIGIN_USER)
-    overlayUndo.stopCapturing()
+    const before = copyDoc(doc)
+    applyOp(doc, { op: 'lineEdits', id: 'o', edits })
+    const patch = patchBetween(before, doc)
+    if (patch) steps.push({ op: 'restore', patch: invertPatch(patch) })
+  }
+  const undo = (): void => {
+    const step = steps.pop()
+    if (step) applyOp(doc, step)
   }
   act(removeRange(lineEdits(), at('um')))
   act(correctRange(heard, lineEdits(), at('teh'), 'the'))
   act(toggleHighlight(lineEdits(), at('cat sat')))
-  const overlaid = snapshotOf(doc).transcript.find((segment) => segment.id === 'o')
+  const overlaid = doc.transcript.find((segment) => segment.id === 'o')
   if (overlaid?.text !== 'So the cat sat on the mat.' || overlaid.original !== heard || !overlaid.edited) {
     fail(`overlay: ${JSON.stringify(overlaid)}`)
   }
   if (lineEdits().length !== 3) fail(`overlay edits: ${JSON.stringify(lineEdits())}`)
-  overlayUndo.undo()
-  overlayUndo.undo()
-  const undone = snapshotOf(doc).transcript.find((segment) => segment.id === 'o')
+  undo()
+  undo()
+  const undone = doc.transcript.find((segment) => segment.id === 'o')
   if (undone?.text !== 'So the cat sat on teh mat.' || undone.edits.length !== 1) {
     fail(`overlay undo should go one action at a time: ${JSON.stringify(undone)}`)
   }
   act(restoreRange(lineEdits(), { start: 0, end: heard.length }))
-  if (snapshotOf(doc).transcript.find((segment) => segment.id === 'o')?.text !== heard) {
+  if (doc.transcript.find((segment) => segment.id === 'o')?.text !== heard) {
     fail('restoring a line should bring back what was heard')
   }
-  overlayUndo.destroy()
-  doc.destroy()
 
   // Recorded lines: chunks become lines for their speaker, one line per turn.
-  const live = new Y.Doc()
-  initDoc(live, { title: 'Live', notes: '' }, ORIGIN_USER)
-  startTranscriber(live, ORIGIN_TRANSCRIBER, 'transcript')
-  if (liveModeOf(live) !== 'transcript') fail('a new take should write the transcript')
+  const live: SessionDoc = emptyDoc({ title: 'Live', notes: '' })
   const gaps = { joinGap: 2, maxLine: 30 }
-  appendLiveSegment(live, { id: 'l1', rawId: null, start: 0, end: 1, cluster: 'c0', confidence: 0.9, text: 'morning all' }, gaps, ORIGIN_TRANSCRIBER)
-  appendLiveSegment(live, { id: 'l2', rawId: null, start: 1.5, end: 3, cluster: 'c0', confidence: 0.7, text: 'shall we start?' }, gaps, ORIGIN_TRANSCRIBER)
-  appendLiveSegment(live, { id: 'l3', rawId: null, start: 3.5, end: 5, cluster: 'c1', confidence: null, text: 'yes' }, gaps, ORIGIN_TRANSCRIBER)
-  const liveLines = snapshotOf(live).transcript.map((line) => `${line.cluster ?? '?'}:${line.text}:${String(line.confidence)}`)
+  appendLiveSegment(live, { id: 'l1', rawId: null, start: 0, end: 1, cluster: 'c0', confidence: 0.9, text: 'morning all' }, gaps)
+  appendLiveSegment(live, { id: 'l2', rawId: null, start: 1.5, end: 3, cluster: 'c0', confidence: 0.7, text: 'shall we start?' }, gaps)
+  appendLiveSegment(live, { id: 'l3', rawId: null, start: 3.5, end: 5, cluster: 'c1', confidence: null, text: 'yes' }, gaps)
+  const liveLines = live.transcript.map((line) => `${line.cluster ?? '?'}:${line.text}:${String(line.confidence)}`)
   if (liveLines.join('|') !== 'c0:Morning all shall we start?:0.7|c1:Yes:null') {
     fail(`live lines: ${JSON.stringify(liveLines)}`)
   }
   // A phantom voice merged back: its split lines rejoin and placeholder names close the gap.
-  upsertSpeaker(live, 'c0', { name: 'Speaker 1' }, ORIGIN_TRANSCRIBER)
-  upsertSpeaker(live, 'c1', { name: 'Speaker 2' }, ORIGIN_TRANSCRIBER)
-  upsertSpeaker(live, 'c2', { name: 'Speaker 3' }, ORIGIN_TRANSCRIBER)
-  appendLiveSegment(live, { id: 'l4', rawId: null, start: 5.5, end: 7, cluster: 'c2', confidence: null, text: 'then the plan' }, gaps, ORIGIN_TRANSCRIBER)
-  mergeSpeakers(live, 'c1', 'c0', ORIGIN_TRANSCRIBER)
-  joinSplitLines(live, 30, ORIGIN_TRANSCRIBER)
-  renumberSpeakers(live, ORIGIN_TRANSCRIBER)
-  const rejoined = snapshotOf(live)
+  upsertSpeaker(live, 'c0', { name: 'Speaker 1' })
+  upsertSpeaker(live, 'c1', { name: 'Speaker 2' })
+  upsertSpeaker(live, 'c2', { name: 'Speaker 3' })
+  appendLiveSegment(live, { id: 'l4', rawId: null, start: 5.5, end: 7, cluster: 'c2', confidence: null, text: 'then the plan' }, gaps)
+  mergeSpeakers(live, 'c1', 'c0', false)
+  joinSplitLines(live, 30)
+  renumberSpeakers(live)
+  const rejoined = live
   const mergedLines = rejoined.transcript.map((line) => `${line.cluster ?? '?'}:${line.text}`).join('|')
   if (mergedLines !== 'c0:Morning all shall we start? Yes|c2:Then the plan') fail(`rejoined lines: ${mergedLines}`)
   if (rejoined.speakers.find((speaker) => speaker.id === 'c2')?.name !== 'Speaker 2') fail('placeholders not renumbered')
-  live.destroy()
 
   // A Lyra 0.2 meeting: labeled lines in the note, speakers in .meta, audio in .audio.
   const id = 'legacy-meeting-smoke.txt'
@@ -978,9 +942,8 @@ async function checkTranscriptModel(): Promise<void> {
   if (said?.speaker !== 'Ben' || !said.line) fail(`transcript search missed: ${JSON.stringify(spoken)}`)
   // Editing a line through the document reaches the export.
   await editSession(id, (session) => {
-    const segment = session.getArray<Y.Map<unknown>>('transcript').get(1)
-    const segmentId = readSegment(segment).id
-    setSegmentText(session, segmentId, 'Hi Ana, good morning.', ORIGIN_USER)
+    const segmentId = session.transcript[1]?.id
+    if (segmentId) setSegmentText(session, segmentId, 'Hi Ana, good morning.')
   })
   const exported = await readFile(join(notesDir(), id), 'utf8')
   if (!exported.includes('[00:00:04] Ben: Hi Ana, good morning.') || !exported.startsWith('Weekly sync')) {
@@ -998,8 +961,9 @@ async function checkTranscriptModel(): Promise<void> {
 
 /**
  * A session folder damaged on disk opens with what is readable, keeps the damaged file beside it,
- * and goes on saving: an unreadable manifest, a torn log, an empty log, and a manifest from a
- * newer Lyra. Each case is a copy of one good session under a new id, never loaded before.
+ * and goes on saving: an unreadable manifest, an unreadable document, a manifest from a newer
+ * Lyra; and an older session (a Yjs log), whole or torn, is migrated. Each case is a copy of
+ * one good session under a new id, never loaded before.
  */
 async function checkSessionRecovery(): Promise<void> {
   const fail = (message: string): never => {
@@ -1007,9 +971,9 @@ async function checkSessionRecovery(): Promise<void> {
   }
   const source = await createPage()
   await editSession(source.id, (doc) => {
-    editDoc(doc, { title: 'Recovery source', notes: 'Recovery notes' }, 'main')
-    upsertSpeaker(doc, 'c0', { name: 'Ana', personId: null, confirmed: true, confidence: null, matches: [] }, 'main')
-    replaceTranscript(doc, [{ id: 'r0', rawId: null, start: 0, end: 2, cluster: 'c0', confidence: null, text: 'Recovered line.' }], 'main')
+    editDoc(doc, { title: 'Recovery source', notes: 'Recovery notes' })
+    upsertSpeaker(doc, 'c0', { name: 'Ana', personId: null, confirmed: true, confidence: null, matches: [] })
+    replaceTranscript(doc, [{ id: 'r0', rawId: null, start: 0, end: 2, cluster: 'c0', confidence: null, text: 'Recovered line.' }])
   })
   await flushAllSessions()
   const sessions = join(notesDir(), '.sessions')
@@ -1018,7 +982,7 @@ async function checkSessionRecovery(): Promise<void> {
     const id = `recovery-${name}-smoke.txt`
     ids.push(id)
     await mkdir(join(sessions, id), { recursive: true })
-    for (const file of ['doc.yjs', 'session.json']) await copyFile(join(sessions, source.id, file), join(sessions, id, file))
+    for (const file of ['doc.json', 'session.json']) await copyFile(join(sessions, source.id, file), join(sessions, id, file))
     // The note last: the folder watcher lists a note as soon as it appears, and one without its
     // session folder yet would be taken for a plain note and given a new document.
     await copyFile(join(notesDir(), source.id), join(notesDir(), id))
@@ -1039,36 +1003,54 @@ async function checkSessionRecovery(): Promise<void> {
   await intact(manifest, 'unreadable session.json')
   if (!(await setAside(manifest, 'session.json'))) fail('the unreadable session.json was not kept aside')
 
-  const torn = await clone('torn')
-  // A frame header promising 64 bytes, then a crash after three of them.
-  await appendFile(fileIn(torn, 'doc.yjs'), Buffer.from([64, 0, 0, 0, 1, 2, 3]))
-  await intact(torn, 'torn doc.yjs')
-  if (!(await setAside(torn, 'doc.yjs'))) fail('the torn doc.yjs was not kept aside')
-  await editSession(torn, (doc) => {
-    editDoc(doc, { notes: 'Recovery notes, then more' }, 'main')
-  })
-  // Read from the log on disk: an edit appended after the torn bytes would be lost on reload.
-  const reloaded = await readSessionFromDisk(torn)
-  if (reloaded.notes !== 'Recovery notes, then more' || reloaded.transcript[0]?.text !== 'Recovered line.') {
-    fail(`an edit after a torn log did not survive a reload: ${JSON.stringify(reloaded.notes)}`)
+  const corrupt = await clone('corrupt')
+  await writeFile(fileIn(corrupt, 'doc.json'), '{"version": 1, "title": "Recov', 'utf8')
+  const rebuilt = await readSession(corrupt)
+  if (rebuilt.title !== 'Recovery source' || !rebuilt.notes.includes('Recovery notes')) {
+    fail(`an unreadable doc.json was not rebuilt from the export: ${JSON.stringify(rebuilt.title)}`)
+  }
+  if (!(await setAside(corrupt, 'doc.json')) || !existsSync(fileIn(corrupt, 'doc.json'))) {
+    fail('the unreadable doc.json was not set aside and rewritten')
   }
 
-  const empty = await clone('empty')
-  await writeFile(fileIn(empty, 'doc.yjs'), '')
-  const rebuilt = await readSession(empty)
-  if (rebuilt.title !== 'Recovery source' || !rebuilt.notes.includes('Recovery notes')) {
-    fail(`an empty doc.yjs was not rebuilt from the export: ${JSON.stringify(rebuilt.title)}`)
+  // Lyra 0.6 and earlier kept the document as a Yjs log: read, saved as doc.json, kept renamed.
+  const legacy = await clone('legacy')
+  await rm(fileIn(legacy, 'doc.json'))
+  await writeFile(fileIn(legacy, 'doc.yjs'), legacyLog(PLAIN))
+  const old = await readSession(legacy)
+  const line = old.transcript[0]
+  if (
+    old.title !== 'Design review' ||
+    old.notes !== 'Hello world' ||
+    old.speakers[0]?.name !== 'Sam' ||
+    line?.text !== 'Hi, there' ||
+    JSON.stringify(old.tags) !== '["design"]'
+  ) {
+    fail(`an older session came back wrong: ${JSON.stringify(old)}`)
   }
-  if (!(await setAside(empty, 'doc.yjs')) || (await stat(fileIn(empty, 'doc.yjs'))).size === 0) {
-    fail('the empty doc.yjs was not set aside and rewritten')
+  if (existsSync(fileIn(legacy, 'doc.yjs')) || !existsSync(fileIn(legacy, 'doc.yjs.migrated'))) {
+    fail('the Yjs log was not kept as doc.yjs.migrated')
   }
+  if ((await readSessionFromDisk(legacy)).title !== 'Design review') fail('the migrated document was not saved')
+  await editSession(legacy, (doc) => {
+    editDoc(doc, { notes: 'Hello world, again' })
+  })
+  await flushAllSessions()
+  if ((await readSessionFromDisk(legacy)).notes !== 'Hello world, again') fail('a migrated session did not save')
+
+  // A log cut short by a crash keeps what came before, and a copy of itself.
+  const torn = await clone('torn')
+  await rm(fileIn(torn, 'doc.json'))
+  await writeFile(fileIn(torn, 'doc.yjs'), legacyLog(TORN))
+  if ((await readSession(torn)).notes !== 'Kept') fail('a torn Yjs log lost what was readable')
+  if (!(await setAside(torn, 'doc.yjs'))) fail('the torn doc.yjs was not kept aside')
 
   const newer = await clone('newer')
   const raw = z.record(z.string(), z.unknown()).parse(JSON.parse(await readFile(fileIn(newer, 'session.json'), 'utf8')))
   await writeFile(fileIn(newer, 'session.json'), JSON.stringify({ ...raw, version: MANIFEST_VERSION + 1, smokeFuture: 'kept' }))
   await intact(newer, 'newer session.json')
   await editSession(newer, (doc) => {
-    editDoc(doc, { notes: 'Recovery notes, edited by an older Lyra' }, 'main')
+    editDoc(doc, { notes: 'Recovery notes, edited by an older Lyra' })
   })
   await flushAllSessions()
   const written = z
@@ -1082,6 +1064,7 @@ async function checkSessionRecovery(): Promise<void> {
   for (const id of [...ids, source.id]) await deletePage(id)
 }
 
+
 /** A removed speaker's id isn't handed out again, also once the document is read back from disk. */
 async function checkSpeakerIds(): Promise<void> {
   const fail = (message: string): never => {
@@ -1090,17 +1073,15 @@ async function checkSpeakerIds(): Promise<void> {
   const page = await createPage()
   const ids = await editSession(page.id, (doc) => {
     const first = newSpeakerId(doc)
-    upsertSpeaker(doc, first, { name: 'Speaker 1' }, 'main')
+    upsertSpeaker(doc, first, { name: 'Speaker 1' })
     const removed = newSpeakerId(doc)
-    upsertSpeaker(doc, removed, { name: 'Speaker 2' }, 'main')
-    removeSpeaker(doc, removed, 'main')
+    upsertSpeaker(doc, removed, { name: 'Speaker 2' })
+    removeSpeaker(doc, removed)
     return { first, removed, next: newSpeakerId(doc) }
   })
   if (ids.next === ids.removed || ids.next === ids.first) fail(`reused an id: ${JSON.stringify(ids)}`)
-  const disk = new Y.Doc()
-  applyLog(disk, await readFile(join(notesDir(), '.sessions', page.id, 'doc.yjs')), 'smoke')
-  const fromDisk = newSpeakerId(disk)
-  disk.destroy()
+  await flushAllSessions()
+  const fromDisk = newSpeakerId(await readSessionFromDisk(page.id))
   if (fromDisk !== ids.next) fail(`after a reload the next id is ${fromDisk}, not ${ids.next}`)
   await deletePage(page.id)
 }
@@ -1232,7 +1213,7 @@ async function checkSearchIndexRecovery(): Promise<void> {
   await stopSearchIndex()
   const page = await createPage()
   await editSession(page.id, (doc) => {
-    editDoc(doc, { title: 'Index recovery', notes: 'quillwort after the rebuild' }, 'main')
+    editDoc(doc, { title: 'Index recovery', notes: 'quillwort after the rebuild' })
   })
   const found = (await searchSessions('quillwort')).some((hit) => hit.id === page.id)
   if (!found) fail('search did not answer after the index was damaged')
@@ -1278,17 +1259,17 @@ async function checkSessionSwitch(win: BrowserWindow): Promise<void> {
   const ids = JSON.stringify({ a: a.id, b: b.id })
   await win.webContents.executeJavaScript(`(async () => {
     const { a, b } = ${ids}
-    window.__smokeSwitch = { seen: [], stop: window.api.onSessionUpdate((change) => { window.__smokeSwitch.seen.push(change.id) }) }
+    window.__smokeSwitch = { seen: [], stop: window.api.onSessionChange((change) => { window.__smokeSwitch.seen.push(change.id) }) }
     await Promise.all([window.api.openSession(a), window.api.openSession(b)])
     window.api.closeSession(a)
     // A round trip after the close, so main has handled it before the edits below.
     await window.api.getSettings()
   })()`)
   await editSession(a.id, (doc) => {
-    editDoc(doc, { notes: 'switched away' }, 'main')
+    editDoc(doc, { notes: 'switched away' })
   })
   await editSession(b.id, (doc) => {
-    editDoc(doc, { notes: 'switched to' }, 'main')
+    editDoc(doc, { notes: 'switched to' })
   })
   const seen: unknown = await win.webContents.executeJavaScript(`(async () => {
     const { b } = ${ids}
@@ -1301,6 +1282,70 @@ async function checkSessionSwitch(win: BrowserWindow): Promise<void> {
   if (!updates.includes(b.id)) fail('the session opened last got no updates')
   if (updates.includes(a.id)) fail('a closed session still sent updates to the window')
   for (const id of [a.id, b.id]) await deletePage(id)
+}
+
+/**
+ * A window's edits through the bridge: applied by main and confirmed back (`ack`), a line Lyra
+ * writes meanwhile reaching the window as a change, and an edit main doesn't know refused.
+ */
+async function checkSessionEdits(win: BrowserWindow): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`session edits: ${message}`)
+  }
+  const page = await createPage()
+  const id = JSON.stringify(page.id)
+  await win.webContents.executeJavaScript(`(async () => {
+    const id = ${id}
+    window.__smokeEdits = { changes: [], stop: window.api.onSessionChange((change) => { if (change.id === id) window.__smokeEdits.changes.push(change) }) }
+    window.__smokeEdits.opened = await window.api.openSession(id)
+    window.__smokeEdits.rev = await window.api.editSession(id, 1, [
+      { op: 'title', title: 'Edited in a window' },
+      { op: 'tag', tag: '#Window Smoke' }
+    ])
+  })()`)
+  await changeSession(page.id, (doc) => {
+    appendLiveSegment(
+      doc,
+      { id: 'w0', rawId: null, start: 0, end: 1, cluster: null, confidence: null, text: 'a live line' },
+      { joinGap: 8, maxLine: 30 }
+    )
+  })
+  const result: unknown = await win.webContents.executeJavaScript(`(async () => {
+    const id = ${id}
+    const state = window.__smokeEdits
+    for (let i = 0; i < 50 && state.changes.length < 2; i++) await new Promise((done) => setTimeout(done, 20))
+    let refused = ''
+    await window.api.editSession(id, 2, [{ op: 'wipe' }]).catch((error) => { refused = String(error) })
+    state.stop()
+    window.api.closeSession(id)
+    return { opened: state.opened.rev, rev: state.rev, changes: state.changes, refused }
+  })()`)
+  const seen = z
+    .object({
+      opened: z.number(),
+      rev: z.number(),
+      refused: z.string(),
+      changes: z.array(
+        z.object({ rev: z.number(), ack: z.number().nullable(), changes: z.record(z.string(), z.unknown()) })
+      )
+    })
+    .parse(result)
+  const [own, live] = seen.changes
+  if (!own) return fail(`no change reached the window: ${JSON.stringify(seen)}`)
+  if (own.ack !== 1 || own.rev !== seen.rev || own.rev !== seen.opened + 1) {
+    fail(`the window's edit was not confirmed: ${JSON.stringify(seen)}`)
+  }
+  if (own.changes.title !== 'Edited in a window' || JSON.stringify(own.changes.tags) !== '["window-smoke"]') {
+    fail(`the edit's change: ${JSON.stringify(own.changes)}`)
+  }
+  const lines = z.array(z.object({ text: z.string() })).safeParse(live?.changes.transcript)
+  if (live?.ack !== null || live.rev !== own.rev + 1 || lines.data?.[0]?.text !== 'A live line') {
+    fail(`a live line did not reach the window: ${JSON.stringify(live)}`)
+  }
+  if ('notes' in own.changes || 'transcript' in own.changes) fail('a change carried fields it did not change')
+  if (!seen.refused) fail('an unknown edit was accepted')
+  if ((await readSession(page.id)).title !== 'Edited in a window') fail('the edit did not land in main')
+  await deletePage(page.id)
 }
 
 /** Copy buttons: the sandboxed preload has no clipboard module, so text goes through main. */
@@ -1337,6 +1382,7 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
     await checkCopy(win)
     await checkRecordingManifest(win)
     await checkSessionSwitch(win)
+    await checkSessionEdits(win)
     const result: unknown = await win.webContents.executeJavaScript(`
       (async () => {
         const fail = (message) => { throw new Error(message) }
@@ -1395,9 +1441,9 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
 
         const session = await window.api.createPage()
         const state = await window.api.openSession(session.id)
-        if (!(state instanceof Uint8Array) || state.byteLength === 0) fail('openSession returned no state')
-        const badUpdate = await window.api.updateSession(session.id, 'not an update').then(() => false, () => true)
-        if (!badUpdate) fail('updateSession accepted a non-binary update')
+        if (typeof state.rev !== 'number' || state.doc.title !== session.title) fail('openSession returned no state')
+        const badEdit = await window.api.editSession(session.id, 1, 'not an edit').then(() => false, () => true)
+        if (!badEdit) fail('editSession accepted something that is not a list of edits')
         window.api.closeSession(session.id)
         await window.api.deletePage(session.id)
         if ((await window.api.listPages()).some((page) => page.id === session.id)) fail('deleted session still listed')

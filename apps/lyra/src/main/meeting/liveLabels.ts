@@ -1,4 +1,4 @@
-import { snapshotOf } from '../../shared/sessionDoc'
+import { copyDoc } from '../../shared/sessionDoc'
 import type { AudioTrack } from '../../shared/types'
 import { log } from '../log'
 import { identifiesSpeakers, onLiveChunk, recordingPageId, type LiveTake } from '../recorder'
@@ -92,7 +92,8 @@ async function label(take: LiveTake): Promise<void> {
 
   const written = await writer.rewrite((doc, own: readonly TakeWord[]) => {
     if (recordingPageId() !== pageId) return null
-    const { transcript, speakers: known } = snapshotOf(doc)
+    // A copy: the lines and speakers as they were before this round writes over them.
+    const { transcript, speakers: known } = copyDoc(doc)
     const words: HeardWord[] = [...earlier, ...own]
     const moved = movedLines(transcript, origins)
     const pins = pinnedSpeakers(words, moved)
@@ -120,7 +121,7 @@ async function label(take: LiveTake): Promise<void> {
       raw: false
     })
     // Labels a reader already saw that this round took back: the cost of labeling early.
-    const { changed } = changedLabels(transcript, snapshotOf(doc).transcript)
+    const { changed } = changedLabels(transcript, doc.transcript)
     return {
       words: words.length,
       waiting: speakers.filter((speaker) => speaker < 0).length,

@@ -19,32 +19,30 @@ async function seedScreenshotMeeting(): Promise<string> {
   const sam = await addPerson('Sam', [0.1, 0.2, 0.3], false)
   const alex = await addPerson('Alex', [0.3, 0.2, 0.1], false)
   await editSession(meeting.id, (doc) => {
-    doc.transact(() => {
-      addTag(doc, 'design', 'seed')
-      addTag(doc, 'team', 'seed')
-      editDoc(doc, {
-        title: 'Design review',
-        summary:
-          'Summary\nAgreed to ship the dock redesign first, then settings.\n\nAction items\n- [ ] Dana: port tokens into styles.css\n- [ ] Sam: check contrast in dark mode'
-      }, 'seed')
-      upsertSpeaker(doc, 'c0', { name: 'Dana', personId: null, confirmed: true, confidence: 0.96, matches: [] }, 'seed')
-      upsertSpeaker(doc, 'c1', {
-        name: 'Sam',
-        personId: sam.id,
-        confirmed: false,
-        confidence: 0.71,
-        matches: [{ personId: sam.id, score: 0.71 }, { personId: alex.id, score: 0.38 }]
-      }, 'seed')
-      upsertSpeaker(doc, 'c2', { name: 'Speaker 3', personId: null, confirmed: false, confidence: null, matches: [] }, 'seed')
-      replaceTranscript(doc, [
-        { id: 's0', rawId: 's0', start: 2, end: 7, cluster: 'c0', confidence: 0.97, text: 'I think the dock is the thing people see first, so let’s start there.' },
-        { id: 's1', rawId: 's1', start: 9, end: 14, cluster: 'c1', confidence: 0.81, text: 'Agreed. I can check the contrast numbers in dark mode this afternoon.' },
-        { id: 's2', rawId: 's2', start: 15, end: 21, cluster: 'c2', confidence: null, text: 'Does the meeting button need its own shortcut in the dock, or is the hotkey enough?' },
-        { id: 's3', rawId: 's3', start: 22, end: 27, cluster: 'c0', confidence: 0.95, text: 'Show the shortcut on hover. One primary action, one secondary.' },
-        { id: 's4', rawId: 's4', start: 31, end: 38, cluster: 'c1', confidence: 0.52, text: 'From the support side, people mostly ask where their recordings went.' },
-        { id: 's5', rawId: 's5', start: 40, end: 45, cluster: 'c1', confidence: 0.78, text: 'Then the folder chip on first run should help with that.' }
-      ], 'seed')
-    }, 'seed')
+    addTag(doc, 'design')
+    addTag(doc, 'team')
+    editDoc(doc, {
+      title: 'Design review',
+      summary:
+        'Summary\nAgreed to ship the dock redesign first, then settings.\n\nAction items\n- [ ] Dana: port tokens into styles.css\n- [ ] Sam: check contrast in dark mode'
+    })
+    upsertSpeaker(doc, 'c0', { name: 'Dana', personId: null, confirmed: true, confidence: 0.96, matches: [] })
+    upsertSpeaker(doc, 'c1', {
+      name: 'Sam',
+      personId: sam.id,
+      confirmed: false,
+      confidence: 0.71,
+      matches: [{ personId: sam.id, score: 0.71 }, { personId: alex.id, score: 0.38 }]
+    })
+    upsertSpeaker(doc, 'c2', { name: 'Speaker 3', personId: null, confirmed: false, confidence: null, matches: [] })
+    replaceTranscript(doc, [
+      { id: 's0', rawId: 's0', start: 2, end: 7, cluster: 'c0', confidence: 0.97, text: 'I think the dock is the thing people see first, so let’s start there.' },
+      { id: 's1', rawId: 's1', start: 9, end: 14, cluster: 'c1', confidence: 0.81, text: 'Agreed. I can check the contrast numbers in dark mode this afternoon.' },
+      { id: 's2', rawId: 's2', start: 15, end: 21, cluster: 'c2', confidence: null, text: 'Does the meeting button need its own shortcut in the dock, or is the hotkey enough?' },
+      { id: 's3', rawId: 's3', start: 22, end: 27, cluster: 'c0', confidence: 0.95, text: 'Show the shortcut on hover. One primary action, one secondary.' },
+      { id: 's4', rawId: 's4', start: 31, end: 38, cluster: 'c1', confidence: 0.52, text: 'From the support side, people mostly ask where their recordings went.' },
+      { id: 's5', rawId: 's5', start: 40, end: 45, cluster: 'c1', confidence: 0.78, text: 'Then the folder chip on first run should help with that.' }
+    ])
   })
   return meeting.id
 }

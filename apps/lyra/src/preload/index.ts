@@ -9,8 +9,8 @@ import type {
   Person,
   Page,
   SessionCommand,
+  SessionChangeEvent,
   SessionState,
-  SessionUpdate,
   RecorderFailure,
   TranscriptProgress,
   Settings,
@@ -44,11 +44,11 @@ const api: VoicePagesApi = {
       callback()
     }),
   openSession: (id) => ipcRenderer.invoke('sessions:open', id),
-  updateSession: (id, update) => ipcRenderer.invoke('sessions:update', id, update),
+  editSession: (id, seq, ops) => ipcRenderer.invoke('sessions:edit', id, seq, ops),
   closeSession: (id) => {
     ipcRenderer.send('sessions:close', id)
   },
-  onSessionUpdate: (callback) => subscribe<SessionUpdate>('sessions:update', callback),
+  onSessionChange: (callback) => subscribe<SessionChangeEvent>('sessions:changed', callback),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   updateSettings: (patch) => ipcRenderer.invoke('settings:update', patch),
   onSettingsChanged: (callback) => subscribe<Settings>('settings:changed', callback),

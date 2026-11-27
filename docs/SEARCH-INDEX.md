@@ -8,8 +8,8 @@ semantic search, and later for "Ask your notes".
 
 ## Decisions
 
-- **The database is an index, not the source of truth.** Notes stay plain files, the Yjs
-  document (`doc.yjs`) stays the authority for a session, and `voices.json` for people (see
+- **The database is an index, not the source of truth.** Notes stay plain files, the session
+  document (`doc.json`) stays the authority for a session, and `voices.json` for people (see
   [SESSION-MODEL.md](SESSION-MODEL.md)). Every row can be rebuilt from files, so deleting
   the database loses nothing. This keeps the local-first contract: the notes folder is still
   something you can open, grep and sync.
@@ -57,7 +57,7 @@ Sources, from the persistence inventory:
 | Source | Where | Indexed as |
 | --- | --- | --- |
 | Manifest (`session.json`, `Manifest` in `sessionStore.ts`) | `.sessions/<id>/` | `sessions`, `tracks`, `passes` |
-| Yjs document (`sessionDoc.ts`): title, notes, summary, tags, speakers, transcript segments and their edits | `.sessions/<id>/doc.yjs` | `sessions`, `tags`, `speakers`, `speaker_matches`, `segments`, `segment_edits`, `passages`, `chunks` |
+| Session document (`sessionDoc.ts`): title, notes, summary, tags, speakers, transcript segments and their edits | `.sessions/<id>/doc.json` | `sessions`, `tags`, `speakers`, `speaker_matches`, `segments`, `segment_edits`, `passages`, `chunks` |
 | Summary text (rendered `MeetingNotes`) | in the doc | `action_items`, parsed from `- [ ] Owner: task` lines (structured notes aren't stored; see Phase 4) |
 | People (`voices.json`, `StoredPerson`) | `userData` | `people`, `voiceprints` |
 | Raw passes (`raw/*.json`): words, clusters, live trace | `.sessions/<id>/raw/` | Not indexed. Word timings stay in the JSON; the trace is for debugging |
@@ -137,9 +137,9 @@ The live transcriber updates the document many times a second; the per-id deboun
 export debounce keep that from reindexing on every word. A `saved` event queues how to build the
 record, not the record: chunking and hashing run once, when the debounced write fires. The
 startup reconcile handles one session per turn of the event loop (`setImmediate`) so a rebuild
-of thousands of sessions doesn't hold up recording IPC; decoding each `doc.yjs` still happens on
-the main thread. Moving that decode into the worker is the end state, but the worker would then
-need the session store's file layout and frame reader, which import Electron; not done yet.
+of thousands of sessions doesn't hold up recording IPC; reading each `doc.json` still happens on
+the main thread. Moving that read into the worker is the end state, but the worker would then
+need the session store's file layout, which imports Electron; not done yet.
 
 **Failures.** A session write that fails is queued again (three tries, 2 s apart and growing)
 unless a newer change replaced it. A failed open, or a worker that exits without being asked,

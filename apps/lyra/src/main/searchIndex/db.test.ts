@@ -222,7 +222,10 @@ describe('chunksOf', () => {
     notes: [paragraph('one'), paragraph('two'), paragraph('three')].join('\n\n'),
     tags: [],
     speakers: [],
-    transcript: []
+    transcript: [],
+    speakerSeq: 0,
+    notesGenerated: null,
+    notesRun: null
   })
 
   it('leads only the first chunk with the title, so a rename re-embeds one chunk', () => {

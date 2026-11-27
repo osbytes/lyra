@@ -1,6 +1,7 @@
 import type { Settings } from './settings'
 import type { KeySource, ProviderId } from './ai'
 import type { ActivityAction, ActivityItem } from './activity'
+import type { SessionChanges, SessionDoc, SessionOp } from './sessionDoc'
 
 export type Page = {
   id: string
@@ -303,11 +304,18 @@ export type ModelStatus = { feature: ModelFeature; model: string } & (
   | { state: 'error'; message: string }
 )
 
-/** A Yjs update to an open session, made outside this window. */
 /** Who a speaker turned out to be (`resolveSpeaker`). */
 export type SpeakerIdentity = { name: string; personId: string | null }
 
-export type SessionUpdate = { id: string; update: Uint8Array }
+/** An open session as main holds it: its document, and how many changes it has had. */
+export type SessionOpened = { rev: number; doc: SessionDoc }
+
+/**
+ * A change to an open session, from anyone (this window included): the fields that changed,
+ * whole. `rev` counts changes, one at a time, so a window can tell it missed one. `ack` is set
+ * for the window whose edits these were: the `seq` of its last edit main has applied.
+ */
+export type SessionChangeEvent = { id: string; rev: number; changes: SessionChanges; ack: number | null }
 
 export type VoicePagesApi = {
   listPages: () => Promise<PageSummary[]>
@@ -326,15 +334,19 @@ export type VoicePagesApi = {
   /** Fires when the list of pages, or a page's title or preview, may have changed. */
   onPagesChanged: (callback: () => void) => () => void
   /**
-   * Opens a session's Yjs document for this window: resolves to its full state as one update,
-   * and `onSessionUpdate` then delivers changes made elsewhere. See docs/SESSION-MODEL.md.
+   * Opens a session for this window: resolves to its document, and `onSessionChange` then
+   * delivers every change to it. See docs/SESSION-MODEL.md.
    */
-  openSession: (id: string) => Promise<Uint8Array>
-  /** Sends a Yjs update made in this window; resolves once main has persisted it. */
-  updateSession: (id: string, update: Uint8Array) => Promise<void>
-  /** Stops receiving updates for a session this window no longer shows. */
+  openSession: (id: string) => Promise<SessionOpened>
+  /**
+   * Sends this window's edits to a session, applied in order as one change. `seq` numbers the
+   * window's edits; the change event that carries them echoes it back as `ack`. Resolves to
+   * that change's `rev`.
+   */
+  editSession: (id: string, seq: number, ops: SessionOp[]) => Promise<number>
+  /** Stops receiving changes for a session this window no longer shows. */
   closeSession: (id: string) => void
-  onSessionUpdate: (callback: (change: SessionUpdate) => void) => () => void
+  onSessionChange: (callback: (change: SessionChangeEvent) => void) => () => void
   getSettings: () => Promise<Settings>
   /**
    * Main window only. Applies the fields that pass their checks (a bad value keeps the current

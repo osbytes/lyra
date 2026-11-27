@@ -12,10 +12,10 @@ describe('atomic writes', () => {
     const path = join(root, 'note.txt')
     writeFileSync(path, 'old')
     await writeFileAtomic(path, 'new')
-    writeFileAtomicSync(join(root, 'doc.yjs'), new Uint8Array([1, 2, 3]))
+    writeFileAtomicSync(join(root, 'doc.json'), new Uint8Array([1, 2, 3]))
     expect(readFileSync(path, 'utf8')).toBe('new')
-    expect([...readFileSync(join(root, 'doc.yjs'))]).toEqual([1, 2, 3])
-    expect(readdirSync(root).sort()).toEqual(['doc.yjs', 'note.txt'])
+    expect([...readFileSync(join(root, 'doc.json'))]).toEqual([1, 2, 3])
+    expect(readdirSync(root).sort()).toEqual(['doc.json', 'note.txt'])
   })
 
   it('never interleaves overlapping writes of one file', async () => {

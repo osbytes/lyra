@@ -1,18 +1,10 @@
 import { app, shell, webContents } from 'electron'
 import { createHash } from 'node:crypto'
-import {
-  appendFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  statSync,
-  writeFileSync
-} from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { copyFile, mkdir, readdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { extname, join } from 'node:path'
-import * as Y from 'yjs'
 import { asideStamp, writeFileAtomic, writeFileAtomicSync } from './atomicFile'
-import { applyLog, frame } from './sessionLog'
+import { legacySessionDoc, readLegacyLog } from './legacyYjs'
 import {
   manifestForDisk,
   MANIFEST_VERSION,
@@ -24,17 +16,21 @@ import {
 import { passesOnDisk, tracksOnDisk } from './sessionRecovery'
 import type { Page, PageSummary } from '../shared/types'
 import {
-  asUpdate,
+  applyOp,
+  changedFields,
+  copyDoc,
   editDoc,
-  initDoc,
+  emptyDoc,
   replaceTranscript,
   restoreMissingSpeakers,
-  docTitle,
-  snapshotOf,
+  SessionDoc,
   upsertSpeaker,
   type NewSegment,
+  type SessionChanges,
+  type SessionOp,
   type SessionSnapshot
 } from '../shared/sessionDoc'
+import type { SessionChangeEvent, SessionOpened } from '../shared/types'
 import { splitNotes, TRANSCRIPT_DIVIDER as TRANSCRIPT_HEADING } from './meeting/notesFormat'
 import { log } from './log'
 import {
@@ -52,31 +48,30 @@ import { defaultTitle } from './sessionTitle'
 import { getSettings } from './settings'
 
 /**
- * Sessions: one Yjs document per note, persisted as an append-only update log, with the
- * note file and a `.lyra.json` metadata file written from it as an export. See
- * docs/SESSION-MODEL.md.
+ * Sessions: one document per note, owned here as plain data and saved as JSON, with the note
+ * file and a `.lyra.json` metadata file written from it as an export. Windows send edits as
+ * `SessionOp`s and are sent what changed. See docs/SESSION-MODEL.md.
  *
  *   <notes>/<id>                         export (the .txt/.md the user sees)
  *   <notes>/<stem>.lyra.json             export metadata
  *   <notes>/.sessions/<id>/session.json  manifest
- *   <notes>/.sessions/<id>/doc.yjs       document update log
+ *   <notes>/.sessions/<id>/doc.json      the document
+ *   <notes>/.sessions/<id>/doc.yjs       the document as Lyra 0.6 and earlier kept it (Yjs),
+ *                                        read once and renamed to doc.yjs.migrated
  */
 
 const SIDECAR_SCHEMA = 'lyra.session/1'
 const EXPORT_DELAY_MS = 300
-/** Rewrite the log as one merged update once it holds this many. */
-const COMPACT_AFTER = 400
+/**
+ * Typing changes the document many times a second: it's saved once changes pause this long,
+ * and at least this often while they don't.
+ */
+const SAVE_DELAY_MS = 250
+const SAVE_MAX_WAIT_MS = 1000
+const DOC_VERSION = 1
 /** Keep an idle document in memory this long, so switching back is instant. */
 const UNLOAD_AFTER_MS = 30_000
-const ORIGIN_LOAD = 'load'
-const ORIGIN_MAIN = 'main'
-const ORIGIN_AUTO_TITLE = 'auto-title'
 const PREVIEW_CHARS = 72
-/**
- * The largest update a window may send in one go. Typing and pasting produce kilobytes; this
- * only stops a runaway or hostile renderer from making main allocate without bound.
- */
-const MAX_WINDOW_UPDATE_BYTES = 32 * 1024 * 1024
 
 type Entry = {
   id: string
@@ -85,7 +80,12 @@ type Entry = {
    * pending export never lands in a new folder after Settings switches it.
    */
   root: string
-  doc: Y.Doc
+  /** The committed document. Never changed in place: a change commits a new one. */
+  doc: SessionDoc
+  /** `doc.json` as read, so fields from a newer Lyra survive a rewrite. */
+  docRaw: Record<string, unknown> | undefined
+  /** Counts commits, so a window can tell it missed one. */
+  rev: number
   manifest: Manifest
   /** `session.json` as read, so fields from a newer Lyra survive a rewrite. */
   manifestRaw: Record<string, unknown> | undefined
@@ -93,11 +93,15 @@ type Entry = {
   generation: number
   /** Dropped from `open` by `closeAllSessions` while still in use; unload once released. */
   closed: boolean
-  frames: number
   refs: number
   /** webContents ids that hold a replica and want updates. */
   subscribers: Set<number>
   exportTimer: ReturnType<typeof setTimeout> | null
+  saveTimer: ReturnType<typeof setTimeout> | null
+  /** When the oldest change not yet saved was made; null when everything is saved. */
+  unsavedSince: number | null
+  /** The save being written; saves run one after another, so the newest lands last. */
+  saving: Promise<void>
   unloadTimer: ReturnType<typeof setTimeout> | null
   exporting: Promise<void>
 }
@@ -127,7 +131,8 @@ function notePathIn(root: string, id: string): string {
 
 const sessionDir = (id: string): string => sessionDirIn(notesDir(), id)
 const manifestPathIn = (root: string, id: string): string => join(sessionDirIn(root, id), 'session.json')
-const docPathIn = (root: string, id: string): string => join(sessionDirIn(root, id), 'doc.yjs')
+const docPathIn = (root: string, id: string): string => join(sessionDirIn(root, id), 'doc.json')
+const legacyLogPathIn = (root: string, id: string): string => join(sessionDirIn(root, id), 'doc.yjs')
 export const sessionAudioDir = (id: string): string => join(sessionDir(id), 'audio')
 export const sessionRawDir = (id: string): string => join(sessionDir(id), 'raw')
 
@@ -250,11 +255,73 @@ async function setAside(path: string, how: 'move' | 'copy'): Promise<string> {
   return aside
 }
 
-// --- Update log -------------------------------------------------------------
+// --- Document file -------------------------------------------------------------
 
-function compact(entry: Entry): void {
-  writeFileAtomicSync(docPathIn(entry.root, entry.id), frame(Y.encodeStateAsUpdate(entry.doc)))
-  entry.frames = 1
+const docFile = (doc: SessionDoc, raw: Record<string, unknown> | undefined): string =>
+  JSON.stringify({ ...raw, version: DOC_VERSION, ...doc })
+
+
+/** A new session's document. `wx`: one that appeared meanwhile (a sync client) is kept. */
+function createDocFile(root: string, id: string, doc: SessionDoc): void {
+  writeFileSync(docPathIn(root, id), docFile(doc, undefined), { flag: 'wx' })
+}
+
+type DocRead =
+  | { kind: 'ok'; doc: SessionDoc; raw: Record<string, unknown> }
+  | { kind: 'missing' }
+  | { kind: 'corrupt'; reason: string }
+
+function parseDocFile(text: string): DocRead {
+  let value: unknown
+  try {
+    value = JSON.parse(text)
+  } catch {
+    return { kind: 'corrupt', reason: 'not JSON' }
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { kind: 'corrupt', reason: 'not an object' }
+  }
+  const raw = value as Record<string, unknown>
+  if (typeof raw.version !== 'number' || raw.version < DOC_VERSION) {
+    return { kind: 'corrupt', reason: 'no version' }
+  }
+  const parsed = SessionDoc.safeParse(raw)
+  if (!parsed.success) return { kind: 'corrupt', reason: parsed.error.issues[0]?.message ?? 'invalid' }
+  return { kind: 'ok', doc: parsed.data, raw }
+}
+
+async function readDocFile(path: string): Promise<DocRead> {
+  try {
+    return parseDocFile(await readFile(path, 'utf8'))
+  } catch (error) {
+    if (isMissing(error)) return { kind: 'missing' }
+    throw error
+  }
+}
+
+/**
+ * A session Lyra 0.6 and earlier kept as a Yjs log: read into a document and saved as
+ * `doc.json`. The log is renamed, not deleted. Null when the log holds nothing readable (it's
+ * set aside then).
+ */
+async function migrateLegacyLog(root: string, id: string, bytes: Buffer): Promise<SessionDoc | null> {
+  const path = legacyLogPathIn(root, id)
+  const read = readLegacyLog(bytes)
+  if (read.applied === 0) {
+    const aside = await setAside(path, 'move')
+    log('sessions', 'set aside an unusable document log', { id, bytes: bytes.byteLength, aside })
+    return null
+  }
+  if (read.damaged) {
+    const aside = await setAside(path, 'copy')
+    log('sessions', 'document log was damaged; kept what was readable', { id, frames: read.applied, aside })
+  }
+  const doc = legacySessionDoc(read.doc)
+  createDocFile(root, id, doc)
+  const done = `${path}.migrated`
+  await rename(path, existsSync(done) ? `${done}-${asideStamp()}` : done)
+  log('sessions', 'migrated a Yjs document', { id, frames: read.applied, lines: doc.transcript.length })
+  return doc
 }
 
 // --- Loading and migration ----------------------------------------------------
@@ -327,7 +394,7 @@ async function readLegacyMeta(root: string, id: string): Promise<LegacyMeta | nu
  * A meeting labeled by Lyra 0.2: `[hh:mm:ss] Name: text` lines in the note, speakers in
  * `.meta/<stem>.json`, audio in `.audio/`. Rebuilds the transcript, speakers and raw passes.
  */
-async function migrateLegacyMeeting(root: string, id: string, doc: Y.Doc, body: string, meta: LegacyMeta): Promise<{
+async function migrateLegacyMeeting(root: string, id: string, doc: SessionDoc, body: string, meta: LegacyMeta): Promise<{
   notes: string
   tracks: TrackInfo[]
   passes: Manifest['passes']
@@ -365,15 +432,15 @@ async function migrateLegacyMeeting(root: string, id: string, doc: Y.Doc, body: 
       confirmed: speaker.personId !== null || !/^Speaker \d+$/.test(speaker.name),
       confidence: null,
       matches: []
-    }, ORIGIN_LOAD)
+    })
   }
   for (const [name, cluster] of byName) {
     if (!meta.speakers.some((speaker) => `c${String(speaker.cluster)}` === cluster)) {
-      upsertSpeaker(doc, cluster, { name, personId: null, confirmed: true, confidence: null, matches: [] }, ORIGIN_LOAD)
+      upsertSpeaker(doc, cluster, { name, personId: null, confirmed: true, confidence: null, matches: [] })
     }
   }
-  replaceTranscript(doc, segments, ORIGIN_LOAD)
-  if (hasDivider) editDoc(doc, { summary }, ORIGIN_LOAD)
+  replaceTranscript(doc, segments)
+  if (hasDivider) editDoc(doc, { summary })
 
   const raw = join(sessionDirIn(root, id), 'raw')
   await mkdir(raw, { recursive: true })
@@ -416,20 +483,19 @@ async function migrateLegacyMeeting(root: string, id: string, doc: Y.Doc, body: 
 
 /**
  * A note file with no session yet (older Lyra, or dropped in from outside) becomes one. Only
- * when neither a manifest nor a document log exists (or both were unreadable and set aside):
- * it never writes over a `doc.yjs`. Audio and passes already in the folder are kept.
+ * when neither a manifest nor a document exists (or both were unreadable and set aside): it
+ * never writes over a `doc.json`. Audio and passes already in the folder are kept.
  */
 async function migrateNote(id: string, root: string): Promise<Entry> {
   const path = notePathIn(root, id)
   const [raw, info] = await Promise.all([readFile(path, 'utf8'), stat(path)])
   const page = parsePage(raw, id, info.mtime.toISOString())
-  const doc = new Y.Doc()
-  initDoc(doc, { title: page.title === 'Untitled' ? '' : page.title, notes: '' }, ORIGIN_LOAD)
+  const doc = emptyDoc({ title: page.title === 'Untitled' ? '' : page.title, notes: '' })
   const dir = sessionDirIn(root, id)
   mkdirSync(dir, { recursive: true })
   const legacy = await readLegacyMeta(root, id)
   const meeting = legacy ? await migrateLegacyMeeting(root, id, doc, page.body, legacy) : null
-  editDoc(doc, { notes: meeting ? meeting.notes : page.body }, ORIGIN_LOAD)
+  editDoc(doc, { notes: meeting ? meeting.notes : page.body })
   const tracks = meeting?.tracks ?? (await tracksOnDisk(join(dir, 'audio')))
   const manifest: Manifest = {
     version: MANIFEST_VERSION,
@@ -450,25 +516,23 @@ async function migrateNote(id: string, root: string): Promise<Entry> {
     // A migrated meeting's export gains the metadata file; plain notes stay untouched.
     dirty: meeting !== null
   }
-  // `wx`: a log that appeared meanwhile (a sync client delivering it) is never overwritten.
-  writeFileSync(docPathIn(root, id), frame(Y.encodeStateAsUpdate(doc)), { flag: 'wx' })
+  createDocFile(root, id, doc)
   writeManifest({ root, manifest, manifestRaw: undefined })
-  emitChange({ kind: 'saved', id, manifest, snapshot: snapshotOf(doc) })
+  emitChange({ kind: 'saved', id, manifest, snapshot: doc })
   log('sessions', 'created session from note', { id, tracks: manifest.tracks.length, passes: manifest.passes.length })
-  return makeEntry({ id, root, doc, manifest, manifestRaw: undefined, frames: 1 })
+  return makeEntry({ id, root, doc, docRaw: undefined, manifest, manifestRaw: undefined })
 }
 
 /**
- * The manifest is fine but the log is gone (a sync client that hasn't fetched it yet) or held
- * nothing usable: the document is rebuilt from the export, keeping the manifest's audio, passes
- * and dates.
+ * The manifest is fine but the document is gone (a sync client that hasn't fetched it yet) or
+ * held nothing usable: it is rebuilt from the export, keeping the manifest's audio, passes and
+ * dates.
  */
 async function rebuildDocFromExport(id: string, root: string, read: Extract<ManifestRead, { kind: 'ok' }>): Promise<Entry> {
   const path = notePathIn(root, id)
   const [raw, info] = await Promise.all([readFile(path, 'utf8'), stat(path)])
   const page = parsePage(raw, id, info.mtime.toISOString())
-  const doc = new Y.Doc()
-  initDoc(doc, { title: page.title === 'Untitled' ? '' : page.title, notes: page.body }, ORIGIN_LOAD)
+  const doc = emptyDoc({ title: page.title === 'Untitled' ? '' : page.title, notes: page.body })
   const manifest: Manifest = {
     ...read.manifest,
     title: page.title,
@@ -477,23 +541,22 @@ async function rebuildDocFromExport(id: string, root: string, read: Extract<Mani
     exportHash: sha256(raw),
     dirty: false
   }
-  writeFileSync(docPathIn(root, id), frame(Y.encodeStateAsUpdate(doc)), { flag: 'wx' })
-  const entry = makeEntry({ id, root, doc, manifest, manifestRaw: read.raw, frames: 1 })
+  createDocFile(root, id, doc)
+  const entry = makeEntry({ id, root, doc, docRaw: undefined, manifest, manifestRaw: read.raw })
   writeManifest(entry)
-  emitChange({ kind: 'saved', id, manifest, snapshot: snapshotOf(doc) })
+  emitChange({ kind: 'saved', id, manifest, snapshot: doc })
   log('sessions', 'rebuilt a missing document from its export', { id, passes: manifest.passes.length })
   return entry
 }
 
 /**
- * The log is fine but the manifest is missing or unreadable: rebuilt from the document and the
- * audio and passes on disk. Marked dirty, so the export is rewritten from the document (an
+ * The document is fine but the manifest is missing or unreadable: rebuilt from the document and
+ * the audio and passes on disk. Marked dirty, so the export is rewritten from the document (an
  * export that differs is kept in `external/` first).
  */
-async function rebuildManifest(id: string, root: string, doc: Y.Doc): Promise<Manifest> {
+async function rebuildManifest(id: string, root: string, snapshot: SessionDoc): Promise<Manifest> {
   const dir = sessionDirIn(root, id)
   const info = await stat(notePathIn(root, id)).catch(() => null)
-  const snapshot = snapshotOf(doc)
   const tracks = await tracksOnDisk(join(dir, 'audio'))
   return {
     version: MANIFEST_VERSION,
@@ -511,24 +574,21 @@ async function rebuildManifest(id: string, root: string, doc: Y.Doc): Promise<Ma
   }
 }
 
-function makeEntry(init: Pick<Entry, 'id' | 'root' | 'doc' | 'manifest' | 'manifestRaw' | 'frames'>): Entry {
-  const entry: Entry = {
+function makeEntry(init: Pick<Entry, 'id' | 'root' | 'doc' | 'docRaw' | 'manifest' | 'manifestRaw'>): Entry {
+  return {
     ...init,
+    rev: 0,
     generation: 0,
     closed: false,
     refs: 0,
     subscribers: new Set(),
     exportTimer: null,
+    saveTimer: null,
+    unsavedSince: null,
+    saving: Promise.resolve(),
     unloadTimer: null,
     exporting: Promise.resolve()
   }
-  entry.doc.on('update', (update: Uint8Array, origin: unknown) => {
-    onDocUpdate(entry, update, origin)
-  })
-  docTitle(entry.doc).observe((_event, transaction) => {
-    onTitleChange(entry, transaction.origin)
-  })
-  return entry
 }
 
 /** The log's bytes, or null when there is no log. */
@@ -543,32 +603,25 @@ async function readLog(path: string): Promise<Buffer | null> {
 
 /**
  * Opens a session from disk, repairing what it can and never destroying what it can't read:
- * an unreadable manifest or log is set aside (`*.corrupt-<time>`) before anything replaces it.
+ * an unreadable manifest or document is set aside (`*.corrupt-<time>`) before anything replaces
+ * it. A session from Lyra 0.6 or earlier (a `doc.yjs` log and no `doc.json`) is migrated here.
  */
 async function load(id: string, root: string): Promise<Entry> {
   const manifestPath = manifestPathIn(root, id)
-  const logPath = docPathIn(root, id)
+  const docPath = docPathIn(root, id)
   const read = readManifestFile(root, id)
-  const bytes = await readLog(logPath)
-  if (read.kind === 'missing' && bytes === null) return migrateNote(id, root)
-
-  let doc: Y.Doc | null = null
-  let frames = 0
-  let damaged = false
-  if (bytes !== null) {
-    const loaded = new Y.Doc()
-    const result = applyLog(loaded, bytes, ORIGIN_LOAD)
-    if (result.applied > 0) {
-      doc = loaded
-      frames = result.applied
-      damaged = result.damaged
-    } else {
-      // An empty or unreadable log would open as an empty document and then overwrite the
-      // export with nothing: rebuild from the export instead.
-      loaded.destroy()
-      const aside = await setAside(logPath, 'move')
-      log('sessions', 'set aside an unusable document log', { id, bytes: bytes.byteLength, aside })
-    }
+  let docRead = await readDocFile(docPath)
+  if (docRead.kind === 'corrupt') {
+    const aside = await setAside(docPath, 'move')
+    log('sessions', 'set aside an unreadable document', { id, reason: docRead.reason, aside })
+    docRead = { kind: 'missing' }
+  }
+  let doc: SessionDoc | null = docRead.kind === 'ok' ? docRead.doc : null
+  const docRaw = docRead.kind === 'ok' ? docRead.raw : undefined
+  if (!doc) {
+    const bytes = await readLog(legacyLogPathIn(root, id))
+    if (bytes !== null) doc = await migrateLegacyLog(root, id, bytes)
+    else if (read.kind === 'missing') return migrateNote(id, root)
   }
 
   if (read.kind === 'corrupt') {
@@ -581,17 +634,12 @@ async function load(id: string, root: string): Promise<Entry> {
     return read.kind === 'ok' ? rebuildDocFromExport(id, root, read) : migrateNote(id, root)
   }
 
-  if (damaged) {
-    const aside = await setAside(logPath, 'copy')
-    log('sessions', 'document log was damaged; kept what was readable', { id, frames, aside })
-  }
-
   let entry: Entry
   if (read.kind === 'ok') {
-    entry = makeEntry({ id, root, doc, manifest: read.manifest, manifestRaw: read.raw, frames })
+    entry = makeEntry({ id, root, doc, docRaw, manifest: read.manifest, manifestRaw: read.raw })
   } else {
     const manifest = await rebuildManifest(id, root, doc)
-    entry = makeEntry({ id, root, doc, manifest, manifestRaw: undefined, frames })
+    entry = makeEntry({ id, root, doc, docRaw, manifest, manifestRaw: undefined })
     writeManifest(entry)
     log('sessions', 'rebuilt a manifest from the document', {
       id,
@@ -599,9 +647,7 @@ async function load(id: string, root: string): Promise<Entry> {
       passes: manifest.passes.length
     })
   }
-  // Rewritten at once, so later appends land after a clean frame, not after the garbage.
-  if (damaged) compact(entry)
-  const restored = restoreMissingSpeakers(doc, ORIGIN_MAIN)
+  const restored = change(entry, restoreMissingSpeakers, 'machine')
   if (restored) log('sessions', 'restored missing speakers', { id, speakers: restored })
   if (entry.manifest.dirty) scheduleExport(entry, 0)
   return entry
@@ -655,60 +701,66 @@ async function unload(entry: Entry): Promise<void> {
   await flushExport(entry)
   // Someone acquired it, or it was replaced, while the export ran: leave it to them.
   if (inUse(entry) || (!isCurrent(entry) && !entry.closed)) return
-  try {
-    if (entry.frames > 1) compact(entry)
-  } catch (error) {
-    log('sessions', 'compaction failed', { id: entry.id, error: String(error) })
-  }
+  // `flushExport` saved it, and nothing has changed it since (nobody holds it).
   if (isCurrent(entry)) open.delete(keyOf(entry.root, entry.id))
-  entry.doc.destroy()
 }
 
 // --- Changes ------------------------------------------------------------------
 
-/**
- * Runs inside Yjs's update event, so it never throws: a throw here would surface in whoever
- * changed the document after the change was already made.
- */
-function onDocUpdate(entry: Entry, update: Uint8Array, origin: unknown): void {
-  if (origin === ORIGIN_LOAD) return
-  entry.generation++
-  try {
-    appendFileSync(docPathIn(entry.root, entry.id), frame(update))
-    entry.frames++
-    if (entry.frames >= COMPACT_AFTER) compact(entry)
-  } catch (error) {
-    log('sessions', 'could not persist update', { id: entry.id, error: String(error) })
-  }
-  if (!entry.manifest.dirty) {
-    entry.manifest = { ...entry.manifest, dirty: true }
-    try {
-      writeManifest(entry)
-    } catch (error) {
-      log('sessions', 'could not mark session dirty', { id: entry.id, error: String(error) })
-    }
-  }
-  const from = typeof origin === 'number' ? origin : null
-  for (const id of entry.subscribers) {
-    if (id === from) continue
-    try {
-      const target = webContents.fromId(id)
-      if (!target || target.isDestroyed()) entry.subscribers.delete(id)
-      else target.send('sessions:update', { id: entry.id, update })
-    } catch (error) {
-      log('sessions', 'could not send update to a window', { id: entry.id, error: String(error) })
-    }
-  }
-  scheduleExport(entry, EXPORT_DELAY_MS)
-}
+/** Who made a change: a window, main on the user's behalf (`pages:save`), or Lyra itself. */
+type Author = { window: number; seq: number } | 'user' | 'machine'
 
 /**
- * A title change from a window (its id is the origin) or `saveSessionPage` is the user's: from
- * then on Lyra leaves the title alone, unless they clear it.
+ * Runs `apply` on a copy of the document and commits the copy, so a writer that throws leaves
+ * the session as it was. Sends what changed to every window that holds the session, then saves
+ * and exports it. A window's edit is confirmed to it (`ack`) even when it changed nothing.
  */
-function onTitleChange(entry: Entry, origin: unknown): void {
-  if (typeof origin !== 'number' && origin !== ORIGIN_MAIN) return
-  const titleAuto = !docTitle(entry.doc).toJSON().trim()
+function change<T>(entry: Entry, apply: (doc: SessionDoc) => T, author: Author): T {
+  const next = copyDoc(entry.doc)
+  const result = apply(next)
+  const changed = changedFields(entry.doc, next)
+  const fromWindow = typeof author === 'object'
+  if (!changed.length && !fromWindow) return result
+  if (changed.length) {
+    entry.doc = next
+    entry.generation++
+    scheduleSave(entry)
+    markDirty(entry)
+    // A title the user sets is theirs: from then on Lyra leaves it alone, unless they clear it.
+    if (changed.includes('title') && author !== 'machine') setTitleAuto(entry, !next.title.trim())
+    scheduleExport(entry, EXPORT_DELAY_MS)
+  }
+  entry.rev++
+  const changes: SessionChanges = Object.fromEntries(changed.map((key) => [key, next[key]]))
+  for (const contentsId of entry.subscribers) {
+    const event: SessionChangeEvent = {
+      id: entry.id,
+      rev: entry.rev,
+      changes,
+      ack: fromWindow && author.window === contentsId ? author.seq : null
+    }
+    try {
+      const target = webContents.fromId(contentsId)
+      if (!target || target.isDestroyed()) entry.subscribers.delete(contentsId)
+      else target.send('sessions:changed', event)
+    } catch (error) {
+      log('sessions', 'could not send a change to a window', { id: entry.id, error: String(error) })
+    }
+  }
+  return result
+}
+
+function markDirty(entry: Entry): void {
+  if (entry.manifest.dirty) return
+  entry.manifest = { ...entry.manifest, dirty: true }
+  try {
+    writeManifest(entry)
+  } catch (error) {
+    log('sessions', 'could not mark session dirty', { id: entry.id, error: String(error) })
+  }
+}
+
+function setTitleAuto(entry: Entry, titleAuto: boolean): void {
   if (entry.manifest.titleAuto === titleAuto) return
   entry.manifest = { ...entry.manifest, titleAuto }
   try {
@@ -716,6 +768,33 @@ function onTitleChange(entry: Entry, origin: unknown): void {
   } catch (error) {
     log('sessions', 'could not save title flag', { id: entry.id, error: String(error) })
   }
+}
+
+function scheduleSave(entry: Entry): void {
+  const now = Date.now()
+  entry.unsavedSince ??= now
+  if (entry.saveTimer) clearTimeout(entry.saveTimer)
+  const delay = Math.min(SAVE_DELAY_MS, Math.max(0, entry.unsavedSince + SAVE_MAX_WAIT_MS - now))
+  entry.saveTimer = setTimeout(() => void flushSave(entry), delay)
+}
+
+/**
+ * Writes the document as it is now, if it has changes not saved yet, and resolves once every
+ * save so far is on disk. Atomic and durable, as the manifest is; never throws.
+ */
+function flushSave(entry: Entry): Promise<void> {
+  if (entry.saveTimer) clearTimeout(entry.saveTimer)
+  entry.saveTimer = null
+  if (entry.unsavedSince === null) return entry.saving
+  entry.unsavedSince = null
+  const text = docFile(entry.doc, entry.docRaw)
+  const path = docPathIn(entry.root, entry.id)
+  entry.saving = entry.saving.then(() =>
+    writeFileAtomic(path, text).catch((error: unknown) => {
+      log('sessions', 'could not save a session', { id: entry.id, error: String(error) })
+    })
+  )
+  return entry.saving
 }
 
 function scheduleExport(entry: Entry, delay: number): void {
@@ -729,6 +808,7 @@ function scheduleExport(entry: Entry, delay: number): void {
 }
 
 async function flushExport(entry: Entry): Promise<void> {
+  await flushSave(entry)
   if (entry.exportTimer) {
     clearTimeout(entry.exportTimer)
     entry.exportTimer = null
@@ -872,7 +952,7 @@ const readText = (path: string): Promise<string | null> => readFile(path, 'utf8'
  */
 async function writeExport(entry: Entry): Promise<void> {
   const generation = entry.generation
-  const snapshot = snapshotOf(entry.doc)
+  const snapshot = entry.doc
   const body = exportBody(snapshot)
   const before = entry.manifest
   const updatedAt = before.dirty ? new Date().toISOString() : before.updatedAt
@@ -941,7 +1021,7 @@ function emitChange(change: SessionChange): void {
 // --- Public API -------------------------------------------------------------------
 
 function pageOf(entry: Entry): Page {
-  const snapshot = snapshotOf(entry.doc)
+  const snapshot = entry.doc
   return {
     id: entry.id,
     title: snapshot.title.trim() || 'Untitled',
@@ -991,16 +1071,14 @@ export async function getSessionPage(id: string): Promise<Page> {
   }
 }
 
-/**
- * Replaces title and notes as a diff against the document, so edits made elsewhere in the
- * text since the caller read it survive. Used by main-process writers (meeting pipeline,
- * notes) until they write to the document directly.
- */
+/** Sets title and notes as the user would (`pages:save`, the UI smoke test, screenshots). */
 export async function saveSessionPage(input: Pick<Page, 'id' | 'title' | 'body'>): Promise<Page> {
   const entry = await acquire(input.id)
   try {
     const title = input.title.trim() === 'Untitled' ? '' : input.title
-    editDoc(entry.doc, { title, notes: input.body }, ORIGIN_MAIN)
+    change(entry, (doc) => {
+      editDoc(doc, { title, notes: input.body })
+    }, 'user')
     await flushExport(entry)
     return pageOf(entry)
   } finally {
@@ -1043,12 +1121,10 @@ export async function createSession(options: CreateSessionOptions = {}): Promise
     }
     try {
       const root = notesDir()
-      const doc = new Y.Doc()
-      initDoc(doc, { title, notes: '' }, ORIGIN_LOAD)
+      const doc = emptyDoc({ title, notes: '' })
       // Synchronous from here on, so the session is complete before anyone else runs.
       mkdirSync(sessionDirIn(root, id), { recursive: true })
-      // `wx`: never over a log that appeared since the check above.
-      writeFileSync(docPathIn(root, id), frame(Y.encodeStateAsUpdate(doc)), { flag: 'wx' })
+      createDocFile(root, id, doc)
       const manifest: Manifest = {
         version: MANIFEST_VERSION,
         id,
@@ -1066,9 +1142,9 @@ export async function createSession(options: CreateSessionOptions = {}): Promise
         exportHash: sha256(text),
         dirty: false
       }
-      const entry = makeEntry({ id, root, doc, manifest, manifestRaw: undefined, frames: 1 })
+      const entry = makeEntry({ id, root, doc, docRaw: undefined, manifest, manifestRaw: undefined })
       writeManifest(entry)
-      emitChange({ kind: 'saved', id, manifest, snapshot: snapshotOf(doc) })
+      emitChange({ kind: 'saved', id, manifest, snapshot: doc })
       open.set(keyOf(root, id), entry)
       release(entry)
       return pageOf(entry)
@@ -1085,11 +1161,12 @@ export async function deleteSession(id: string): Promise<void> {
   resolveInNotes(id)
   const entry = openEntry(id)
   if (entry) {
+    // Saved first, so undoing the delete brings back the latest edits.
+    await flushSave(entry)
     if (entry.exportTimer) clearTimeout(entry.exportTimer)
     if (entry.unloadTimer) clearTimeout(entry.unloadTimer)
     await entry.exporting
     open.delete(keyOf(entry.root, id))
-    entry.doc.destroy()
   }
   markOwnWrite(id)
   // Set aside rather than trashed, so the window can undo the delete. What's set aside goes to
@@ -1157,41 +1234,34 @@ export async function emptySessionTrash(): Promise<void> {
   for (const name of entries) await discard(join(trashRoot(), name))
 }
 
-/** Opens a session for a window: returns the full state and sends it later changes. */
-export async function openSessionFor(id: string, contentsId: number): Promise<Uint8Array> {
+/** Opens a session for a window: returns its document and sends it later changes. */
+export async function openSessionFor(id: string, contentsId: number): Promise<SessionOpened> {
   const entry = await acquire(id)
   entry.subscribers.add(contentsId)
   watchContents(contentsId)
   release(entry)
-  return Y.encodeStateAsUpdate(entry.doc)
+  return { rev: entry.rev, doc: entry.doc }
 }
 
-export async function applySessionUpdate(
+/**
+ * Applies a window's edits, in order, as one change, and resolves to the change's `rev`. `seq`
+ * is the window's own count, sent back in the change event so the window knows which of its
+ * edits main has.
+ */
+export async function applySessionOps(
   id: string,
-  update: unknown,
-  contentsId: number
-): Promise<void> {
-  const bytes = asUpdate(update)
-  if (bytes.byteLength > MAX_WINDOW_UPDATE_BYTES) {
-    log('sessions', 'refused an oversized update from a window', { id, bytes: bytes.byteLength })
-    throw new Error('Document update is too large')
-  }
-  // Decoded before it touches the document, so a malformed update is refused whole instead
-  // of failing halfway through being applied.
-  try {
-    Y.decodeUpdate(bytes)
-  } catch {
-    log('sessions', 'refused a malformed update from a window', { id, bytes: bytes.byteLength })
-    throw new Error('Malformed document update')
-  }
+  ops: readonly SessionOp[],
+  contentsId: number,
+  seq: number
+): Promise<number> {
   const entry = await acquire(id)
   try {
-    // The window's id as origin, so its own change isn't echoed back to it.
-    Y.applyUpdate(entry.doc, bytes, contentsId)
+    change(entry, (doc) => {
+      for (const op of ops) applyOp(doc, op)
+    }, { window: contentsId, seq })
+    return entry.rev
   } catch (error) {
-    // What was applied before the throw was persisted by the update handler, so the log and
-    // the document still agree.
-    log('sessions', 'could not apply an update from a window', { id, error: String(error) })
+    log('sessions', 'could not apply an edit from a window', { id, error: String(error) })
     throw error
   } finally {
     release(entry)
@@ -1199,13 +1269,14 @@ export async function applySessionUpdate(
 }
 
 /**
- * Runs `change` on a session's document as a main-process writer (meeting pipeline, notes,
- * speaker naming) and writes the export once it's done.
+ * Runs `apply` on a copy of a session's document as a main-process writer (meeting pipeline,
+ * notes, speaker naming), commits it, and writes the export once it's done. `apply` runs
+ * synchronously, so nothing else changes the session between what it reads and what it writes.
  */
-export async function editSession<T>(id: string, change: (doc: Y.Doc) => T): Promise<T> {
+export async function editSession<T>(id: string, apply: (doc: SessionDoc) => T): Promise<T> {
   const entry = await acquire(id)
   try {
-    const result = change(entry.doc)
+    const result = change(entry, apply, 'machine')
     await flushExport(entry)
     return result
   } finally {
@@ -1217,10 +1288,10 @@ export async function editSession<T>(id: string, change: (doc: Y.Doc) => T): Pro
  * Like `editSession`, but leaves the export to its usual debounce: for frequent writers (the
  * live transcriber) that shouldn't rewrite the text file on every change.
  */
-export async function changeSession<T>(id: string, change: (doc: Y.Doc) => T): Promise<T> {
+export async function changeSession<T>(id: string, apply: (doc: SessionDoc) => T): Promise<T> {
   const entry = await acquire(id)
   try {
-    return change(entry.doc)
+    return change(entry, apply, 'machine')
   } finally {
     release(entry)
   }
@@ -1234,7 +1305,9 @@ export async function setAutoTitle(id: string, title: string): Promise<boolean> 
   const entry = await acquire(id)
   try {
     if (!entry.manifest.titleAuto) return false
-    editDoc(entry.doc, { title }, ORIGIN_AUTO_TITLE)
+    change(entry, (doc) => {
+      editDoc(doc, { title })
+    }, 'machine')
     await flushExport(entry)
     return true
   } finally {
@@ -1242,10 +1315,11 @@ export async function setAutoTitle(id: string, title: string): Promise<boolean> 
   }
 }
 
+/** A session's document. A copy: changing it changes nothing (use `editSession`). */
 export async function readSession(id: string): Promise<SessionSnapshot> {
   const entry = await acquire(id)
   try {
-    return snapshotOf(entry.doc)
+    return copyDoc(entry.doc)
   } finally {
     release(entry)
   }
@@ -1285,13 +1359,16 @@ export async function sessionIds(): Promise<string[]> {
   return entries.filter((entry) => entry.isDirectory() && isNoteName(entry.name)).map((entry) => entry.name)
 }
 
-/** Rebuilds a session from its log on disk, bypassing memory (checks and debugging). */
+/**
+ * Reads a session's document from disk, bypassing memory (the search index, checks): its
+ * `doc.json`, or for one not opened since Lyra 0.6 its `doc.yjs`, without migrating it.
+ */
 export async function readSessionFromDisk(id: string): Promise<SessionSnapshot> {
-  const doc = new Y.Doc()
-  applyLog(doc, await readFile(docPathIn(notesDir(), id)), ORIGIN_LOAD)
-  const snapshot = snapshotOf(doc)
-  doc.destroy()
-  return snapshot
+  const root = notesDir()
+  const read = await readDocFile(docPathIn(root, id))
+  if (read.kind === 'ok') return read.doc
+  if (read.kind === 'corrupt') throw new Error(`Unreadable session document: ${read.reason}`)
+  return legacySessionDoc(readLegacyLog(await readFile(legacyLogPathIn(root, id))).doc)
 }
 
 export function sidecarPath(id: string): string {
@@ -1325,15 +1402,10 @@ export function closeSessionFor(id: string, contentsId: number): void {
   release(entry)
 }
 
-/** Writes pending exports and compacts logs; called on quit. Safe to call twice. */
+/** Writes pending saves and exports; called on quit. Safe to call twice. */
 export async function flushAllSessions(): Promise<void> {
   for (const entry of [...open.values()]) {
     await flushExport(entry).catch(() => undefined)
-    try {
-      if (entry.frames > 1) compact(entry)
-    } catch (error) {
-      log('sessions', 'compaction failed', { id: entry.id, error: String(error) })
-    }
   }
 }
 
