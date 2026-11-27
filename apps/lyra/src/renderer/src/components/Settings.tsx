@@ -22,10 +22,13 @@ import {
   type SettingsIssue,
   type SettingsTab
 } from '../hooks/useSettingsIssues'
+import { setDensity, useDensity } from '../lib/density'
 import { homePath } from '../lib/format'
+import { drawAttention } from '../lib/motion'
 import { record } from '../lib/history'
 import { ipcErrorMessage } from '../lib/ipcError'
 import { hostedPrivacy } from '../lib/summaryPrivacy'
+import { cn } from '../lib/utils'
 import { AboutSettings, InfoIcon } from './About'
 import { ConfirmDialog } from './ConfirmDialog'
 import { ScrollArea, Segmented, Select, Switch } from './Controls'
@@ -40,12 +43,17 @@ import { CommitInput, Row, Section, type SectionProps, type Update } from './Set
 import { tip } from './Tooltip'
 import { UsageChart } from './UsageChart'
 import { VocabularyEditor } from './Vocabulary'
+import { Button } from './ui/button'
+
+/** Where to open Preferences: a tab, and a section on it to bring into view and outline. */
+export type SettingsFocus = { tab: SettingsTab; section?: string }
 
 type Props = {
   settings: SettingsValue
   update: Update
   issues: SettingsIssue[]
   onClose: () => void
+  focus?: SettingsFocus | null
 }
 
 /** What Ctrl+Z says it undid, per setting. */
@@ -142,16 +150,16 @@ function StorageSection({ settings, update }: SectionProps) {
     <Section title="Storage">
       <Row label="Sessions folder" hint={homePath(settings.notesDir)}>
         <div className="settings-buttons">
-          <button
-            className="btn"
+          <Button
+           
             type="button"
             disabled={busy !== null}
             onClick={() => void changeFolder()}
           >
             Change…
-          </button>
-          <button
-            className="btn"
+          </Button>
+          <Button
+           
             type="button"
             onClick={() => {
               window.api.revealNotesFolder().catch((caught: unknown) => {
@@ -162,7 +170,7 @@ function StorageSection({ settings, update }: SectionProps) {
           >
             <FolderIcon />
             Open
-          </button>
+          </Button>
         </div>
       </Row>
       {notice ? (
@@ -259,9 +267,9 @@ function StartupSection({ settings, update }: SectionProps) {
         >
           <HotkeyInput value={settings.hotkey} onChange={(hotkey) => void update({ hotkey })} />
           {settings.hotkey !== DEFAULT_HOTKEY ? (
-            <button className="btn" type="button" onClick={() => void update({ hotkey: DEFAULT_HOTKEY })}>
+            <Button type="button" onClick={() => void update({ hotkey: DEFAULT_HOTKEY })}>
               Reset
-            </button>
+            </Button>
           ) : null}
         </Row>
         {problem ? (
@@ -507,9 +515,9 @@ function ApiKey({ settings }: Pick<SectionProps, 'settings'>) {
       <div className={missingKey ? 'settings-group has-issue' : 'settings-group'}>
         <Row label="API key" hint={keyHint}>
           {keySource === 'keychain' ? (
-            <button className="btn" type="button" onClick={() => void saveKey(null)}>
+            <Button type="button" onClick={() => void saveKey(null)}>
               Remove key
-            </button>
+            </Button>
           ) : (
             <>
               <input
@@ -525,14 +533,14 @@ function ApiKey({ settings }: Pick<SectionProps, 'settings'>) {
                 }}
                 aria-label={`${info.label} API key`}
               />
-              <button
-                className="btn"
+              <Button
+               
                 type="button"
                 disabled={!key.trim()}
                 onClick={() => void saveKey(key)}
               >
                 Save
-              </button>
+              </Button>
             </>
           )}
         </Row>
@@ -565,9 +573,9 @@ function TestHosted() {
   return (
     <>
       <Row label="Check the connection" hint="Sends a two-line sample (not your sessions) and asks for a title.">
-        <button className="btn" type="button" disabled={state.busy} onClick={() => void run()}>
+        <Button type="button" disabled={state.busy} onClick={() => void run()}>
           {state.busy ? 'Testing…' : 'Test'}
-        </button>
+        </Button>
       </Row>
       {state.result ? <TestResult result={state.result} /> : null}
     </>
@@ -607,9 +615,9 @@ function NotesBackfillRows() {
     })
   }
   const button = (kind: NotesBackfillKind, label: string) => (
-    <button className="btn" type="button" disabled={running} onClick={() => start(kind)}>
+    <Button type="button" disabled={running} onClick={() => start(kind)}>
       {label}
-    </button>
+    </Button>
   )
 
   const edited = status?.edited ? ` ${plural(status.edited, 'summary', 'summaries')} you edited stay as they are.` : ''
@@ -643,13 +651,13 @@ function NotesBackfillRows() {
               {run.detail ? ` · ${run.detail}` : ''}
             </span>
             {run.state === 'running' ? (
-              <button className="btn ghost settings-model-action" type="button" onClick={() => void window.api.activityAct(run.id, 'cancel')}>
+              <Button variant="ghost" className="settings-model-action" type="button" onClick={() => void window.api.activityAct(run.id, 'cancel')}>
                 Stop
-              </button>
+              </Button>
             ) : (
-              <button className="btn ghost settings-model-action" type="button" onClick={() => void window.api.dismissActivity(run.id)}>
+              <Button variant="ghost" className="settings-model-action" type="button" onClick={() => void window.api.dismissActivity(run.id)}>
                 Dismiss
-              </button>
+              </Button>
             )}
           </div>
           {run.state === 'running' && run.progress !== null ? (
@@ -817,9 +825,9 @@ function IgnoredApps({ settings, update }: SectionProps) {
           }}
           aria-label="App to never ask about"
         />
-        <button className="btn" type="button" disabled={!name.trim()} onClick={add}>
+        <Button type="button" disabled={!name.trim()} onClick={add}>
           Add
-        </button>
+        </Button>
       </Row>
       {ignoredApps.length ? (
         <ul className="settings-chips is-block">
@@ -841,17 +849,17 @@ function IgnoredApps({ settings, update }: SectionProps) {
         </ul>
       ) : null}
       <Row label="Share the list" hint="Save it to a file, or add the apps from one.">
-        <button className="btn" type="button" onClick={() => void importList()}>
+        <Button type="button" onClick={() => void importList()}>
           Import…
-        </button>
-        <button
-          className="btn"
+        </Button>
+        <Button
+         
           type="button"
           disabled={!ignoredApps.length}
           onClick={() => void exportList()}
         >
           Export…
-        </button>
+        </Button>
       </Row>
       {notice ? <p className="settings-notice">{notice}</p> : null}
     </>
@@ -1009,9 +1017,41 @@ function MicrophoneSection({ settings, update }: SectionProps) {
   )
 }
 
-export function SettingsDialog({ settings, update: rawUpdate, issues, onClose }: Props) {
-  // Open on the tab with a problem, so the badge that brought the user here leads somewhere.
-  const [tab, setTab] = useState<SettingsTab>(() => issues[0]?.tab ?? 'general')
+/** Comfortable or compact rows and controls; never smaller reading type. */
+function AppearanceSection() {
+  const density = useDensity()
+  return (
+    <Section title="Appearance">
+      <Row label="Density" hint="Compact fits more sessions and lines on screen. Reading text keeps its size.">
+        <Segmented
+          label="Density"
+          value={density}
+          options={[
+            { value: 'comfortable', label: 'Comfortable' },
+            { value: 'compact', label: 'Compact' }
+          ]}
+          onChange={setDensity}
+        />
+      </Row>
+    </Section>
+  )
+}
+
+export function SettingsDialog({ settings, update: rawUpdate, issues, onClose, focus }: Props) {
+  // Open where the launcher pointed, else on the tab with a problem, so the badge that brought
+  // the user here leads somewhere.
+  const [tab, setTab] = useState<SettingsTab>(() => focus?.tab ?? issues[0]?.tab ?? 'general')
+  // Asked for a section: show it and outline it, once it has rendered.
+  useEffect(() => {
+    if (!focus?.section) return
+    setTab(focus.tab)
+    const frame = requestAnimationFrame(() => {
+      const section = dialog.current?.querySelector(`[data-section="${CSS.escape(focus.section ?? '')}"]`)
+      section?.scrollIntoView({ block: 'start', behavior: 'instant' })
+      drawAttention(section?.querySelector('.settings-card') ?? section ?? null)
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [focus])
   const active = TABS.find((entry) => entry.id === tab) ?? TABS[0]
   const update = useUndoableUpdate(settings, rawUpdate)
   const dialog = useRef<HTMLDivElement>(null)
@@ -1030,20 +1070,25 @@ export function SettingsDialog({ settings, update: rawUpdate, issues, onClose }:
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div
         ref={dialog}
-        className="modal settings"
+        className="modal settings grid grid-cols-[208px_minmax(0,1fr)] overflow-hidden rounded-xl border-(length:--border-width) border-border bg-background shadow-lg"
         role="dialog"
         aria-modal="true"
         aria-label="Settings"
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <nav className="settings-nav" aria-label="Settings sections">
-          <h2>Settings</h2>
+        <nav className="settings-nav flex flex-col gap-0.5 border-r border-border bg-card p-2.5" aria-label="Preferences sections">
+          <h2 className="m-0 px-2.5 pt-2 pb-2.5 text-caps font-semibold tracking-[0.06em] text-text-3 uppercase">Preferences</h2>
           {TABS.map((entry) => {
             const flagged = issues.some((issue) => issue.tab === entry.id)
             return (
               <button
                 key={entry.id}
                 type="button"
+                className={cn(
+                  'relative flex h-8 items-center gap-2 rounded-sm px-2.5 text-left text-body-sm text-text-2 hover:bg-accent hover:text-foreground',
+                  'focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring',
+                  entry.id === tab && 'bg-brand-soft font-medium text-brand-text hover:bg-brand-soft hover:text-brand-text'
+                )}
                 aria-current={entry.id === tab ? 'page' : undefined}
                 aria-label={flagged ? `${entry.label} (needs attention)` : undefined}
                 onClick={() => {
@@ -1052,27 +1097,33 @@ export function SettingsDialog({ settings, update: rawUpdate, issues, onClose }:
               >
                 {entry.icon}
                 {entry.label}
-                {flagged ? <span className="issue-dot nav-issue" aria-hidden="true" /> : null}
+                {flagged ? (
+                  <span
+                    aria-hidden="true"
+                    className="ml-auto size-2 bg-warning [clip-path:polygon(50%_0,100%_100%,0_100%)]"
+                  />
+                ) : null}
               </button>
             )
           })}
         </nav>
-        <div className="settings-main">
-          <header className="modal-header">
-            <h2>{active?.label}</h2>
-            <button
-              className="icon-btn"
+        <div className="settings-main flex min-h-0 flex-col">
+          <header className="modal-header flex items-center gap-2 px-6 pt-5 pb-3">
+            <h2 className="m-0 flex-1 text-[20px] leading-[26px] font-semibold">{active?.label}</h2>
+            <Button
+              variant="ghost" size="icon"
               type="button"
               onClick={onClose}
-              aria-label="Close settings"
+              aria-label="Close preferences"
               {...tip('Close', 'Esc')}
             >
               <CloseIcon />
-            </button>
+            </Button>
           </header>
-          <ScrollArea className="modal-body">
+          <ScrollArea className="modal-body px-6 pb-6">
             {tab === 'general' ? (
               <>
+                <AppearanceSection />
                 <StorageSection settings={settings} update={rawUpdate} />
                 <MicrophoneSection settings={settings} update={update} />
                 <StartupSection settings={settings} update={update} />

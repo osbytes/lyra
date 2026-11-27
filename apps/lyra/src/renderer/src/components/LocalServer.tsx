@@ -5,6 +5,7 @@ import { ipcErrorMessage } from '../lib/ipcError'
 import { serverHost, serverPrivacy, type ServerKind } from '../lib/summaryPrivacy'
 import { Select } from './Controls'
 import { CommitInput, Row, type SectionProps } from './SettingsParts'
+import { Button } from './ui/button'
 
 const SERVER_NAMES: Record<NotesServer['kind'], string> = { ollama: 'Ollama', 'lm-studio': 'LM Studio' }
 
@@ -118,14 +119,14 @@ export function LocalServerSettings({ settings, update }: SectionProps) {
           placeholder="http://127.0.0.1:11434/v1"
           onCommit={saveAddress}
         />
-        <button
-          className="btn"
+        <Button
+         
           type="button"
           disabled={found.state === 'busy'}
           onClick={() => void findServers()}
         >
           {found.state === 'busy' ? 'Looking…' : 'Find servers'}
-        </button>
+        </Button>
       </Row>
       {addressError ? (
         <p className="settings-notice is-error" role="alert">
@@ -138,9 +139,9 @@ export function LocalServerSettings({ settings, update }: SectionProps) {
           <div className="settings-found" role="status">
             <span>Found on this computer:</span>
             {found.value.map((server) => (
-              <button
+              <Button
                 key={server.baseUrl}
-                className="btn"
+               
                 type="button"
                 aria-pressed={server.baseUrl === baseUrl}
                 onClick={() => {
@@ -148,7 +149,7 @@ export function LocalServerSettings({ settings, update }: SectionProps) {
                 }}
               >
                 {SERVER_NAMES[server.kind]} · {serverHost(server.baseUrl)}
-              </button>
+              </Button>
             ))}
           </div>
         ) : (
@@ -176,14 +177,14 @@ export function LocalServerSettings({ settings, update }: SectionProps) {
             onCommit={(cloudModel) => update({ cloudModel }).then((saved) => saved.cloudModel)}
           />
         )}
-        <button
-          className="btn"
+        <Button
+         
           type="button"
           disabled={baseUrl === null || models.state === 'busy'}
           onClick={() => void loadModels()}
         >
           {models.state === 'busy' ? 'Loading…' : 'List models'}
-        </button>
+        </Button>
       </Row>
       {models.state === 'error' ? <p className="settings-notice is-error">{models.message}</p> : null}
       {listed?.length === 0 ? (
@@ -195,14 +196,14 @@ export function LocalServerSettings({ settings, update }: SectionProps) {
         label="Check the connection"
         hint="Sends a two-line sample (not your sessions) and asks for a title."
       >
-        <button
-          className="btn"
+        <Button
+         
           type="button"
           disabled={baseUrl === null || model === null || test.state === 'busy'}
           onClick={() => void runTest()}
         >
           {test.state === 'busy' ? 'Testing…' : 'Test'}
-        </button>
+        </Button>
       </Row>
       {test.state === 'done' ? <TestResult result={test.value} /> : null}
       <p className="settings-notice is-footnote">

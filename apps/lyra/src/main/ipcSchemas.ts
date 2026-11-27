@@ -54,10 +54,8 @@ const SettingsPatchSchema = z
     cloudProvider: field.cloudProvider.exactOptional(),
     cloudModel: field.cloudModel.exactOptional(),
     cloudBaseUrl: field.cloudBaseUrl.exactOptional(),
-    detailsPanel: field.detailsPanel.exactOptional(),
     sidebar: field.sidebar.exactOptional(),
     sidebarWidth: field.sidebarWidth.exactOptional(),
-    detailsWidth: field.detailsWidth.exactOptional(),
     meetingNoticeSeen: field.meetingNoticeSeen.exactOptional(),
     semanticSearch: field.semanticSearch.exactOptional(),
     largerSpeakerModel: field.largerSpeakerModel.exactOptional()

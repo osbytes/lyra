@@ -34,10 +34,8 @@ export function defaultSettings(): Settings {
     semanticSearch: false,
     // Off until asked for: a large download, and more work for the CPU after each session.
     largerSpeakerModel: false,
-    detailsPanel: false,
     sidebar: true,
-    sidebarWidth: PANEL_WIDTHS.sidebar.initial,
-    detailsWidth: PANEL_WIDTHS.details.initial
+    sidebarWidth: PANEL_WIDTHS.sidebar.initial
   }
 }
 

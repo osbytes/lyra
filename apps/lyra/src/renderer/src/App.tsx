@@ -3,29 +3,54 @@ import { PANEL_WIDTHS } from '../../shared/settings'
 import { summarySections } from '../../shared/summarySections'
 import type { PageSummary, WhisperStatus } from '../../shared/types'
 import type { TranscriptSegment } from '../../shared/sessionDoc'
-import { DetailsPanel } from './components/DetailsPanel'
-import { DictationDock, DictationMessage } from './components/DictationDock'
-import { ActivityToast, ProcessingToast, Toast, ToastStack } from './components/ToastStack'
+import { DictationMessage, RecordControl } from './components/Capture'
+import { useContextMenu } from './components/ContextMenu'
+import { SummaryButton } from './components/SummaryButton'
+import { SummaryPane } from './components/SummaryPane'
+import { PlayerBar } from './components/PlayerBar'
+import { Home } from './components/Home'
+import { Split } from './components/Split'
+import { Progress } from './components/ui/progress'
+import { ActivityToast, Toast, ToastStack } from './components/ToastStack'
 import { Summary } from './components/Summary'
-import { NotesEditor, type NotesHandle } from './components/NotesEditor'
+import { NotesEditor, referenceMarkdown, type NotesHandle } from './components/NotesEditor'
 import { TagRow } from './components/TagRow'
-import { ScrollArea } from './components/Controls'
+import { ScrollArea, Segmented } from './components/Controls'
 import { Transcript } from './components/Transcript'
-import { SectionsMenu, SectionsRail, useSectionsNav } from './components/TranscriptSections'
+import { useSectionsNav } from './components/TranscriptSections'
 import {
-  CheckIcon,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger
+} from './components/ui/dropdown-menu'
+import {
   ChevronDownIcon,
-  ChevronUpIcon,
   CopyIcon,
   FolderIcon,
+  HomeIcon,
+  ListIcon,
+  LocalIcon,
+  LyraIcon,
   GearIcon,
   MicIcon,
-  PanelIcon,
+  MoreIcon,
+  PeopleIcon,
   PlusIcon,
+  RecordDotIcon,
+  RevealIcon,
   SearchIcon,
-  SidebarIcon
+  SidebarIcon,
+  SpeakerIcon,
+  TrashIcon
 } from './components/Icons'
-import { SettingsDialog } from './components/Settings'
+import { SettingsDialog, type SettingsFocus } from './components/Settings'
+import { usePeople } from './components/People'
+import { useMicrophones } from './hooks/useMicrophones'
+import type { SettingsTab } from './hooks/useSettingsIssues'
+import { setDensity, useDensity } from './lib/density'
+import { shortDeviceName } from './lib/deviceName'
 import { CommandPalette } from './components/CommandPalette'
 import { Sidebar } from './components/Sidebar'
 import { ConfirmDialog } from './components/ConfirmDialog'
@@ -35,12 +60,14 @@ import { PanelResizer, type PanelLayout } from './components/PanelResizer'
 import { TooltipLayer } from './components/Tooltip'
 import { useActivity } from './hooks/useActivity'
 import { useActivityEndings } from './hooks/useActivityEndings'
-import { useDictation, type StartResult } from './hooks/useDictation'
+import { useDictation, type DictationPhase, type StartResult } from './hooks/useDictation'
 import { sessionCommandAction } from './hooks/sessionCommands'
 import { usePages, type OpenPage } from './hooks/usePages'
 import { useSettings } from './hooks/useSettings'
 import { useSettingsIssues } from './hooks/useSettingsIssues'
-import { clockLabel, homePath, readingMinutes, relativeTime, shortcutLabel, wordCount } from './lib/format'
+import { clockLabel, homePath, relativeTime, shortcutLabel, wordCount } from './lib/format'
+import { useWidthClass } from './lib/layout'
+import { cn } from './lib/utils'
 import {
   onHistory,
   perform,
@@ -49,12 +76,14 @@ import {
   undo as undoAction,
   undoAt as historyUndoAt
 } from './lib/history'
-import { scrollBehavior } from './lib/motion'
+import { drawAttention, scrollBehavior } from './lib/motion'
 import { behindLabel, dockActivity } from './lib/status'
 import { notify, onToast, replacesToast, type ToastMessage } from './lib/toast'
 import { tip } from './components/Tooltip'
-import { ActivityButton } from './components/Activity'
-import lyraIcon from './assets/lyra-icon.png'
+import { RecordingReadout, SessionWork, StatusBar } from './components/SessionChrome'
+import { Kbd } from './components/ui/status'
+import { overallProvenance } from './lib/provenance'
+import { Button } from './components/ui/button'
 
 /** The overlay pill doesn't need every audio frame; ~12 updates a second look smooth. */
 const OVERLAY_FRAME_MS = 80
@@ -64,26 +93,25 @@ const FOLLOW_SLACK = 160
 /** How long a toast stays up. */
 const TOAST_MS = 6000
 
-/** Smallest share of the column either pane can be stepped down to with the keyboard. */
-const MIN_PANE = 0.15
-/** Smallest height either pane can be dragged down to, in pixels. */
-const MIN_PANE_PX = 120
-/** Dragging a pane shorter than this closes it, so between here and the minimum the bar snaps. */
-const CLOSE_PANE_PX = 64
-/** The page column keeps at least this much width, however wide the side panels are dragged. */
+/** Preferences sections the launcher can open, with the words people would type for them. */
+const PREFERENCE_PAGES: readonly { tab: SettingsTab; section: string; keywords: string }[] = [
+  { tab: 'general', section: 'Appearance', keywords: 'density compact comfortable theme look' },
+  { tab: 'general', section: 'Storage', keywords: 'notes folder location files save where' },
+  { tab: 'general', section: 'Microphone', keywords: 'mic input device permission' },
+  { tab: 'general', section: 'Shortcut and startup', keywords: 'hotkey keyboard shortcut login launch' },
+  { tab: 'sessions', section: 'Recording', keywords: 'language vocabulary words names audio retention keep delete' },
+  { tab: 'sessions', section: 'Summaries', keywords: 'summary notes model ai cloud local key provider' },
+  { tab: 'sessions', section: 'Search', keywords: 'search meaning semantic index' },
+  { tab: 'sessions', section: 'Prompts', keywords: 'call meeting prompt offer apps ignore' },
+  { tab: 'people', section: 'Saved voices', keywords: 'people voices speakers enroll voiceprint me' },
+  { tab: 'performance', section: 'Resource use', keywords: 'performance cpu memory gpu health usage' },
+  { tab: 'about', section: 'About Lyra', keywords: 'version update about diagnostics' }
+]
+
+/** The transcript's share of the panes when the split is reset. */
+const DEFAULT_SPLIT = 0.56
+/** The session column keeps at least this much width, however wide the library is dragged. */
 const MIN_PAGE_PX = 420
-/** The notes pane's share of the column when the split is reset. */
-const DEFAULT_SPLIT = 0.45
-
-/**
- * How the session column shares its height: both panes, the notes alone (the transcript
- * collapsed to its bar), or the transcript alone (its bar at the top).
- */
-type PaneMode = 'split' | 'notes' | 'transcript'
-
-/** The transcript bar's up/down buttons step through the modes in screen order. */
-const PANE_UP: Record<PaneMode, PaneMode | null> = { notes: 'split', split: 'transcript', transcript: null }
-const PANE_DOWN: Record<PaneMode, PaneMode | null> = { transcript: 'split', split: 'notes', notes: null }
 
 /**
  * The title, meeting notes and the transcript: where undo/redo means "undo my edit to this
@@ -99,9 +127,6 @@ function isPageField(target: EventTarget | null): boolean {
   )
 }
 
-function isInButton(target: EventTarget): boolean {
-  return target instanceof Element && target.closest('button') !== null
-}
 
 /** A field with its own text history (search, rename, settings): undo stays native there. */
 function isTextField(target: EventTarget | null): boolean {
@@ -111,26 +136,25 @@ function isTextField(target: EventTarget | null): boolean {
 }
 
 /** A quote of the transcript for the notes: the words, then who said them and when. */
-function quoteOf(text: string, who: string | null, start: number): string {
+function quoteLabel(text: string, who: string | null, start: number): string {
   const said = text.replace(/\s+/g, ' ').trim()
-  const by = who ? `${who}, ${clockLabel(start)}` : clockLabel(start)
-  return `> ${said}\n>\n> *${by}*`
+  const short = said.length > 48 ? `${said.slice(0, 46).trimEnd()}…` : said
+  return `“${short}” · ${who ? `${who} ` : ''}${clockLabel(start)}`
 }
 
 /** How long to wait for an opened session's transcript to render before giving up. */
 const REVEAL_FRAMES = 60
 
 /** Scrolls a transcript line into view and flashes it, once the opened session renders it. */
-function revealLine(lineId: string, frame = 0): void {
+function revealLine(lineId: string, frame = 0, behavior?: ScrollBehavior): void {
   const text = document.querySelector(`[data-line="${CSS.escape(lineId)}"]`)
   const line = text?.closest('.line')
   if (!line) {
-    if (frame < REVEAL_FRAMES) requestAnimationFrame(() => revealLine(lineId, frame + 1))
+    if (frame < REVEAL_FRAMES) requestAnimationFrame(() => revealLine(lineId, frame + 1, behavior))
     return
   }
-  line.scrollIntoView({ block: 'center', behavior: scrollBehavior() })
-  line.classList.add('search-flash')
-  line.addEventListener('animationend', () => line.classList.remove('search-flash'), { once: true })
+  line.scrollIntoView({ block: 'center', behavior: behavior ?? scrollBehavior() })
+  drawAttention(line)
 }
 
 /** "Nov 20, 3:04 PM", with the year only when it isn't this one. */
@@ -171,6 +195,7 @@ export default function App(): React.JSX.Element {
     undoAt,
     redoAt,
     open,
+    close,
     create,
     remove,
     restore,
@@ -181,7 +206,17 @@ export default function App(): React.JSX.Element {
   const { settings, update: updateSettings } = useSettings()
   const settingsIssues = useSettingsIssues(settings)
   const [showSettings, setShowSettings] = useState(false)
-  const closeSettings = useCallback(() => setShowSettings(false), [])
+  const [settingsFocus, setSettingsFocus] = useState<SettingsFocus | null>(null)
+  const closeSettings = useCallback(() => {
+    setShowSettings(false)
+    setSettingsFocus(null)
+  }, [])
+  const openSettingsAt = useCallback((focus: SettingsFocus) => {
+    setSettingsFocus(focus)
+    setShowSettings(true)
+  }, [])
+  const { microphones } = useMicrophones()
+  const people = usePeople()
   const [showSearch, setShowSearch] = useState(false)
   /** Find in the open session; `request` changes each time Ctrl/Cmd+F is pressed. */
   const [find, setFind] = useState<{ initial: string; request: number } | null>(null)
@@ -192,9 +227,28 @@ export default function App(): React.JSX.Element {
   const scroller = useRef<HTMLElement>(null)
   const notes = useRef<NotesHandle>(null)
   const column = useRef<HTMLDivElement>(null)
-  /** The notes pane's share of the column, above the transcript. */
+  /** The transcript's share of the panes. */
   const [split, setSplit] = useState(DEFAULT_SPLIT)
-  const [paneMode, setPaneMode] = useState<PaneMode>('split')
+  const width = useWidthClass()
+  const density = useDensity()
+  /** Below 900 px the library is a drawer over the session, closed until asked for. */
+  const drawer = width === 'compact' || width === 'medium'
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  useEffect(() => {
+    if (!drawer) setDrawerOpen(false)
+  }, [drawer])
+  useEffect(() => {
+    if (!drawerOpen) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape' && !event.defaultPrevented) setDrawerOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [drawerOpen])
+  const [compactTab, setCompactTab] = useState<'transcript' | 'notes' | 'summary'>('transcript')
+  /** How many lines the transcript had when the person scrolled up to reread; null when following. */
+  const [away, setAway] = useState<number | null>(null)
+  const sessionMenu = useContextMenu()
 
   useEffect(() => {
     return window.api.onStatus(setStatus)
@@ -239,8 +293,6 @@ export default function App(): React.JSX.Element {
         }
         // Waits for a recording that's still finishing, too: main records one at a time.
         await stop()
-        // A new recording shows its transcript arriving, whatever the last session's layout was.
-        setPaneMode('split')
         const page = await create({ startedAt: new Date().toISOString() })
         const result = await record(page.id, meeting)
         if (result !== 'failed' && result !== 'cancelled') return
@@ -349,12 +401,17 @@ export default function App(): React.JSX.Element {
   // document, and the dock and sidebar show where it is.
   const openPage = async (id: string): Promise<void> => {
     setFind(null)
+    setAway(null)
     await open(id)
   }
   // Stable handlers for the memoized sidebar, so typing in the notes doesn't redraw it.
   const openPageRef = useRef(openPage)
   openPageRef.current = openPage
   const openFromSidebar = useCallback((id: string) => void openPageRef.current(id), [])
+  const goHome = useCallback(() => {
+    setFind(null)
+    void close()
+  }, [close])
   const openSettings = useCallback(() => setShowSettings(true), [])
 
   const tasks = useActivity()
@@ -505,24 +562,18 @@ export default function App(): React.JSX.Element {
 
   // Mid-drag, a side panel opens and closes here first; the setting follows when the drag ends.
   const [sidebarLive, setSidebarLive] = useState<boolean | null>(null)
-  const [detailsLive, setDetailsLive] = useState<boolean | null>(null)
   const sidebarOpen = sidebarLive ?? settings?.sidebar ?? true
-  const panel = detailsLive ?? settings?.detailsPanel ?? false
   const sidebarWidth = settings?.sidebarWidth ?? PANEL_WIDTHS.sidebar.initial
-  const detailsWidth = settings?.detailsWidth ?? PANEL_WIDTHS.details.initial
   const appRef = useRef<HTMLDivElement>(null)
   // The resizers write these straight onto the element while dragging, so React stays out of it.
   useLayoutEffect(() => {
     appRef.current?.style.setProperty('--sidebar-width', `${String(sidebarWidth)}px`)
-    appRef.current?.style.setProperty('--details-width', `${String(detailsWidth)}px`)
-  }, [sidebarWidth, detailsWidth])
+  }, [sidebarWidth])
 
-  const toggleLayout = useCallback(() => {
-    void updateSettings({ detailsPanel: !(settingsRef.current?.detailsPanel ?? false) })
-  }, [updateSettings])
   const toggleSidebar = useCallback(() => {
-    void updateSettings({ sidebar: !(settingsRef.current?.sidebar ?? true) })
-  }, [updateSettings])
+    if (drawer) setDrawerOpen((open) => !open)
+    else void updateSettings({ sidebar: !(settingsRef.current?.sidebar ?? true) })
+  }, [updateSettings, drawer])
 
   const commitSidebar = (layout: PanelLayout): void => {
     setSidebarLive(layout.open)
@@ -530,13 +581,6 @@ export default function App(): React.JSX.Element {
       setSidebarLive(null)
     )
   }
-  const commitDetails = (layout: PanelLayout): void => {
-    setDetailsLive(layout.open)
-    void updateSettings({ detailsPanel: layout.open, detailsWidth: layout.width }).finally(() =>
-      setDetailsLive(null)
-    )
-  }
-
   // Tags across every session, most used first, for the sidebar filter and the tag picker.
   const knownTags = useMemo(() => {
     const counts = new Map<string, number>()
@@ -548,6 +592,13 @@ export default function App(): React.JSX.Element {
     if (tagFilter && !knownTags.some(([tag]) => tag === tagFilter)) setTagFilter(null)
   }, [knownTags, tagFilter])
   const [pickerRequest, setPickerRequest] = useState<{ speaker: string; anchor: DOMRect } | null>(null)
+  // A request is consumed once the transcript opens the picker; left set, a transcript remounted
+  // by a layout change (a narrower window) would open it again.
+  useEffect(() => {
+    if (!pickerRequest) return
+    const frame = requestAnimationFrame(() => setPickerRequest(null))
+    return () => cancelAnimationFrame(frame)
+  }, [pickerRequest])
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
@@ -580,9 +631,6 @@ export default function App(): React.JSX.Element {
       } else if (key === 'n') {
         event.preventDefault()
         newSession()
-      } else if (key === '.') {
-        event.preventDefault()
-        toggleLayout()
       } else if (key === '\\') {
         event.preventDefault()
         toggleSidebar()
@@ -603,7 +651,7 @@ export default function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [toggleDictation, newSession, toggleLayout, toggleSidebar, undo, redo, undoLatest, currentRef])
+  }, [toggleDictation, newSession, toggleSidebar, undo, redo, undoLatest, currentRef])
 
   // Counted apart so typing in the notes doesn't re-count a long transcript on every keystroke
   // (`usePages` keeps the transcript array the same object until it changes).
@@ -617,6 +665,11 @@ export default function App(): React.JSX.Element {
   const editedAt = summary?.updatedAt
   const startedAt = summary?.startedAt
   const systemAudio = settings?.captureSystemAudio ?? true
+  const engine = {
+    notesEngine: settings?.notesEngine ?? 'off',
+    cloudProvider: settings?.cloudProvider ?? 'anthropic',
+    cloudBaseUrl: settings?.cloudBaseUrl ?? null
+  } as const
   const listening = dictation.phase === 'listening'
   const recordingHere = !!current && current.id === recordingId && (listening || dictation.phase === 'finishing')
   const recordingPage = recordingId ? pages.find((page) => page.id === recordingId) : undefined
@@ -634,166 +687,385 @@ export default function App(): React.JSX.Element {
   const sections = useMemo(() => summarySections(summaryText), [summaryText])
   const transcriptLines = useMemo(() => current?.transcript ?? [], [current?.transcript])
   const sectionsNav = useSectionsNav(sections, transcriptLines, scroller)
+  const [transcriptRange, setTranscriptRange] = useState<{ from: number; to: number } | null>(null)
+  useEffect(() => {
+    const view = scroller.current
+    const lines = current?.transcript
+    if (!view || !lines?.length) {
+      setTranscriptRange(null)
+      return
+    }
+    let frame = 0
+    const measure = (): void => {
+      frame = 0
+      const rows = view.querySelectorAll<HTMLElement>('[data-row]')
+      if (!rows.length) return
+      const box = view.getBoundingClientRect()
+      // Rows are in line order: binary search for the first below the top and the last above
+      // the bottom, so a long transcript costs a handful of measurements, not one per line.
+      const search = (test: (row: DOMRect) => boolean): number => {
+        let low = 0
+        let high = rows.length - 1
+        let found = rows.length
+        while (low <= high) {
+          const mid = (low + high) >> 1
+          const row = rows[mid]
+          if (row && test(row.getBoundingClientRect())) {
+            found = mid
+            high = mid - 1
+          } else low = mid + 1
+        }
+        return found
+      }
+      const first = Math.min(rows.length - 1, search((row) => row.bottom > box.top))
+      const last = Math.max(first, search((row) => row.top >= box.bottom) - 1)
+      const from = lines[first]?.start
+      const to = lines[Math.min(last, lines.length - 1)]?.end
+      if (from !== undefined && to !== undefined) {
+        setTranscriptRange((was) => (was?.from === from && was.to === to ? was : { from, to }))
+      }
+    }
+    const schedule = (): void => {
+      if (!frame) frame = requestAnimationFrame(measure)
+    }
+    schedule()
+    view.addEventListener('scroll', schedule, { passive: true })
+    const observer = new ResizeObserver(schedule)
+    observer.observe(view)
+    return () => {
+      view.removeEventListener('scroll', schedule)
+      observer.disconnect()
+      if (frame) cancelAnimationFrame(frame)
+    }
+  }, [current?.transcript, current?.id, width, compactTab])
+  const sectionAt = useMemo(() => {
+    const at = new Map<string, { start: number; title: string; summary: string }>()
+    sectionsNav.firstLines.forEach((id, index) => {
+      const section = sections[index]
+      if (id && section && !at.has(id)) at.set(id, { start: section.start, title: section.title, summary: section.summary })
+    })
+    return at
+  }, [sectionsNav.firstLines, sections])
 
   const quote = (line: TranscriptSegment, text: string): void => {
     const page = currentRef.current
     if (!page) return
     const who = line.cluster ? (page.speakers.find((s) => s.id === line.cluster)?.name ?? null) : null
-    notes.current?.append(quoteOf(text, who, line.start))
+    notes.current?.append(referenceMarkdown(quoteLabel(text, who, line.start), line.id))
   }
 
-  const resetSplit = (): void => {
-    setPaneMode('split')
-    setSplit(DEFAULT_SPLIT)
-  }
-
-  /** Dragging the transcript's bar, which is the divider between the notes and the transcript. */
-  const resize = (event: React.PointerEvent<HTMLDivElement>): void => {
-    if (event.button !== 0 || isInButton(event.target)) return
-    const box = column.current?.getBoundingClientRect()
-    if (!box) return
-    const handle = event.currentTarget
-    handle.setPointerCapture(event.pointerId)
-    const bar = handle.getBoundingClientRect().height
-    // A drag from a collapsed or expanded layout opens the split where the pointer is. Dragged
-    // close to either end, the pane there closes; short of that, it holds at its minimum.
-    const move = (next: PointerEvent): void => {
-      const above = next.clientY - box.top
-      const below = box.height - bar - above
-      if (above < CLOSE_PANE_PX) setPaneMode('transcript')
-      else if (below < CLOSE_PANE_PX) setPaneMode('notes')
-      else {
-        const notesPx = Math.min(box.height - bar - MIN_PANE_PX, Math.max(MIN_PANE_PX, above))
-        setPaneMode('split')
-        setSplit(notesPx / box.height)
+  const recordPhase: DictationPhase = dictation.phase
+  const continues = !!current && (current.body.trim() !== '' || current.transcript.length > 0)
+  const recordControl = current ? (
+    <RecordControl
+      phase={recordPhase}
+      continues={continues}
+      systemAudio={systemAudio}
+      onSystemAudioChange={(captureSystemAudio) => void updateSettings({ captureSystemAudio })}
+      onToggle={toggleDictation}
+      elsewhere={elsewhere}
+      size={width === 'compact' ? 'sm' : 'lg'}
+      readout={
+        recordingHere && listening ? (
+          <RecordingReadout
+            startedAt={listeningSince}
+            micName={dictation.micName}
+            systemAudio={systemAudio}
+            subscribeLevel={dictation.subscribeLevel}
+          />
+        ) : null
       }
-    }
-    const up = (): void => {
-      handle.removeEventListener('pointermove', move)
-      handle.removeEventListener('pointerup', up)
-    }
-    handle.addEventListener('pointermove', move)
-    handle.addEventListener('pointerup', up)
+    />
+  ) : null
+
+  const sidebarShown = sidebarOpen && !drawer
+  const transcriptCount = current?.transcript.length ?? 0
+  const newLines = away === null ? 0 : Math.max(0, transcriptCount - away)
+
+  const summaryCard = current ? (
+    current.summary.trim() ? (
+      <Summary
+        key={`summary-${current.id}`}
+        pageId={current.id}
+        value={current.summary}
+        onChange={editSummary}
+        canRewrite={engine.notesEngine !== 'off'}
+      />
+    ) : engine.notesEngine !== 'off' && hasTranscript ? (
+      <section className="grid justify-items-start gap-2" aria-label="Summary">
+        <h3 className="m-0 text-title-2 font-semibold">Summary</h3>
+        <p className="m-0 text-body-sm text-text-2">This meeting has no summary yet.</p>
+        <SummaryButton pageId={current.id} hasSummary={false} />
+      </section>
+    ) : null
+  ) : null
+
+  const transcriptPane = current ? (
+    <section className="transcript-pane relative flex min-h-0 min-w-0 flex-col" aria-label="Transcript">
+      <header className="pane-head flex min-h-11 flex-wrap items-center gap-2 px-4 pt-3 pb-1.5">
+        <h2 className="m-0 text-caps font-semibold tracking-[0.07em] text-text-3 uppercase">Transcript</h2>
+        <span className="text-label text-text-3">
+          {recordingHere ? '· speakers update every 30 s' : `· ${String(transcriptCount)} ${transcriptCount === 1 ? 'line' : 'lines'}`}
+        </span>
+        {sections.length ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="sm" variant="ghost" className="toc-trigger max-w-[260px] min-w-0" aria-label="Sections">
+                <ListIcon />
+                <span className="truncate">{sections[sectionsNav.current]?.title ?? 'Sections'}</span>
+                <ChevronDownIcon className="text-text-3" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-[340px]">
+              <DropdownMenuLabel>Sections</DropdownMenuLabel>
+              {sections.map((section, index) => (
+                <DropdownMenuItem
+                  key={`${String(section.start)}-${section.title}`}
+                  className={cn('h-auto min-h-[30px] items-start py-1.5', index === sectionsNav.current && 'bg-brand-soft')}
+                  aria-current={index === sectionsNav.current ? 'location' : undefined}
+                  onSelect={() => sectionsNav.jump(index)}
+                >
+                  <span className="w-[46px] shrink-0 font-mono text-label leading-5 text-brand-text">{clockLabel(section.start)}</span>
+                  <span className="min-w-0">{section.title}</span>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
+      </header>
+      <ScrollArea
+        ref={scroller}
+        className="scroller @container min-h-0 flex-1 px-2 pb-24"
+        onScroll={(event) => {
+          const view = event.currentTarget
+          const near = view.scrollHeight - view.scrollTop - view.clientHeight <= FOLLOW_SLACK
+          setAway((was) => (near ? null : (was ?? transcriptCount)))
+        }}
+      >
+        <Transcript
+          pageId={current.id}
+          transcript={current.transcript}
+          speakers={current.speakers}
+          hasSummary={!!current.summary.trim()}
+          notesEngine={engine.notesEngine}
+          onEditLine={editSegment}
+          onEditOverlay={editLineOverlay}
+          onQuote={quote}
+          onAssign={assignLines}
+          onName={nameSpeaker}
+          onUndo={() => void undo()}
+          showSpeakersBar={false}
+          pickerRequest={pickerRequest}
+          transcribing={pending}
+          sectionAt={sectionAt}
+          onReference={(label, lineId) => notes.current?.append(referenceMarkdown(label, lineId))}
+        />
+      </ScrollArea>
+      <PlayerBar pageId={current.id} lines={current.transcript} />
+      {followHere && newLines > 0 ? (
+        <button
+          type="button"
+          className="jump-live absolute bottom-4 left-1/2 inline-flex -translate-x-1/2 items-center gap-2 rounded-full border-(length:--border-width) border-border bg-popover px-3 py-1 text-label shadow-md hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring"
+          onClick={() => {
+            const view = scroller.current
+            view?.scrollTo({ top: view.scrollHeight, behavior: scrollBehavior() })
+            setAway(null)
+          }}
+        >
+          ↓ {newLines} new {newLines === 1 ? 'line' : 'lines'} · Jump to live <Kbd>End</Kbd>
+        </button>
+      ) : null}
+    </section>
+  ) : null
+
+  const notesBlock = current ? (
+    <section className="notes-pane grid content-start gap-2" aria-label="Your notes">
+      <h2 className="m-0 text-caps font-semibold tracking-[0.07em] text-text-3 uppercase">Your notes</h2>
+      <NotesEditor
+        key={current.id}
+        ref={notes}
+        value={current.body}
+        onChange={(body) => edit({ body })}
+        onReference={(lineId) => revealLine(lineId, 0, 'instant')}
+        placeholder={
+          hasTranscript
+            ? 'Type freely while recording. Add a transcript line here from its menu.'
+            : 'Start a recording, or just type. Your notes save automatically.'
+        }
+      />
+    </section>
+  ) : null
+
+  const summaryPane = current ? (
+    <SummaryPane
+      page={current}
+      summary={summaryCard}
+      sections={sections}
+      view={transcriptRange}
+      onSpeaker={(speaker, target) => setPickerRequest({ speaker, anchor: target.getBoundingClientRect() })}
+      onSeek={(seconds) => {
+        const line = current.transcript.find((entry) => entry.end >= seconds) ?? current.transcript.at(-1)
+        if (line) revealLine(line.id, 0, 'instant')
+      }}
+    />
+  ) : null
+
+  const pad = 'px-4 pt-3.5 pb-24'
+  let panes: React.ReactNode = null
+  if (current && !hasTranscript) {
+    // A dictation: notes alone, at the reading measure; a summary, if any, above them.
+    panes = (
+      <ScrollArea className="scroller min-h-0 min-w-0">
+        <div className={cn('mx-auto grid w-full max-w-[76ch] gap-4', pad)}>
+          {summaryCard}
+          {notesBlock}
+        </div>
+      </ScrollArea>
+    )
+  } else if (current && width === 'compact') {
+    panes = (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="border-b border-border px-3 py-2">
+          <Segmented
+            className="flex w-full [&>button]:flex-1"
+            label="Show"
+            value={compactTab}
+            options={[
+              { value: 'transcript', label: 'Transcript' },
+              { value: 'notes', label: 'Notes' },
+              { value: 'summary', label: 'Summary' }
+            ]}
+            onChange={setCompactTab}
+          />
+        </div>
+        {compactTab === 'transcript' ? (
+          transcriptPane
+        ) : (
+          <ScrollArea className="scroller min-h-0 flex-1">
+            <div className={cn('grid gap-4', pad)}>{compactTab === 'notes' ? notesBlock : summaryPane}</div>
+          </ScrollArea>
+        )}
+      </div>
+    )
+  } else if (current) {
+    panes = (
+      <Split
+        direction={width === 'medium' ? 'column' : 'row'}
+        value={split}
+        onChange={setSplit}
+        initial={DEFAULT_SPLIT}
+        label="Resize transcript and notes"
+        className="flex-1"
+        first={transcriptPane}
+        second={
+          <ScrollArea className="scroller min-h-0 min-w-0">
+            <div className={cn('grid gap-5', pad)}>
+              {notesBlock}
+              {summaryPane}
+            </div>
+          </ScrollArea>
+        }
+      />
+    )
   }
+
+  const sidebar = (
+    <Sidebar
+      pages={pages}
+      activeId={current?.id}
+      recordingId={recordingId}
+      onOpen={(id) => {
+        if (drawer) setDrawerOpen(false)
+        openFromSidebar(id)
+      }}
+      onCreate={newSession}
+      onDelete={setConfirmDelete}
+      onSettings={openSettings}
+      settingsIssue={settingsIssues.length > 0}
+      onSearch={openSearch}
+      tags={knownTags}
+      tagFilter={tagFilter}
+      onTagFilter={setTagFilter}
+      onRename={(id) => {
+        if (drawer) setDrawerOpen(false)
+        void openPageRef.current(id).then(() => {
+          // Once the session renders, select its title for typing over.
+          requestAnimationFrame(() => {
+            const field = document.querySelector<HTMLTextAreaElement>('.title-input')
+            field?.focus()
+            field?.select()
+          })
+        })
+      }}
+      canSummarize={engine.notesEngine !== 'off'}
+      onHome={() => {
+        if (drawer) setDrawerOpen(false)
+        goHome()
+      }}
+      homeActive={!current}
+    />
+  )
+
+  const sidebarToggle = sidebarShown ? null : (
+    <Button
+      variant="ghost"
+      size="icon"
+      className="no-drag sidebar-toggle shrink-0"
+      aria-label="Show sessions"
+      aria-expanded={drawer ? drawerOpen : false}
+      {...tip('Show sessions', shortcutLabel('\\'))}
+      onClick={toggleSidebar}
+    >
+      <SidebarIcon />
+    </Button>
+  )
 
   return (
     <div
       ref={appRef}
-      className={`app platform-${window.api.platform}${sidebarOpen ? '' : ' sidebar-closed'}`}
+      className={`app platform-${window.api.platform} width-${width}${sidebarShown ? '' : ' sidebar-closed'}`}
     >
-      {sidebarOpen ? (
-        <Sidebar
-          pages={pages}
-          activeId={current?.id}
-          recordingId={recordingId}
-          onOpen={openFromSidebar}
-          onCreate={newSession}
-          onDelete={setConfirmDelete}
-          onSettings={openSettings}
-          settingsIssue={settingsIssues.length > 0}
-          onSearch={openSearch}
-          tags={knownTags}
-          tagFilter={tagFilter}
-          onTagFilter={setTagFilter}
+      {sidebarShown ? sidebar : null}
+      {!drawer ? (
+        <PanelResizer
+          side="left"
+          layout={{ open: sidebarOpen, width: sidebarWidth }}
+          limits={PANEL_WIDTHS.sidebar}
+          target={appRef}
+          cssVar="--sidebar-width"
+          room={() => window.innerWidth - MIN_PAGE_PX}
+          label="Resize sidebar"
+          onOpenChange={setSidebarLive}
+          onCommit={commitSidebar}
         />
       ) : null}
-      <PanelResizer
-        side="left"
-        layout={{ open: sidebarOpen, width: sidebarWidth }}
-        limits={PANEL_WIDTHS.sidebar}
-        target={appRef}
-        cssVar="--sidebar-width"
-        room={() => window.innerWidth - (current && panel ? detailsWidth : 0) - MIN_PAGE_PX}
-        label="Resize sidebar"
-        onOpenChange={setSidebarLive}
-        onCommit={commitSidebar}
-      />
-      {current ? (
-        <PanelResizer
-          side="right"
-          layout={{ open: panel, width: detailsWidth }}
-          limits={PANEL_WIDTHS.details}
-          target={appRef}
-          cssVar="--details-width"
-          room={() => window.innerWidth - (sidebarOpen ? sidebarWidth : 0) - MIN_PAGE_PX}
-          label="Resize details panel"
-          onOpenChange={setDetailsLive}
-          onCommit={commitDetails}
-        />
+      {drawer && drawerOpen ? (
+        // At medium and compact widths the library is a drawer over the session.
+        <div className="fixed inset-0 z-50 bg-(--backdrop)" onMouseDown={() => setDrawerOpen(false)}>
+          <div
+            className="library-drawer flex h-full w-[min(300px,90vw)] flex-col shadow-md [&>.sidebar]:flex-1"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            {sidebar}
+          </div>
+        </div>
       ) : null}
 
-      <main className={current && panel ? 'workspace with-panel' : 'workspace'}>
-        {/* The panel runs the full height beside this column, so its header shares the top band. */}
+      <main className="workspace">
         <div className="workspace-main">
-        <header className="topbar drag">
-          {sidebarOpen ? null : (
-            <button
-              className="icon-btn no-drag sidebar-toggle"
-              type="button"
-              aria-label="Show sidebar"
-              {...tip('Show sidebar', shortcutLabel('\\'))}
-              onClick={toggleSidebar}
-            >
-              <SidebarIcon />
-            </button>
-          )}
-          {sidebarOpen ? null : (
-            <ActivityButton
-              visible={tasks.visible}
-              pageTitle={pageTitle}
-              onOpen={(id) => void openPageRef.current(id)}
-            />
-          )}
-          <div className="brand">
-            <img src={lyraIcon} alt="" width={24} height={24} />
-            <span>Lyra</span>
-          </div>
           {current ? (
             <>
-              <div className="topbar-actions">
-              <button
-                className="btn no-drag"
-                type="button"
-                onClick={copy}
-                disabled={!current.body && !current.summary && !current.transcript.length}
-                {...tip('Copy as Markdown')}
+              <header
+                className={cn(
+                  'session-head drag flex flex-wrap items-start gap-x-2.5 gap-y-1 border-b border-border bg-background pt-3 pb-2.5 pl-5',
+                  !sidebarShown && window.api.platform === 'darwin' && 'pl-[84px]'
+                )}
+                style={{ paddingRight: 'calc(20px + var(--caption-buttons))' }}
               >
-                {copied ? <CheckIcon /> : <CopyIcon />}
-                {copied ? 'Copied' : 'Copy'}
-              </button>
-              <button
-                className="icon-btn no-drag panel-toggle"
-                type="button"
-                aria-pressed={panel}
-                aria-label="Details panel"
-                {...tip(panel ? 'Hide details' : 'Show details', shortcutLabel('.'))}
-                onClick={toggleLayout}
-              >
-                <PanelIcon />
-              </button>
-              </div>
-            </>
-          ) : null}
-        </header>
-
-        {status.state === 'downloading' && status.total ? (
-          <div className="progress" aria-hidden="true">
-            <span style={{ width: `${(status.received / status.total) * 100}%` }} />
-          </div>
-        ) : null}
-
-        {current ? (
-          <div
-            className={
-              hasTranscript && paneMode === 'notes' ? 'workspace-column transcript-collapsed' : 'workspace-column'
-            }
-          >
-            {/* Above both panes, so the title stays in view however the notes or transcript scroll. */}
-            <div className="session-head">
-              <div className="page">
+                {sidebarToggle}
                 {/* A textarea so a long title wraps; Enter moves on to the notes instead. */}
                 <textarea
-                  className="title-input"
+                  className="title-input no-drag m-0 min-w-0 flex-[1_1_260px] text-title-1 font-semibold"
                   rows={1}
                   value={current.title}
                   onChange={(event) => edit({ title: event.target.value.replace(/\s*\n\s*/g, ' ') })}
@@ -806,235 +1078,180 @@ export default function App(): React.JSX.Element {
                   aria-label="Session title"
                   spellCheck={false}
                 />
-              </div>
-            </div>
-            <div className="panes" ref={column}>
-            <ErrorBoundary scope="session" variant="pane" resetKey={current.id}>
-            <ScrollArea
-              className={
-                !hasTranscript || paneMode === 'notes'
-                  ? 'scroller notes-pane is-alone'
-                  : paneMode === 'transcript'
-                    ? 'scroller notes-pane is-collapsed'
-                    : 'scroller notes-pane'
-              }
-              style={hasTranscript && paneMode === 'split' ? { flexBasis: `${String(split * 100)}%` } : undefined}
-            >
-              <article className="page">
-                {panel ? null : (
-                  <>
-                    <p className="page-stats">
-                      <span>
-                        {words} {words === 1 ? 'word' : 'words'}
-                      </span>
-                      {words > 0 ? <span>{readingMinutes(words)} min read</span> : null}
-                      {/* When it started and when it last changed are different facts; both are shown. */}
-                      {startedAt ? <span>Started {startedLabel(startedAt)}</span> : null}
-                      {editedAt ? <span>Edited {relativeTime(editedAt).toLowerCase()}</span> : null}
-                    </p>
-                    <TagRow tags={current.tags} known={knownTags} onAdd={tag} onRemove={untag} />
-                  </>
-                )}
-                {current.summary.trim() ? (
-                  <Summary
-                    key={`summary-${current.id}`}
-                    pageId={current.id}
-                    value={current.summary}
-                    onChange={editSummary}
-                    canRewrite={(settings?.notesEngine ?? 'off') !== 'off'}
-                  />
-                ) : null}
-                <NotesEditor
-                  key={current.id}
-                  ref={notes}
-                  value={current.body}
-                  onChange={(body) => edit({ body })}
-                  placeholder={
-                    hasTranscript
-                      ? 'Write your notes here. The transcript stays below, as it was heard.'
-                      : 'Start a recording, or just type. Your notes save automatically.'
-                  }
-                />
-              </article>
-            </ScrollArea>
-            {hasTranscript ? (
-              <>
-                <div
-                  className="transcript-bar"
-                  onPointerDown={resize}
-                  onDoubleClick={(event) => {
-                    if (!isInButton(event.target)) resetSplit()
-                  }}
-                >
-                  <div
-                    className="transcript-grip"
-                    role="separator"
-                    aria-orientation="horizontal"
-                    aria-label="Resize notes and transcript"
-                    aria-valuenow={Math.round((paneMode === 'split' ? split : paneMode === 'notes' ? 1 : 0) * 100)}
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    tabIndex={0}
-                    {...tip('Drag to resize · double-click to reset')}
-                    onKeyDown={(event) => {
-                      if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
-                      event.preventDefault()
-                      const step = event.key === 'ArrowUp' ? -0.05 : 0.05
-                      setPaneMode('split')
-                      setSplit((value) => Math.min(1 - MIN_PANE, Math.max(MIN_PANE, value + step)))
+                <span className="flex shrink-0 items-center gap-1.5">
+                  {recordControl}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="no-drag"
+                    aria-label="Show in folder"
+                    {...tip('Show in folder')}
+                    onClick={() => void window.api.revealPage(current.id)}
+                  >
+                    <RevealIcon />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="no-drag"
+                    aria-label="More actions"
+                    aria-haspopup="menu"
+                    {...tip('More actions')}
+                    onClick={(event) => {
+                      const rect = event.currentTarget.getBoundingClientRect()
+                      sessionMenu.openAt({
+                        x: Math.max(8, rect.right - 240),
+                        y: rect.bottom + 4,
+                        label: 'Session actions',
+                        items: [
+                          { label: copied ? 'Copied' : 'Copy as Markdown', icon: <CopyIcon />, run: copy },
+                          {
+                            label: 'Find in session',
+                            icon: <SearchIcon />,
+                            shortcut: shortcutLabel('F'),
+                            run: () => setFind((open) => ({ initial: open?.initial ?? '', request: (open?.request ?? 0) + 1 }))
+                          },
+                          { label: 'Show in folder', icon: <RevealIcon />, run: () => void window.api.revealPage(current.id) },
+                          'separator',
+                          {
+                            label: 'Delete session…',
+                            icon: <TrashIcon />,
+                            danger: true,
+                            run: () => {
+                              if (summary) setConfirmDelete(summary)
+                            }
+                          }
+                        ]
+                      })
                     }}
-                  />
-                  <h2 className="transcript-bar-title">Transcript</h2>
-                  {recordingHere ? (
-                    <span className="transcript-live">Live</span>
-                  ) : (
-                    <span className="transcript-bar-count">
-                      {current.transcript.length} {current.transcript.length === 1 ? 'line' : 'lines'}
+                  >
+                    <MoreIcon />
+                  </Button>
+                </span>
+                <div className="session-meta flex basis-full flex-wrap items-center gap-x-2.5 gap-y-1 text-label text-text-3">
+                  {startedAt ? <span className="font-mono">{startedLabel(startedAt)}</span> : null}
+                  {summary?.seconds ? <span className="font-mono">{clockLabel(summary.seconds)}</span> : null}
+                  {current.speakers.length > 1 ? <span>{current.speakers.length} speakers</span> : null}
+                  {!hasTranscript && words > 0 ? (
+                    <span>
+                      {words} {words === 1 ? 'word' : 'words'}
                     </span>
-                  )}
-                  <SectionsMenu nav={sectionsNav} />
-                  <span className="transcript-bar-tools">
-                    {PANE_UP[paneMode] ? (
-                      <button
-                        type="button"
-                        className="icon-btn"
-                        aria-label={paneMode === 'notes' ? 'Show transcript' : 'Expand transcript'}
-                        {...tip(paneMode === 'notes' ? 'Show transcript' : 'Expand transcript')}
-                        onClick={() => setPaneMode((mode) => PANE_UP[mode] ?? mode)}
-                      >
-                        <ChevronUpIcon />
-                      </button>
-                    ) : null}
-                    {PANE_DOWN[paneMode] ? (
-                      <button
-                        type="button"
-                        className="icon-btn"
-                        aria-label={paneMode === 'transcript' ? 'Show notes' : 'Collapse transcript'}
-                        {...tip(paneMode === 'transcript' ? 'Show notes' : 'Collapse transcript')}
-                        onClick={() => setPaneMode((mode) => PANE_DOWN[mode] ?? mode)}
-                      >
-                        <ChevronDownIcon />
-                      </button>
-                    ) : null}
+                  ) : null}
+                  {editedAt ? <span>Edited {relativeTime(editedAt).toLowerCase()}</span> : null}
+                  <span className="no-drag">
+                    <TagRow tags={current.tags} known={knownTags} onAdd={tag} onRemove={untag} />
                   </span>
                 </div>
-                <ScrollArea
-                  className={paneMode === 'notes' ? 'scroller transcript-pane is-collapsed' : 'scroller transcript-pane'}
-                  ref={scroller}
-                >
-                  <div className="page transcript-page">
-                    <SectionsRail nav={sectionsNav} />
-                    <Transcript
-                      pageId={current.id}
-                      transcript={current.transcript}
-                      speakers={current.speakers}
-                      hasSummary={!!current.summary.trim()}
-                      notesEngine={settings?.notesEngine ?? 'off'}
-                      onEditLine={editSegment}
-                      onEditOverlay={editLineOverlay}
-                      onQuote={quote}
-                      onAssign={assignLines}
-                      onName={nameSpeaker}
-                      onUndo={() => void undo()}
-                      showSpeakersBar={!panel}
-                      pickerRequest={pickerRequest}
-                      transcribing={pending}
+              </header>
+              <div className="workspace-column relative min-h-0 flex-1" ref={column}>
+                <ErrorBoundary scope="session" variant="pane" resetKey={current.id}>
+                  {panes}
+                </ErrorBoundary>
+                {find ? <FindBar root={column} initial={find.initial} request={find.request} onClose={closeFind} /> : null}
+                <ToastStack>
+                  {activityElement}
+                  {dictation.recording && systemAudio && settings && !settings.meetingNoticeSeen ? (
+                    <Toast
+                      role="status"
+                      icon="dot"
+                      text="Recording other people may need their consent. Let them know Lyra is taking notes."
+                      action={
+                        <button
+                          className="toast-action"
+                          type="button"
+                          onClick={() => void updateSettings({ meetingNoticeSeen: true })}
+                        >
+                          Got it
+                        </button>
+                      }
                     />
+                  ) : null}
+                  <DictationMessage error={dictation.error} notice={dictation.notice} onDismiss={dictation.dismissMessage} />
+                  {toastElement}
+                </ToastStack>
+              </div>
+            </>
+          ) : (
+            <div className="relative flex min-h-0 flex-1 flex-col">
+              <div className="drag flex h-(--band) shrink-0 items-center px-3" style={{ paddingLeft: !sidebarShown && window.api.platform === 'darwin' ? 84 : undefined }}>
+                {sidebarToggle}
+              </div>
+              {pages.length ? (
+                <Home pages={pages} recordingId={recordingId} onOpen={openFromSidebar} onNew={newSession} onSearch={openSearch} />
+              ) : (
+              <div className="empty">
+                <div className="grid max-w-[460px] gap-4 px-9 py-9">
+                  <span
+                    className="grid size-12 place-items-center rounded-[12px] bg-primary text-primary-foreground"
+                    aria-hidden="true"
+                  >
+                    <LyraIcon size={28} />
+                  </span>
+                  <h2 className="m-0 text-display font-semibold tracking-[-0.01em]">Talk. Lyra writes it down.</h2>
+                  <p className="m-0 max-w-[40ch] text-[15px] text-text-2">
+                    Start a session and talk, alone or on a call. Your words become a note in a folder you
+                    choose.
+                  </p>
+                  <div className="grid gap-1.5 text-body-sm text-text-2">
+                    <span className="flex items-start gap-2">
+                      <LocalIcon className="mt-px shrink-0 text-local" />
+                      Speech is turned into text on this computer. Nothing is sent anywhere.
+                    </span>
+                    {settings ? (
+                      <span className="flex items-start gap-2" {...tip(settings.notesDir)}>
+                        <FolderIcon className="mt-px shrink-0 text-local" />
+                        <span>
+                          Notes are plain files in{' '}
+                          <b className="font-mono text-label font-medium text-foreground">{homePath(settings.notesDir)}</b>
+                        </span>
+                      </span>
+                    ) : null}
                   </div>
-                </ScrollArea>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                    <Button variant="primary" size="lg" onClick={newSession}>
+                      <RecordDotIcon />
+                      Start a session
+                    </Button>
+                    <span className="text-label text-text-3">
+                      or press <Kbd>{shortcutLabel('N')}</Kbd>
+                    </span>
+                  </div>
+                </div>
+              </div>
+              )}
+              <ToastStack>
+                {activityElement}
+                {toastElement}
+              </ToastStack>
+            </div>
+          )}
+          <StatusBar
+            provenance={overallProvenance(engine)}
+            work={
+              <>
+                {current ? <SessionWork pageId={current.id} /> : null}
+                {status.state === 'downloading' && status.total ? (
+                  <span className="inline-flex items-center gap-2 text-text-2" role="status">
+                    <b className="font-medium text-foreground">Downloading the speech model</b>
+                    <Progress
+                      className="w-24"
+                      value={(status.received / status.total) * 100}
+                      aria-label="Downloading the speech model"
+                    />
+                    <span className="font-mono">{Math.round((status.received / status.total) * 100)}%</span>
+                  </span>
+                ) : null}
               </>
-            ) : null}
-            </ErrorBoundary>
-            </div>
-            {find ? (
-              <FindBar root={column} initial={find.initial} request={find.request} onClose={closeFind} />
-            ) : null}
-            <DictationDock
-              phase={dictation.phase}
-              micName={dictation.micName}
-              micDeviceId={settings?.micDeviceId ?? null}
-              onMicChange={(micDeviceId) => void updateSettings({ micDeviceId })}
-              systemAudio={systemAudio}
-              onSystemAudioChange={(captureSystemAudio) => void updateSettings({ captureSystemAudio })}
-              subscribeLevel={dictation.subscribeLevel}
-              transcribing={transcribing}
-              onToggle={toggleDictation}
-              startedAt={listeningSince}
-              elsewhere={elsewhere}
-            />
-            <ToastStack>
-              <ProcessingToast pageId={current.id} />
-              {activityElement}
-              {dictation.recording && systemAudio && settings && !settings.meetingNoticeSeen ? (
-                <Toast
-                  role="status"
-                  icon="dot"
-                  text="Recording the computer’s audio too. Make sure everyone on the call is OK with it."
-                  action={
-                    <button
-                      className="toast-action"
-                      type="button"
-                      onClick={() => void updateSettings({ meetingNoticeSeen: true })}
-                    >
-                      Got it
-                    </button>
-                  }
-                />
-              ) : null}
-              <DictationMessage
-                error={dictation.error}
-                notice={dictation.notice}
-                onDismiss={dictation.dismissMessage}
-              />
-              {toastElement}
-            </ToastStack>
-          </div>
-        ) : (
-          <div className="empty">
-            <div className="empty-inner">
-              <span className="empty-icon" aria-hidden="true">
-                <MicIcon />
-              </span>
-              <h2>Start your first session</h2>
-              <p>
-                Start a session and talk, alone or on a call. Lyra transcribes on this computer,
-                names speakers when there’s more than one, and saves a plain text file you own.
-              </p>
-              <button className="btn primary" type="button" onClick={newSession}>
-                <MicIcon />
-                Start session
-                <kbd>{shortcutLabel('N')}</kbd>
-              </button>
-              {settings ? (
-                <span className="empty-folder" {...tip(settings.notesDir)}>
-                  <FolderIcon />
-                  Saved to <code>{homePath(settings.notesDir)}</code>
-                </span>
-              ) : null}
-            </div>
-            <ToastStack>
-              {activityElement}
-              {toastElement}
-            </ToastStack>
-          </div>
-        )}
-        </div>
-        {current && panel ? (
-          <DetailsPanel
-            page={current}
-            summary={summary}
-            words={words}
-            knownTags={knownTags}
-            notesEngine={settings?.notesEngine ?? 'off'}
-            onAddTag={tag}
-            onRemoveTag={untag}
-            onSpeaker={(speaker, target) => {
-              setPickerRequest({ speaker, anchor: target.getBoundingClientRect() })
-            }}
-            onCopy={copy}
+            }
+            sessions={pages.length}
+            activity={tasks.visible}
+            pageTitle={pageTitle}
+            onOpen={(id) => void openPageRef.current(id)}
           />
-        ) : null}
+        </div>
+        {sessionMenu.element}
       </main>
+
 
       {showSearch ? (
         <CommandPalette
@@ -1043,6 +1260,17 @@ export default function App(): React.JSX.Element {
           onOpen={(id, line) => void openPage(id).then(() => line && revealLine(line))}
           onClose={() => setShowSearch(false)}
           commands={[
+            ...(current
+              ? [
+                  {
+                    id: 'home',
+                    label: 'Go to Home',
+                    keywords: 'dashboard overview close session',
+                    icon: <HomeIcon />,
+                    run: goHome
+                  }
+                ]
+              : []),
             {
               id: 'new',
               label: 'New session',
@@ -1087,28 +1315,66 @@ export default function App(): React.JSX.Element {
                     icon: <CopyIcon />,
                     run: copy
                   },
-                  {
-                    id: 'panel',
-                    label: panel ? 'Hide details panel' : 'Show details panel',
-                    keywords: 'layout sidebar',
-                    shortcut: shortcutLabel('.'),
-                    icon: <PanelIcon />,
-                    run: toggleLayout
-                  }
                 ]
               : []),
             {
               id: 'sidebar',
-              label: sidebarOpen ? 'Hide sidebar' : 'Show sidebar',
+              label: sidebarShown || (drawer && drawerOpen) ? 'Hide sessions' : 'Show sessions',
               keywords: 'layout sessions list',
               shortcut: shortcutLabel('\\'),
               icon: <SidebarIcon />,
               run: toggleSidebar
             },
+            ...PREFERENCE_PAGES.map((page) => ({
+              id: `pref-${page.section}`,
+              label: `Preferences: ${page.section}`,
+              keywords: `settings preferences ${page.keywords}`,
+              icon: <GearIcon />,
+              run: () => openSettingsAt({ tab: page.tab, section: page.section })
+            })),
+            {
+              id: 'toggle-system-audio',
+              label: systemAudio ? 'Record the mic only' : 'Record the mic and computer audio',
+              keywords: 'computer system audio calls meeting source input',
+              icon: <SpeakerIcon />,
+              run: () => void updateSettings({ captureSystemAudio: !systemAudio })
+            },
+            {
+              id: 'toggle-density',
+              label: density === 'compact' ? 'Use comfortable density' : 'Use compact density',
+              keywords: 'density compact comfortable rows spacing appearance',
+              icon: <GearIcon />,
+              run: () => setDensity(density === 'compact' ? 'comfortable' : 'compact')
+            },
+            ...(settings
+              ? [
+                  {
+                    id: 'toggle-semantic',
+                    label: settings.semanticSearch ? 'Turn off search by meaning' : 'Turn on search by meaning',
+                    keywords: 'semantic search meaning embeddings',
+                    icon: <SearchIcon />,
+                    run: () => void updateSettings({ semanticSearch: !settings.semanticSearch })
+                  }
+                ]
+              : []),
+            ...microphones.map((mic) => ({
+              id: `mic-${mic.deviceId}`,
+              label: `${settings?.micDeviceId === mic.deviceId ? 'Using' : 'Use'} microphone: ${shortDeviceName(mic.label)}`,
+              keywords: 'microphone input device mic audio',
+              icon: <MicIcon />,
+              run: () => void updateSettings({ micDeviceId: mic.deviceId })
+            })),
+            ...people.map((person) => ({
+              id: `person-${person.id}`,
+              label: `Saved voice: ${person.name}${person.self ? ' (you)' : ''}`,
+              keywords: 'person people speaker voice voiceprint',
+              icon: <PeopleIcon />,
+              run: () => openSettingsAt({ tab: 'people', section: 'Saved voices' })
+            })),
             {
               id: 'settings',
-              label: 'Settings',
-              keywords: 'preferences options',
+              label: 'Preferences',
+              keywords: 'preferences settings options',
               shortcut: shortcutLabel(','),
               icon: <GearIcon />,
               run: () => setShowSettings(true)
@@ -1153,6 +1419,7 @@ export default function App(): React.JSX.Element {
           update={updateSettings}
           issues={settingsIssues}
           onClose={closeSettings}
+          focus={settingsFocus}
         />
       ) : null}
     </div>
