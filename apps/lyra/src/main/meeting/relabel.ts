@@ -1,5 +1,4 @@
 import { BrowserWindow } from 'electron'
-import type * as Y from 'yjs'
 import { z } from 'zod'
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
@@ -10,10 +9,9 @@ import {
   removeSpeaker,
   renumberSpeakers,
   replaceTranscript,
-  snapshotOf,
-  speakersOf,
   upsertSpeaker,
   type NewSegment,
+  type SessionDoc,
   type SpeakerEntry
 } from '../../shared/sessionDoc'
 import { log } from '../log'
@@ -52,7 +50,6 @@ const NEAREST_SECONDS = 1
 /** Same as live lines: one line per turn, up to MAX_LINE_SECONDS. */
 const LINE_JOIN_GAP = 8
 const MAX_LINE_SECONDS = 30
-const ORIGIN_RELABEL = 'relabel'
 const MODEL = 'sherpa-onnx diarization over live words'
 
 /** `pinned`: the speaker the user moved these words to, which outranks the diarized `speaker`. */
@@ -215,13 +212,13 @@ export type WrittenLines = {
 }
 
 /**
- * Writes a pass's speakers and lines into the session, in one transaction: each diarized speaker
+ * Writes a pass's speakers and lines into the session, as one change: each diarized speaker
  * carries on the session speaker it `continues` (or gets a new one), lines the user pinned keep
  * their speaker, and speakers nobody speaks as any more go. A line whose speaker isn't among
  * `named` (words not yet settled while recording) is written with none.
  */
 export function writeLines(
-  doc: Y.Doc,
+  doc: SessionDoc,
   pass: {
     /** The session's speakers before the pass. */
     known: readonly SpeakerEntry[]
@@ -235,55 +232,52 @@ export function writeLines(
 ): WrittenLines {
   const idOf = new Map<number, string>()
   const fields = new Map<string, Omit<SpeakerEntry, 'id'>>()
-  let segments: NewSegment[] = []
-  doc.transact(() => {
-    const old = new Map(pass.known.map((speaker) => [speaker.id, speaker]))
-    for (const speaker of pass.named) {
-      const id = pass.continues.get(speaker.cluster) ?? null
-      const kept = id ? old.get(id) : undefined
-      const fresh = id ?? newSpeakerId(doc)
-      idOf.set(speaker.cluster, fresh)
-      // The user's name for a voice outranks Lyra's guess at it. A guess is never confirmed,
-      // however strong the match (it still shows as sure): confirmed speakers are kept as is
-      // by every later pass, so a wrong guess would stick.
-      const entry = kept?.confirmed
-        ? { ...kept, matches: speaker.matches }
-        : {
-            name: speaker.name,
-            personId: speaker.personId,
-            confirmed: false,
-            confidence: speaker.confidence,
-            matches: speaker.matches
-          }
-      fields.set(fresh, entry)
-      // Written now so the next newSpeakerId doesn't hand the id out again.
-      upsertSpeaker(doc, fresh, entry, ORIGIN_RELABEL)
+  const old = new Map(pass.known.map((speaker) => [speaker.id, speaker]))
+  for (const speaker of pass.named) {
+    const id = pass.continues.get(speaker.cluster) ?? null
+    const kept = id ? old.get(id) : undefined
+    const fresh = id ?? newSpeakerId(doc)
+    idOf.set(speaker.cluster, fresh)
+    // The user's name for a voice outranks Lyra's guess at it. A guess is never confirmed,
+    // however strong the match (it still shows as sure): confirmed speakers are kept as is
+    // by every later pass, so a wrong guess would stick.
+    const entry = kept?.confirmed
+      ? { ...kept, matches: speaker.matches }
+      : {
+          name: speaker.name,
+          personId: speaker.personId,
+          confirmed: false,
+          confidence: speaker.confidence,
+          matches: speaker.matches
+        }
+    fields.set(fresh, entry)
+    // Written now so the next newSpeakerId doesn't hand the id out again.
+    upsertSpeaker(doc, fresh, entry)
+  }
+  const segments: NewSegment[] = pass.lines.map((line, index) => {
+    // A speaker the user moved words to, unless they've since removed that speaker.
+    const pinned =
+      line.pinned !== null && doc.speakers.some((entry) => entry.id === line.pinned) ? line.pinned : null
+    const id = pass.lineId(index, line)
+    return {
+      id,
+      rawId: pass.raw ? id : null,
+      start: line.words[0]?.start ?? 0,
+      end: line.words.at(-1)?.end ?? 0,
+      cluster: pinned ?? idOf.get(line.speaker) ?? null,
+      // Still the user's choice, so the pass after this one keeps it too.
+      userCluster: pinned !== null,
+      confidence: null,
+      text: line.words.map((word) => word.text).join('').trim()
     }
-    const map = speakersOf(doc)
-    segments = pass.lines.map((line, index) => {
-      // A speaker the user moved words to, unless they've since removed that speaker.
-      const pinned = line.pinned !== null && map?.has(line.pinned) === true ? line.pinned : null
-      const id = pass.lineId(index, line)
-      return {
-        id,
-        rawId: pass.raw ? id : null,
-        start: line.words[0]?.start ?? 0,
-        end: line.words.at(-1)?.end ?? 0,
-        cluster: pinned ?? idOf.get(line.speaker) ?? null,
-        // Still the user's choice, so the pass after this one keeps it too.
-        userCluster: pinned !== null,
-        confidence: null,
-        text: line.words.map((word) => word.text).join('').trim()
-      }
-    })
-    replaceTranscript(doc, segments, ORIGIN_RELABEL)
-    // Voices nobody speaks as any more. Read from the document: a line can keep the speaker the
-    // user chose for the old line under it (`replaceTranscript`), not the one written here.
-    const shown = snapshotOf(doc).transcript.flatMap((line) => line.cluster ?? [])
-    const used = new Set([...fields.keys(), ...shown])
-    for (const id of [...(map?.keys() ?? [])]) if (!used.has(id)) removeSpeaker(doc, id, ORIGIN_RELABEL)
-    renumberSpeakers(doc, ORIGIN_RELABEL)
-  }, ORIGIN_RELABEL)
+  })
+  replaceTranscript(doc, segments)
+  // Voices nobody speaks as any more. Read from the document: a line can keep the speaker the
+  // user chose for the old line under it (`replaceTranscript`), not the one written here.
+  const shown = doc.transcript.flatMap((line) => line.cluster ?? [])
+  const used = new Set([...fields.keys(), ...shown])
+  for (const { id } of [...doc.speakers]) if (!used.has(id)) removeSpeaker(doc, id)
+  renumberSpeakers(doc)
   return { idOf, fields, segments }
 }
 
@@ -405,7 +399,7 @@ async function relabel(pageId: string): Promise<void> {
   // changed, makes this pass stale. Checking earlier left a gap (naming the voices takes a while)
   // in which a new take's lines could be replaced and their speaker removed under them.
   const written = await editSession(pageId, (doc) =>
-    stale(snapshotOf(doc).transcript)
+    stale(doc.transcript)
       ? null
       : writeLines(doc, {
           known: before.speakers,
@@ -471,5 +465,5 @@ async function relabel(pageId: string): Promise<void> {
     liveLabeledSeconds: +stability.labeled.toFixed(1),
     changedSeconds: +stability.changed.toFixed(1)
   })
-  if (fields.size >= 2) notifyLabeled(pageId)
+  if (fields.size >= 1) notifyLabeled(pageId)
 }

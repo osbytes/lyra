@@ -99,10 +99,8 @@ describe('chooseWriter', () => {
     cloudProvider: 'openai-compatible',
     cloudModel: 'llama3.1',
     cloudBaseUrl: 'http://localhost:11434/v1',
-    detailsPanel: false,
     sidebar: true,
     sidebarWidth: 260,
-    detailsWidth: 300,
     meetingNoticeSeen: true,
     semanticSearch: false,
   largerSpeakerModel: false

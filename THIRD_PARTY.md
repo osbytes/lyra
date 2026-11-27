@@ -54,7 +54,6 @@ production package against a permissive-licence allowlist weekly (`security.yml`
 | `@libsql/client` and its prebuilt `@libsql/<platform>` binary (the search index) | MIT |
 | `ai` (AI SDK) and `@ai-sdk/anthropic`, `@ai-sdk/openai`, `@ai-sdk/google`, `@ai-sdk/openai-compatible` (only when cloud summaries are on) | Apache-2.0 |
 | `zod` | MIT |
-| `yjs` | MIT |
 | `fuse.js` | Apache-2.0 |
 | `react-hotkeys-hook` | MIT |
 | `react`, `react-dom` (bundled into the window) | MIT |

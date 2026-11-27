@@ -14,34 +14,21 @@
 const { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } = require('node:fs')
 const { homedir } = require('node:os')
 const { basename, isAbsolute, join, resolve } = require('node:path')
-const Y = require('yjs')
 
 const localDir = (dataDir) => join(dataDir, 'local')
 
-/** A session's lines as its document has them now: the update log, one length-prefixed frame each. */
+/** A session's lines as its document (`doc.json`) has them now. */
 function transcriptOf(docPath) {
-  const bytes = readFileSync(docPath)
-  const doc = new Y.Doc()
-  for (let offset = 0; offset + 4 <= bytes.length; ) {
-    const end = offset + 4 + bytes.readUInt32LE(offset)
-    // A torn last frame (a crash mid-write) is dropped, as the app does.
-    if (end > bytes.length) break
-    Y.applyUpdate(doc, new Uint8Array(bytes.subarray(offset + 4, end)))
-    offset = end
+  if (!existsSync(docPath)) {
+    throw new Error(`no ${basename(docPath)}: open the session in Lyra once, so it moves to the current format`)
   }
-  return doc
-    .getArray('transcript')
-    .toArray()
-    .filter((entry) => entry instanceof Y.Map)
-    .map((entry) => {
-      const text = entry.get('text')
-      return {
-        speaker: typeof entry.get('cluster') === 'string' ? entry.get('cluster') : null,
-        start: Number(entry.get('start')) || 0,
-        end: Number(entry.get('end')) || 0,
-        text: text instanceof Y.Text ? text.toJSON() : ''
-      }
-    })
+  const doc = JSON.parse(readFileSync(docPath, 'utf8'))
+  return (Array.isArray(doc.transcript) ? doc.transcript : []).map((entry) => ({
+    speaker: typeof entry.cluster === 'string' ? entry.cluster : null,
+    start: Number(entry.start) || 0,
+    end: Number(entry.end) || 0,
+    text: typeof entry.text === 'string' ? entry.text : ''
+  }))
 }
 
 function add(dataDir, target, name) {
@@ -51,7 +38,7 @@ function add(dataDir, target, name) {
       : join(process.env.LYRA_NOTES_DIR ?? join(homedir(), '.lyra'), '.sessions', target)
   const mic = join(dir, 'audio', 'mic.wav')
   if (!existsSync(mic)) throw new Error(`no kept audio at ${mic} (audio may have passed its retention)`)
-  const segments = transcriptOf(join(dir, 'doc.yjs'))
+  const segments = transcriptOf(join(dir, 'doc.json'))
   const unlabeled = segments.filter((segment) => segment.speaker === null).length
   if (segments.length === 0) throw new Error('the session has no transcript')
   if (unlabeled > 0) throw new Error(`${unlabeled} line(s) have no speaker yet; let Lyra finish, or give them one in the app`)

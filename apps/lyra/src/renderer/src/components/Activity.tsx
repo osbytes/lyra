@@ -3,12 +3,13 @@ import { activityFace, type ActivityAction, type ActivityItem } from '../../../s
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { ipcErrorMessage } from '../lib/ipcError'
 import { log } from '../lib/log'
-import { CheckIcon, CloseIcon } from './Icons'
+import { cn } from '../lib/utils'
 import { Floating } from './Controls'
+import { CheckIcon, CloseIcon, ErrorIcon, GaugeIcon, InfoIcon, WarningIcon } from './Icons'
 import { tip } from './Tooltip'
-
-/** Past this many rows the list folds, so Activity never pushes the sessions out of the sidebar. */
-const FOLD_AFTER = 2
+import { Button } from './ui/button'
+import { Progress } from './ui/progress'
+import { Spinner } from './ui/status'
 
 type ListProps = {
   visible: readonly ActivityItem[]
@@ -24,7 +25,7 @@ function actionLabel(item: ActivityItem, action: ActivityAction): string {
     case 'retry':
       return 'Retry'
     case 'install':
-      return item.title === 'Restart to update' ? 'Restart' : 'Install'
+      return item.title === 'Restart to update' ? 'Restart now' : 'Install'
     case 'open':
       return 'Open'
     case 'turnOff':
@@ -32,6 +33,26 @@ function actionLabel(item: ActivityItem, action: ActivityAction): string {
   }
 }
 
+/** Each state by shape first: spinner, check, triangle (partial), octagon (failed), circle (waiting). */
+function StateIcon({ item }: { item: ActivityItem }) {
+  switch (item.state) {
+    case 'running':
+      return <Spinner className="mt-[3px]" />
+    case 'done':
+      return <CheckIcon className="text-success" />
+    case 'partial':
+      return <WarningIcon className="text-warning" />
+    case 'failed':
+      return <ErrorIcon className="text-destructive" />
+    case 'waiting':
+      return <InfoIcon className="text-info" />
+  }
+}
+
+/**
+ * One task: icon, what's happening, its detail, and its actions; a bar with real units while it
+ * runs. Failed and waiting rows lead; partial says what worked first and retries only failures.
+ */
 function ActivityRow({ item, pageTitle, onOpen }: { item: ActivityItem } & Omit<ListProps, 'visible'>) {
   const [busy, setBusy] = useState(false)
   const session = item.pageId ? pageTitle(item.pageId) : null
@@ -52,54 +73,55 @@ function ActivityRow({ item, pageTitle, onOpen }: { item: ActivityItem } & Omit<
     }
   }
   return (
-    <li className={`activity-row is-${item.state}`}>
-      <div className="activity-head">
-        {item.state === 'running' ? <span className="activity-spinner" aria-hidden="true" /> : null}
-        {item.state === 'done' ? <CheckIcon /> : null}
-        {item.state === 'failed' || item.state === 'partial' ? (
-          <span className="activity-warn" aria-hidden="true">
-            !
-          </span>
+    <li
+      className={cn(
+        'activity-row grid grid-cols-[20px_minmax(0,1fr)_auto] items-start gap-x-2.5 gap-y-1 border-b border-border px-3 py-2.5 text-body-sm last:border-b-0',
+        `is-${item.state}`
+      )}
+    >
+      <span className="grid place-items-center pt-px">
+        <StateIcon item={item} />
+      </span>
+      <span className="min-w-0 font-medium text-foreground">
+        {item.title}
+        {session ? <span className="font-normal text-text-3"> · {session}</span> : null}
+      </span>
+      <span className="flex items-center gap-1">
+        {item.actions.map((action) => (
+          <Button
+            key={action}
+            size="sm"
+            variant={action === 'install' ? 'primary' : action === 'cancel' ? 'ghost' : 'secondary'}
+            disabled={busy}
+            onClick={() => void run(action)}
+          >
+            {actionLabel(item, action)}
+          </Button>
+        ))}
+        {ended ? (
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            aria-label={`Dismiss: ${item.title}`}
+            {...tip('Dismiss')}
+            onClick={() => void window.api.dismissActivity(item.id)}
+          >
+            <CloseIcon />
+          </Button>
         ) : null}
-        <span className="activity-title">
-          {item.title}
-          {session ? <span className="activity-session">{session}</span> : null}
+      </span>
+      {item.detail || (item.state === 'running' && percent !== null) ? (
+        <span className="col-start-2 col-end-4 text-label text-text-3">
+          {item.detail ?? `${String(percent)}%`}
         </span>
-        {percent === null || item.state !== 'running' ? null : <span className="activity-percent">{percent}%</span>}
-      </div>
-      {item.detail ? <span className="activity-detail">{item.detail}</span> : null}
-      {item.state === 'running' && percent !== null ? (
-        <div
-          className="activity-bar"
-          role="progressbar"
-          aria-label={item.title}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={percent}
-          aria-valuetext={item.detail ?? `${String(percent)}%`}
-        >
-          <span style={{ width: `${String(percent)}%` }} />
-        </div>
       ) : null}
-      {item.actions.length || ended ? (
-        <div className="activity-actions">
-          {item.actions.map((action) => (
-            <button key={action} className="activity-action" type="button" disabled={busy} onClick={() => void run(action)}>
-              {actionLabel(item, action)}
-            </button>
-          ))}
-          {ended ? (
-            <button
-              className="activity-dismiss"
-              type="button"
-              aria-label={`Dismiss: ${item.title}`}
-              {...tip('Dismiss')}
-              onClick={() => void window.api.dismissActivity(item.id)}
-            >
-              <CloseIcon />
-            </button>
-          ) : null}
-        </div>
+      {item.state === 'running' && percent !== null ? (
+        <Progress
+          className="col-start-2 col-end-4 mt-1"
+          value={percent}
+          aria-label={item.title}
+          aria-valuetext={item.detail ?? `${String(percent)}%`}
+        />
       ) : null}
     </li>
   )
@@ -123,74 +145,35 @@ function useAnnouncement(visible: readonly ActivityItem[]): string {
   return text
 }
 
-function ActivityList({ visible, pageTitle, onOpen, folds }: ListProps & { folds: boolean }) {
-  const [expanded, setExpanded] = useState(false)
-  const shown = folds && !expanded ? visible.slice(0, FOLD_AFTER) : visible
-  const hidden = visible.length - shown.length
+/** The groups of the Activity panel: what needs the person, what's running, what finished. */
+function ActivityList({ visible, pageTitle, onOpen }: ListProps) {
+  const groups = [
+    { label: 'Needs you', items: visible.filter((i) => i.state === 'failed' || i.state === 'partial' || i.state === 'waiting') },
+    { label: 'Running', items: visible.filter((i) => i.state === 'running') },
+    { label: 'Done', items: visible.filter((i) => i.state === 'done') }
+  ].filter((group) => group.items.length)
   return (
     <>
-      <ul className="activity-list">
-        {shown.map((item) => (
-          <ActivityRow key={item.id} item={item} pageTitle={pageTitle} onOpen={onOpen} />
-        ))}
-      </ul>
-      {hidden > 0 ? (
-        <button className="activity-more" type="button" onClick={() => setExpanded(true)}>
-          {hidden} more · Show all
-        </button>
-      ) : null}
-      {folds && expanded && visible.length > FOLD_AFTER ? (
-        <button className="activity-more" type="button" onClick={() => setExpanded(false)}>
-          Show fewer
-        </button>
-      ) : null}
+      {groups.map((group) => (
+        <section key={group.label} aria-label={group.label}>
+          <h3 className="m-0 bg-muted px-3 py-1 text-caps font-semibold tracking-[0.06em] text-text-3 uppercase">
+            {group.label}
+            {group.label === 'Done' ? ` · ${String(group.items.length)}` : ''}
+          </h3>
+          <ul className="activity-list m-0 list-none p-0">
+            {group.items.map((item) => (
+              <ActivityRow key={item.id} item={item} pageTitle={pageTitle} onOpen={onOpen} />
+            ))}
+          </ul>
+        </section>
+      ))}
     </>
   )
 }
 
-/** Activity in the sidebar footer: nothing at all when there's no work. */
-export function ActivityFooter(props: ListProps) {
-  const announcement = useAnnouncement(props.visible)
-  if (!props.visible.length) {
-    return (
-      <span className="visually-hidden" role="status">
-        {announcement}
-      </span>
-    )
-  }
-  return (
-    <section className="activity" aria-label="Activity">
-      <h2 className="activity-heading">Activity</h2>
-      <span className="visually-hidden" role="status">
-        {announcement}
-      </span>
-      <ActivityList {...props} folds />
-    </section>
-  )
-}
-
-/** The progress ring on the collapsed button: a sweep, or a spinner when it can't be measured. */
-function Ring({ progress }: { progress: number | null }) {
-  if (progress === null) return <span className="activity-spinner" aria-hidden="true" />
-  const circumference = 2 * Math.PI * 6
-  return (
-    <svg className="activity-ring" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-      <circle cx="8" cy="8" r="6" className="activity-ring-track" />
-      <circle
-        cx="8"
-        cy="8"
-        r="6"
-        className="activity-ring-fill"
-        strokeDasharray={circumference}
-        strokeDashoffset={circumference * (1 - progress)}
-      />
-    </svg>
-  )
-}
-
 /**
- * Activity when the sidebar is hidden: one top-bar button showing the most urgent thing (a
- * failure before any percentage), with the same rows in a popover.
+ * The activity pill in the status bar: the most urgent thing (a failure before any percentage),
+ * opening the Activity panel above it. Nothing at all when there's no work.
  */
 export function ActivityButton(props: ListProps) {
   const [open, setOpen] = useState(false)
@@ -216,7 +199,11 @@ export function ActivityButton(props: ListProps) {
       {face ? (
         <button
           ref={anchor}
-          className={`activity-button no-drag is-${face.tone}`}
+          className={cn(
+            'activity-button no-drag inline-flex h-5 items-center gap-1.5 rounded-full border-(length:--border-width) border-border bg-muted px-2 text-[11.5px] text-text-2',
+            'hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring',
+            face.tone === 'attention' && 'border-destructive/40 text-destructive'
+          )}
           type="button"
           aria-haspopup="dialog"
           aria-expanded={shown}
@@ -224,10 +211,10 @@ export function ActivityButton(props: ListProps) {
           {...tip('Activity')}
           onClick={() => setOpen((value) => !value)}
         >
-          {face.tone === 'working' ? <Ring progress={face.progress} /> : null}
-          {face.tone === 'attention' ? <span className="activity-dot" aria-hidden="true" /> : null}
-          {face.tone === 'done' ? <CheckIcon /> : null}
-          <span className="activity-button-label">{face.label}</span>
+          {face.tone === 'working' ? <Spinner className="size-2.5" /> : null}
+          {face.tone === 'attention' ? <ErrorIcon size={12} /> : null}
+          {face.tone === 'done' ? <CheckIcon size={12} className="text-success" /> : null}
+          {face.label}
         </button>
       ) : null}
       {shown && rect ? (
@@ -235,11 +222,14 @@ export function ActivityButton(props: ListProps) {
           <div className="picker-layer" onMouseDown={close}>
             <div
               ref={popover}
-              className="picker activity-popover"
+              className="activity-popover fixed z-[100] w-[380px] max-w-[calc(100vw-16px)] overflow-hidden rounded-lg border-(length:--border-width) border-border bg-popover text-popover-foreground shadow-md"
               role="dialog"
               aria-modal="true"
               aria-label="Activity"
-              style={{ top: rect.bottom + 8, left: Math.max(8, Math.min(window.innerWidth - 328, rect.left)) }}
+              style={{
+                bottom: window.innerHeight - rect.top + 8,
+                left: Math.max(8, Math.min(window.innerWidth - 388, rect.right - 380))
+              }}
               onMouseDown={(event) => event.stopPropagation()}
               onKeyDown={(event) => {
                 if (event.key !== 'Escape') return
@@ -247,15 +237,19 @@ export function ActivityButton(props: ListProps) {
                 close()
               }}
             >
-              <h2 className="activity-heading">Activity</h2>
-              <ActivityList
-                {...props}
-                onOpen={(pageId) => {
-                  close()
-                  props.onOpen(pageId)
-                }}
-                folds={false}
-              />
+              <h2 className="m-0 flex items-center gap-2 border-b border-border px-3 py-2 text-body-sm font-semibold">
+                <GaugeIcon />
+                Activity
+              </h2>
+              <div className="max-h-[60vh] overflow-y-auto">
+                <ActivityList
+                  {...props}
+                  onOpen={(pageId) => {
+                    close()
+                    props.onOpen(pageId)
+                  }}
+                />
+              </div>
             </div>
           </div>
         </Floating>

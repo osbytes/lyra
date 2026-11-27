@@ -4,6 +4,14 @@ import StarterKit from '@tiptap/starter-kit'
 import { Markdown } from '@tiptap/markdown'
 import { Placeholder } from '@tiptap/extensions'
 
+/** A reference to a place in the transcript, kept in the markdown as a `lyra:line/<id>` link. */
+export const REFERENCE_PREFIX = 'lyra:line/'
+
+/** The markdown for a reference chip: what it says, and the transcript line it points to. */
+export function referenceMarkdown(label: string, lineId: string): string {
+  return `[${label.replace(/[[\]]/g, '')}](${REFERENCE_PREFIX}${encodeURIComponent(lineId)})`
+}
+
 export type NotesHandle = {
   /** Adds a block (markdown) at the end of the notes, as the user's own undoable edit. */
   append: (markdown: string) => void
@@ -15,6 +23,8 @@ type Props = {
   value: string
   onChange: (value: string) => void
   placeholder: string
+  /** A reference chip was clicked: go to that line of the transcript. */
+  onReference?: (lineId: string) => void
   ref?: Ref<NotesHandle>
 }
 
@@ -24,20 +34,33 @@ type Props = {
  * own undo history; text arriving from elsewhere (another window) replaces the content only
  * when it differs from what this editor last wrote, so typing never fights its own echo.
  */
-export function NotesEditor({ value, onChange, placeholder, ref }: Props) {
+export function NotesEditor({ value, onChange, placeholder, onReference, ref }: Props) {
   const written = useRef(value)
   const onChangeRef = useRef(onChange)
   onChangeRef.current = onChange
+  const onReferenceRef = useRef(onReference)
+  onReferenceRef.current = onReference
 
   const editor = useEditor({
     extensions: [
-      StarterKit.configure({ link: { openOnClick: false, autolink: true } }),
+      // References into the transcript are links with Lyra's own scheme, so the file stays plain
+      // markdown; the editor draws them as chips (styles.css) and follows them on click.
+      StarterKit.configure({ link: { openOnClick: false, autolink: true, protocols: ['lyra'] } }),
       Markdown,
       Placeholder.configure({ placeholder })
     ],
     content: value,
     contentType: 'markdown',
-    editorProps: { attributes: { class: 'notes-editor', 'aria-label': 'Notes', spellcheck: 'true' } },
+    editorProps: {
+      attributes: { class: 'notes-editor', 'aria-label': 'Notes', spellcheck: 'true' },
+      handleClick: (_view, _pos, event) => {
+        const link = event.target instanceof Element ? event.target.closest('a') : null
+        const href = link?.getAttribute('href') ?? ''
+        if (!href.startsWith(REFERENCE_PREFIX)) return false
+        onReferenceRef.current?.(decodeURIComponent(href.slice(REFERENCE_PREFIX.length)))
+        return true
+      }
+    },
     onUpdate: ({ editor: current }) => {
       const markdown = current.getMarkdown()
       written.current = markdown

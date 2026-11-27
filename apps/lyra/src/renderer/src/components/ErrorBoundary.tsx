@@ -1,5 +1,8 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { log } from '../lib/log'
+import { cn } from '../lib/utils'
+import { ShieldIcon } from './Icons'
+import { Button } from './ui/button'
 
 type Props = {
   /** Where this boundary sits, for the log. */
@@ -43,34 +46,43 @@ export class ErrorBoundary extends Component<Props, State> {
     if (!this.state.failed) return this.props.children
     const pane = this.props.variant === 'pane'
     return (
-      <div className={pane ? 'error-boundary is-pane' : 'error-boundary'} role="alert">
-        <h2>Something went wrong</h2>
-        <p>
+      <div
+        className={cn(
+          'error-boundary mx-auto grid max-w-[360px] justify-items-center gap-2 px-5 py-7 text-center text-[13.5px] text-text-2',
+          pane && 'is-pane'
+        )}
+        role="alert"
+      >
+        <span className="grid size-11 place-items-center rounded-[12px] border-(length:--border-width) border-border bg-muted text-success">
+          <ShieldIcon size={20} />
+        </span>
+        <h2 className="m-0 text-[15px] font-semibold text-foreground">Your notes are safe</h2>
+        <p className="m-0">
           {pane
             ? 'This session couldn’t be shown. Your notes are saved, and a recording keeps going. Open another session, or try again.'
-            : 'Lyra hit a problem drawing this window. Your notes are saved.'}
+            : 'Lyra hit a problem drawing this window. Nothing you wrote was lost.'}
         </p>
         {pane ? (
           // Reloading would cut a recording off mid-take, so the pane only tries drawing again.
-          <button
-            className="btn primary"
+          <Button
+            variant="primary"
             type="button"
             onClick={() => {
               this.setState({ failed: false })
             }}
           >
             Try again
-          </button>
+          </Button>
         ) : (
-          <button
-            className="btn primary"
+          <Button
+            variant="primary"
             type="button"
             onClick={() => {
               window.location.reload()
             }}
           >
             Reload window
-          </button>
+          </Button>
         )}
       </div>
     )

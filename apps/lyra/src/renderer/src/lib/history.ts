@@ -2,8 +2,9 @@ import { log } from './log'
 
 /**
  * Undo and redo for actions outside a session's document: deleting a session or a person,
- * renaming a person, changing a setting. Edits inside a session (text, tags, speakers) undo
- * through its Yjs document instead; App's Ctrl+Z picks whichever of the two happened last.
+ * renaming a person, changing a setting. Edits inside a session (title, tags, speakers, lines)
+ * undo through the session (`sessionReplica.ts`) instead; App's Ctrl+Z picks whichever of the
+ * two happened last.
  */
 
 export type Action = {

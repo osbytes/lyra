@@ -9,7 +9,9 @@ import { ConfirmDialog } from './ConfirmDialog'
 import { useContextMenu } from './ContextMenu'
 import { TrashIcon } from './Icons'
 import { tip } from './Tooltip'
-import { speakerTone } from '../lib/speakerTone'
+import { speakerSlot } from '../lib/speakerTone'
+import { SpeakerBadge } from './SpeakerBadge'
+import { Button } from './ui/button'
 
 const ENROLL_SECONDS = 20
 
@@ -220,17 +222,17 @@ function Enroll({ micDeviceId, onDone }: EnrollProps) {
             agree to it. The voiceprint stays on this computer.
           </p>
           <div className="settings-buttons">
-            <button
-              className="btn primary"
+            <Button
+              variant="primary"
               type="button"
               disabled={!name.trim()}
               onClick={() => void record()}
             >
               Start recording
-            </button>
-            <button className="btn" type="button" onClick={onDone}>
+            </Button>
+            <Button type="button" onClick={onDone}>
               Cancel
-            </button>
+            </Button>
           </div>
         </>
       ) : (
@@ -245,9 +247,9 @@ function Enroll({ micDeviceId, onDone }: EnrollProps) {
               : 'Saving voice (the first time downloads a ~46 MB model)…'}
           </p>
           <div className="settings-buttons">
-            <button className="btn" type="button" onClick={cancel}>
+            <Button type="button" onClick={cancel}>
               Cancel
-            </button>
+            </Button>
           </div>
         </>
       )}
@@ -332,9 +334,7 @@ function PersonRow({ person, people }: { person: Person; people: readonly Person
         ])
       }}
     >
-      <span className="speaker-avatar" data-tone={speakerTone(people, person.id)} aria-hidden="true">
-        {(name.trim()[0] ?? '?').toUpperCase()}
-      </span>
+      <SpeakerBadge name={name.trim() || '?'} slot={speakerSlot(people, person.id)} />
       {/* Reads as the name until hovered or focused: renaming is occasional, reading is constant. */}
       <input
         className="person-name"
@@ -359,19 +359,19 @@ function PersonRow({ person, people }: { person: Person; people: readonly Person
       {person.self ? (
         <span className="person-self">You</span>
       ) : (
-        <button className="btn ghost person-make-self" type="button" onClick={makeSelf}>
+        <Button variant="ghost" className="person-make-self" type="button" onClick={makeSelf}>
           Set as me
-        </button>
+        </Button>
       )}
-      <button
-        className="icon-btn person-delete"
+      <Button
+        variant="ghost" size="icon" className="person-delete"
         type="button"
         aria-label={`Delete ${person.name}’s voice`}
         {...tip('Delete voice')}
         onClick={() => setConfirming(true)}
       >
         <TrashIcon />
-      </button>
+      </Button>
       {confirming ? (
         <ConfirmDialog
           title={`Delete ${person.name}’s voice?`}
@@ -415,15 +415,15 @@ export function PeopleSettings({ micDeviceId }: { micDeviceId: string | null }) 
           }}
         />
       ) : (
-        <button
-          className="btn"
+        <Button
+         
           type="button"
           onClick={() => {
             setAdding(true)
           }}
         >
           Add a person
-        </button>
+        </Button>
       )}
     </div>
   )

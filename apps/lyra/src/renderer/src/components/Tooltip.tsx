@@ -1,8 +1,9 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { cn } from '../lib/utils'
 import { Floating } from './Controls'
 
 /** Hovering waits this long; moving to a neighbour while one is showing switches at once. */
-const SHOW_MS = 450
+const SHOW_MS = 500
 const WARM_MS = 400
 const GAP = 6
 const EDGE = 8
@@ -134,11 +135,15 @@ export function TooltipLayer() {
         ref={node}
         id={id}
         role="tooltip"
-        className={`tooltip${place?.below ? ' below' : ''}`}
+        className={cn(
+          'tooltip pointer-events-none fixed z-[150] max-w-[240px] rounded-sm bg-tooltip px-2 py-[5px] text-label text-tooltip-foreground',
+          'hc:outline-2 hc:outline-white',
+          place?.below && 'below'
+        )}
         style={place ? { top: place.top, left: place.left } : { visibility: 'hidden' }}
       >
         {shown.text}
-        {shown.shortcut ? <kbd>{shown.shortcut}</kbd> : null}
+        {shown.shortcut ? <span className="font-mono text-[11px] opacity-75"> · {shown.shortcut}</span> : null}
       </div>
     </Floating>
   )

@@ -3,6 +3,7 @@ import { addTerms, MAX_TERM_CHARS, MAX_TERMS } from '../../../shared/vocabulary'
 import { CloseIcon } from './Icons'
 import { Row, type SectionProps } from './SettingsParts'
 import { tip } from './Tooltip'
+import { Button } from './ui/button'
 
 const REFUSED = {
   empty: null,
@@ -50,9 +51,9 @@ export function VocabularyEditor({ settings, update }: SectionProps) {
           }}
           aria-label="Name or term to add"
         />
-        <button className="btn" type="button" disabled={!text.trim()} onClick={add}>
+        <Button type="button" disabled={!text.trim()} onClick={add}>
           Add
-        </button>
+        </Button>
       </Row>
       {terms.length ? (
         <ul className="settings-chips is-block" aria-label="Names and terms">

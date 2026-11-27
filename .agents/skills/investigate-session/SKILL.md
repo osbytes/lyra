@@ -18,7 +18,7 @@ issue. See [De-identify](#de-identify) before writing anything that's committed.
 
 - Notes live in the notes folder (`~/.lyra` unless `notesDir` in `userData/settings.json`
   says otherwise). A session is `<id>.txt` (or `.md`) + `<id>.lyra.json`, and
-  `.sessions/<id>/` holds `session.json`, `doc.yjs`, `audio/mic.wav` + `audio/system.wav`
+  `.sessions/<id>/` holds `session.json`, `doc.json`, `audio/mic.wav` + `audio/system.wav`
   (if kept: check `audioStatus` and `retainedUntil`) and `raw/` (`live.json`: every live chunk
   with its track and word times; `pass-N.json`: each relabel/diarized pass).
 - A title: `grep -l` the `.lyra.json` files for it.

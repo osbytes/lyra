@@ -31,7 +31,8 @@ import {
   RevealTargetArg,
   SavePageArg,
   ServerUrlArg,
-  SessionUpdateArg
+  SessionOpsArg,
+  SessionSeqArg
 } from './ipcSchemas'
 import { migrateLegacyPages, resolveInNotes, startWatchingNotes } from './pages'
 import {
@@ -41,7 +42,7 @@ import {
   switchNotesFolder
 } from './notesFolder'
 import {
-  applySessionUpdate,
+  applySessionOps,
   closeSessionFor,
   createSession as createPage,
   deleteSession as deletePage,
@@ -214,7 +215,8 @@ function requireMainWindow(event: IpcMainEvent | IpcMainInvokeEvent): void {
 const BAND_HEIGHT = 56
 
 const DEFAULT_SIZE = { width: 1080, height: 720 }
-const MIN_SIZE = { width: 760, height: 520 }
+// 320 wide: the compact one-column layout beside a call (lib/layout.ts) is the smallest useful form.
+const MIN_SIZE = { width: 320, height: 480 }
 
 /**
  * Windows draws its caption buttons over the app's own top band instead of a separate title
@@ -377,8 +379,13 @@ function registerIpc(): void {
   ipcMain.handle('sessions:open', (event, id: unknown) =>
     openSessionFor(PageIdArg.parse(id), event.sender.id)
   )
-  ipcMain.handle('sessions:update', (event, id: unknown, update: unknown) =>
-    applySessionUpdate(PageIdArg.parse(id), SessionUpdateArg.parse(update), event.sender.id)
+  ipcMain.handle('sessions:edit', (event, id: unknown, seq: unknown, ops: unknown) =>
+    applySessionOps(
+      PageIdArg.parse(id),
+      SessionOpsArg.parse(ops),
+      event.sender.id,
+      SessionSeqArg.parse(seq)
+    )
   )
   ipcMain.on('sessions:close', (event, id: unknown) => {
     const parsed = PageIdArg.safeParse(id)

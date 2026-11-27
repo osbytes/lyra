@@ -1,0 +1,257 @@
+/*
+ * The renderer's stylesheet: Tailwind and the shadcn components (components/ui), themed from the
+ * Lyra interface system's tokens in styles.css.
+ *
+ * The older hand-written styles sit in their own layer, after Tailwind's reset and before its
+ * utilities, so the reset never undoes them and a utility on a shadcn component always wins over
+ * a broad legacy rule (such as `button { font: inherit }`). Screens move off the legacy layer as
+ * they are rebuilt on components/ui.
+ */
+@layer theme, base, legacy, components, utilities;
+
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import './styles.css' layer(legacy);
+@import './settings.css' layer(legacy);
+
+@custom-variant dark (@media (prefers-color-scheme: dark));
+@custom-variant hc (@media (prefers-contrast: more));
+
+/* shadcn's role names, mapped onto Lyra's tokens. shadcn's "accent" is the hover fill; Lyra's
+   accent (the one primary action) is shadcn's "primary". */
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--text);
+  --color-card: var(--surface);
+  --color-card-foreground: var(--text);
+  --color-popover: var(--surface-overlay);
+  --color-popover-foreground: var(--text);
+  --color-primary: var(--accent);
+  --color-primary-hover: var(--accent-hover);
+  --color-primary-foreground: var(--accent-text);
+  --color-secondary: var(--surface);
+  --color-secondary-foreground: var(--text);
+  --color-muted: var(--surface-sunken);
+  --color-muted-foreground: var(--text-subtle);
+  --color-accent: var(--surface-hover);
+  --color-accent-foreground: var(--text);
+  --color-destructive: var(--danger);
+  --color-destructive-soft: var(--danger-soft);
+  --color-border: var(--border);
+  --color-input: var(--border-input);
+  --color-ring: var(--focus);
+  --color-sidebar: var(--bg-sidebar);
+
+  --color-text-2: var(--text-muted);
+  --color-text-3: var(--text-subtle);
+  --color-surface-2: var(--surface-sunken);
+  --color-surface-3: var(--surface-active);
+  --color-selection: var(--selection);
+  --color-highlight: var(--highlight);
+  --color-brand-soft: var(--accent-soft);
+  --color-brand-text: var(--accent-soft-text);
+  --color-record: var(--record);
+  --color-record-foreground: var(--record-text);
+  --color-record-soft: var(--record-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-local: var(--local);
+  --color-local-soft: var(--local-soft);
+  --color-cloud: var(--cloud);
+  --color-cloud-soft: var(--cloud-soft);
+  --color-suggested: var(--suggested);
+  --color-tooltip: var(--toast-bg);
+  --color-tooltip-foreground: var(--toast-text);
+
+  --font-sans: var(--font-ui);
+  --font-serif: var(--font-body);
+  --font-mono: var(--font-mono);
+
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+
+  --shadow-xs: var(--shadow-sm);
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+
+  /* Type scale from the spec (size / line height). */
+  --text-caps: 11px;
+  --text-caps--line-height: 16px;
+  --text-label: 12px;
+  --text-label--line-height: 16px;
+  --text-body-sm: 13px;
+  --text-body-sm--line-height: 18px;
+  --text-body: 14px;
+  --text-body--line-height: 20px;
+  --text-transcript: 15px;
+  --text-transcript--line-height: 24px;
+  --text-read: 17px;
+  --text-read--line-height: 28px;
+  --text-title-2: 17px;
+  --text-title-2--line-height: 24px;
+  --text-title-1: 22px;
+  --text-title-1--line-height: 28px;
+  --text-display: 28px;
+  --text-display--line-height: 34px;
+
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+}
+
+/* Shared motion from the interface system (components/ui/status). */
+@layer components {
+  .live-pulse {
+    animation: live-pulse 1.6s ease-out infinite;
+  }
+
+  @keyframes live-pulse {
+    0% {
+      box-shadow: 0 0 0 0 color-mix(in srgb, var(--record) 55%, transparent);
+    }
+    100% {
+      box-shadow: 0 0 0 7px transparent;
+    }
+  }
+
+  .progress-indeterminate {
+    animation: progress-indeterminate 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  }
+
+  @keyframes progress-indeterminate {
+    0% {
+      transform: translateX(-100%);
+    }
+    100% {
+      transform: translateX(340%);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .progress-indeterminate {
+      width: 100%;
+      animation: none;
+      opacity: 0.35;
+    }
+  }
+
+  /* Reduced motion: the pulse becomes a static double ring. */
+  @media (prefers-reduced-motion: reduce) {
+    .live-pulse {
+      animation: none;
+      box-shadow:
+        0 0 0 2px var(--surface),
+        0 0 0 3.5px var(--record);
+    }
+  }
+}
+
+/* A transient notice's one action (Undo, Open, Got it): an underlined link in the accent text colour. */
+@layer components {
+  .toast-action {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 6px;
+    height: 26px;
+    padding: 0 9px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--accent-soft-text);
+    font-size: 12px;
+    font-weight: 500;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+
+  .toast-action:hover {
+    background: color-mix(in srgb, currentColor 12%, transparent);
+  }
+
+  .toast-action:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 1px;
+  }
+
+}
+
+
+/*
+ * Anything floating over the window's drag band (the session header, the library's search row)
+ * must be no-drag, or Electron hands clicks on it to the window instead.
+ */
+@layer components {
+  .picker-layer,
+  .picker-layer *,
+  .tooltip,
+  [data-slot='dropdown-menu-content'],
+  [data-slot='select-content'],
+  [data-slot='alert-dialog-content'],
+  .toast-stack,
+  .find-bar {
+    -webkit-app-region: no-drag;
+  }
+}
+
+/* A reference into the transcript in the notes: a compact chip, not a quote of the words. */
+@layer components {
+  .notes-editor a[href^='lyra:'] {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin: 0 1px;
+    padding: 0 8px;
+    border: var(--border-width) solid color-mix(in srgb, var(--accent) 30%, transparent);
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent-soft-text);
+    font-family: var(--font-ui);
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 22px;
+    text-decoration: none;
+    vertical-align: 1px;
+    cursor: pointer;
+  }
+
+  .notes-editor a[href^='lyra:']:hover {
+    border-color: var(--accent);
+  }
+}
+
+/* Where the person was just taken: a brief accent outline and tint that fade out (lib/motion). */
+@layer components {
+  .attention {
+    border-radius: var(--radius-md);
+    animation: attention 1.6s var(--ease-standard) both;
+  }
+
+  @keyframes attention {
+    0%,
+    45% {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+      background-color: color-mix(in srgb, var(--accent) 12%, transparent);
+    }
+    100% {
+      outline: 2px solid transparent;
+      outline-offset: 2px;
+      background-color: transparent;
+    }
+  }
+
+}

@@ -1,8 +1,10 @@
-import { useEffect, useState, type HTMLAttributes, type ReactNode } from 'react'
-import { dismissMeetingStatus, useMeetingStatus } from '../hooks/useMeetingStatus'
-import { processingActivity, type Activity } from '../lib/status'
-import { CloseIcon } from './Icons'
+import type { HTMLAttributes, ReactNode } from 'react'
+import type { Activity } from '../lib/status'
+import { cn } from '../lib/utils'
+import { CloseIcon, ErrorIcon } from './Icons'
 import { tip } from './Tooltip'
+import { Button } from './ui/button'
+import { LiveDot, Spinner } from './ui/status'
 
 /**
  * The one place messages appear: a stack in the column's bottom corner. It's apart from the dock,
@@ -48,33 +50,43 @@ export function Toast({
   ...rest
 }: ToastProps) {
   return (
-    <div className={tone === 'error' ? 'toast is-error' : 'toast'} {...rest}>
-      <div className="toast-row">
-        {icon === 'spinner' ? <span className="toast-spinner" aria-hidden="true" /> : null}
-        {icon === 'dot' ? <span className="toast-dot" aria-hidden="true" /> : null}
-        <span className="toast-text">{text}</span>
+    <div
+      className={cn(
+        'toast w-[380px] max-w-full overflow-hidden rounded-lg text-body-sm shadow-lg',
+        tone === 'error'
+          ? 'is-error border-(length:--border-width) border-destructive/40 bg-destructive-soft text-foreground'
+          : 'border-(length:--border-width) border-border bg-popover text-popover-foreground'
+      )}
+      {...rest}
+    >
+      <div className="flex min-h-10 items-center gap-3 py-2 pr-2 pl-3.5">
+        {icon === 'spinner' ? <Spinner className="size-3" /> : null}
+        {icon === 'dot' ? <LiveDot live={false} /> : null}
+        {tone === 'error' ? <ErrorIcon className="shrink-0 text-destructive" /> : null}
+        <span className="toast-text min-w-0 flex-1">{text}</span>
         {/* Ticks every second or percent; reading each one out would drown everything else. */}
         {detail ? (
-          <span className="toast-detail" aria-hidden="true">
+          <span className="shrink-0 font-mono text-[11.5px] tabular-nums opacity-75" aria-hidden="true">
             {detail}
           </span>
         ) : null}
         {action}
         {onDismiss ? (
-          <button
-            type="button"
-            className="toast-dismiss"
+          <Button
+            size="icon-sm"
+            variant="ghost"
+
             aria-label="Dismiss"
             {...tip('Dismiss')}
             onClick={onDismiss}
           >
             <CloseIcon />
-          </button>
+          </Button>
         ) : null}
       </div>
       {progress === null || progress === undefined ? null : (
-        <span className="toast-progress" aria-hidden="true">
-          <span style={{ width: `${String(progress * 100)}%` }} />
+        <span className="block h-0.5 bg-surface-3" aria-hidden="true">
+          <span className="block h-full bg-primary" style={{ width: `${String(progress * 100)}%` }} />
         </span>
       )}
     </div>
@@ -98,37 +110,6 @@ export function ActivityToast({
       progress={activity.progress}
       onDismiss={onDismiss}
       {...(activity.tone === 'error' ? { role: 'alert' } : {})}
-    />
-  )
-}
-
-/** Ticks once a second while `running`, for counting down an estimate. */
-function useNow(running: boolean): number {
-  const [now, setNow] = useState(Date.now)
-  useEffect(() => {
-    if (!running) return
-    setNow(Date.now())
-    const timer = setInterval(() => {
-      setNow(Date.now())
-    }, 1000)
-    return () => {
-      clearInterval(timer)
-    }
-  }, [running])
-  return now
-}
-
-/** The open session's processing (labeling speakers, writing the summary), with time left. */
-export function ProcessingToast({ pageId }: { pageId: string }) {
-  const status = useMeetingStatus(pageId)
-  const now = useNow(status?.estimate !== undefined && status.state === 'diarizing')
-  if (!status) return null
-  const activity = processingActivity(status, now)
-  return (
-    <ActivityToast
-      activity={activity}
-      // Finished or failed work can be closed; work still running can't.
-      {...(activity.tone === 'busy' ? {} : { onDismiss: () => dismissMeetingStatus(pageId) })}
     />
   )
 }

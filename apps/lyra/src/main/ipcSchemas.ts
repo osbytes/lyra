@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { SessionOp } from '../shared/sessionDoc'
 import { SettingsSchema, type Settings } from '../shared/settings'
 
 /**
@@ -17,12 +18,19 @@ export const SavePageArg = z.object({
   body: z.string().max(20_000_000)
 })
 
-/** A Yjs update from a window; a whole document's state fits well inside this. */
-export const MAX_SESSION_UPDATE_BYTES = 64 * 1024 * 1024
-export const SessionUpdateArg = z
-  .instanceof(Uint8Array)
-  .refine((bytes) => bytes.byteLength > 0, 'empty update')
-  .refine((bytes) => bytes.byteLength <= MAX_SESSION_UPDATE_BYTES, 'update too large')
+/** `sessions:edit`: a window's count of its edits. */
+export const SessionSeqArg = z.number().int().nonnegative()
+
+/**
+ * `sessions:edit`: a window's edits. Typing sends one at a time; the caps only stop a runaway
+ * renderer from making main allocate without bound (a pasted note is far below them).
+ */
+export const MAX_SESSION_EDIT_CHARS = 32 * 1024 * 1024
+export const SessionOpsArg = z
+  .array(SessionOp)
+  .min(1)
+  .max(1000)
+  .refine((ops) => JSON.stringify(ops).length <= MAX_SESSION_EDIT_CHARS, 'edit too large')
 
 /** `pages:create`. An unparseable `startedAt` falls back to now in `createSession`. */
 export const CreatePageArg = z
@@ -54,10 +62,8 @@ const SettingsPatchSchema = z
     cloudProvider: field.cloudProvider.exactOptional(),
     cloudModel: field.cloudModel.exactOptional(),
     cloudBaseUrl: field.cloudBaseUrl.exactOptional(),
-    detailsPanel: field.detailsPanel.exactOptional(),
     sidebar: field.sidebar.exactOptional(),
     sidebarWidth: field.sidebarWidth.exactOptional(),
-    detailsWidth: field.detailsWidth.exactOptional(),
     meetingNoticeSeen: field.meetingNoticeSeen.exactOptional(),
     semanticSearch: field.semanticSearch.exactOptional(),
     largerSpeakerModel: field.largerSpeakerModel.exactOptional()

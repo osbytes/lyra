@@ -11,7 +11,6 @@ import type {
 } from '../../shared/types'
 import {
   mergeSpeakers,
-  removeLiveNotes,
   speakerToMergeInto,
   replaceTranscript,
   upsertSpeaker,
@@ -78,7 +77,6 @@ const MAX_MATCHES = 5
 const MIN_LINE_SECONDS = 1.5
 /** Listen plays at most this much of a line. */
 const MAX_LISTEN_SECONDS = 30
-const ORIGIN_PIPELINE = 'pipeline'
 /** Recorded in raw passes; matches the model `whisper.ts` downloads. */
 const WHISPER_MODEL = 'whisper ggml-large-v3-turbo-q5_0'
 
@@ -484,22 +482,18 @@ export async function processMeeting(recording: MeetingRecording): Promise<void>
 
   if (segments.length) {
     await editSession(pageId, (doc) => {
-      doc.transact(() => {
-        for (const speaker of speakers) {
-          upsertSpeaker(doc, speaker.id, {
-            name: speaker.name,
-            personId: speaker.personId,
-            // Only the user confirms. A strong match still shows as sure (`SURE_MATCH`), but
-            // stays Lyra's guess, so a later pass can still correct it.
-            confirmed: false,
-            confidence: speaker.confidence,
-            matches: speaker.matches
-          }, ORIGIN_PIPELINE)
-        }
-        replaceTranscript(doc, segments, ORIGIN_PIPELINE)
-        // The labeled transcript supersedes the rough live text of the same audio.
-        removeLiveNotes(doc, ORIGIN_PIPELINE)
-      }, ORIGIN_PIPELINE)
+      for (const speaker of speakers) {
+        upsertSpeaker(doc, speaker.id, {
+          name: speaker.name,
+          personId: speaker.personId,
+          // Only the user confirms. A strong match still shows as sure (`SURE_MATCH`), but
+          // stays Lyra's guess, so a later pass can still correct it.
+          confirmed: false,
+          confidence: speaker.confidence,
+          matches: speaker.matches
+        })
+      }
+      replaceTranscript(doc, segments)
     })
     await learnSamples(learn)
   }
@@ -574,15 +568,13 @@ export async function assignSpeaker(
   const { name, personId } = await resolveSpeaker(pageId, id, assignment)
   const merged = await editSession(pageId, (doc) => {
     const into = speakerToMergeInto(doc, id, name, personId)
-    doc.transact(() => {
-      if (into) {
-        // Naming two speakers the same person merges them.
-        upsertSpeaker(doc, into, { name, personId, confirmed: true }, ORIGIN_PIPELINE)
-        mergeSpeakers(doc, id, into, ORIGIN_PIPELINE)
-      } else {
-        upsertSpeaker(doc, id, { name, personId, confirmed: true }, ORIGIN_PIPELINE)
-      }
-    }, ORIGIN_PIPELINE)
+    if (into) {
+      // Naming two speakers the same person merges them.
+      upsertSpeaker(doc, into, { name, personId, confirmed: true })
+      mergeSpeakers(doc, id, into, false)
+    } else {
+      upsertSpeaker(doc, id, { name, personId, confirmed: true })
+    }
     return into
   })
   log('meeting', 'named speaker', {

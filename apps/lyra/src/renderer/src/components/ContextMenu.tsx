@@ -1,13 +1,12 @@
+import { useCallback, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type MouseEvent as ReactMouseEvent,
-  type ReactNode
-} from 'react'
-import { Floating } from './Controls'
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuShortcut,
+  DropdownMenuTrigger
+} from './ui/dropdown-menu'
 
 export type MenuItem =
   | {
@@ -21,140 +20,67 @@ export type MenuItem =
     }
   | 'separator'
 
-type Runnable = Exclude<MenuItem, 'separator'>
-
 export type MenuRequest = { x: number; y: number; label: string; items: MenuItem[] }
 
 type Props = MenuRequest & { onClose: () => void }
 
-const EDGE = 8
-
 /**
  * Every right-click menu in Lyra: sessions in the sidebar, transcript lines, speakers, tags,
- * people. Arrow keys, Home/End, Enter, Escape; clicking outside or right-clicking again closes
- * it, and focus goes back to where it was.
+ * people. A Radix menu anchored at the pointer: arrow keys, Home/End, type-ahead, Enter, Escape;
+ * clicking outside closes it, and focus goes back to where it was.
  */
 export function ContextMenu({ x, y, label, items, onClose }: Props) {
-  const menu = useRef<HTMLDivElement>(null)
-  const runnable = items.filter((item): item is Runnable => item !== 'separator')
-  const enabled = runnable.flatMap((item, index) => (item.disabled ? [] : [index]))
-  const [active, setActive] = useState(enabled[0] ?? -1)
-  const [place, setPlace] = useState({ top: y, left: x })
   // When any item has an icon, every label lines up after the icon column.
-  const iconColumn = runnable.some((item) => item.icon !== undefined)
-
-  // Keep the whole menu inside the window, flipping up or left from the pointer when needed.
-  useLayoutEffect(() => {
-    const node = menu.current
-    if (!node) return
-    const size = node.getBoundingClientRect()
-    const top = y + size.height + EDGE > window.innerHeight ? y - size.height : y
-    const left = x + size.width + EDGE > window.innerWidth ? x - size.width : x
-    setPlace({
-      top: Math.max(EDGE, Math.min(top, window.innerHeight - size.height - EDGE)),
-      left: Math.max(EDGE, Math.min(left, window.innerWidth - size.width - EDGE))
-    })
-  }, [x, y])
-
-  useEffect(() => {
-    const previous = document.activeElement
-    menu.current?.focus({ preventScroll: true })
-    return () => {
-      if (previous instanceof HTMLElement && previous.isConnected) {
-        previous.focus({ preventScroll: true })
-      }
-    }
-  }, [])
-
-  const pick = (item: Runnable | undefined): void => {
-    if (!item || item.disabled) return
-    onClose()
-    item.run()
-  }
-
-  const step = (direction: 1 | -1): void => {
-    if (!enabled.length) return
-    const at = enabled.indexOf(active)
-    const next = at < 0 ? 0 : (at + direction + enabled.length) % enabled.length
-    setActive(enabled[next] ?? -1)
-  }
-
+  const iconColumn = items.some((item) => item !== 'separator' && item.icon !== undefined)
   return (
-    <Floating>
-      <div
-        className="menu-layer"
-        onMouseDown={(event) => {
-          event.stopPropagation()
-          onClose()
-        }}
+    <DropdownMenu
+      open
+      modal={false}
+      onOpenChange={(open) => {
+        if (!open) onClose()
+      }}
+    >
+      <DropdownMenuTrigger asChild>
+        <span
+          aria-hidden="true"
+          className="pointer-events-none fixed size-0"
+          style={{ left: x, top: y }}
+        />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        className="context-menu"
+        aria-label={label}
+        align="start"
+        side="bottom"
+        sideOffset={2}
+        collisionPadding={8}
         onContextMenu={(event) => {
           event.preventDefault()
-          event.stopPropagation()
           onClose()
         }}
       >
-        <div
-          ref={menu}
-          className="context-menu"
-          role="menu"
-          tabIndex={-1}
-          aria-label={label}
-          style={place}
-          onMouseDown={(event) => event.stopPropagation()}
-          onContextMenu={(event) => {
-            event.preventDefault()
-            event.stopPropagation()
-          }}
-          onKeyDown={(event) => {
-            const keys: Record<string, () => void> = {
-              Escape: onClose,
-              Tab: onClose,
-              ArrowDown: () => step(1),
-              ArrowUp: () => step(-1),
-              Home: () => setActive(enabled[0] ?? -1),
-              End: () => setActive(enabled.at(-1) ?? -1),
-              Enter: () => pick(runnable[active]),
-              ' ': () => pick(runnable[active])
-            }
-            const handler = keys[event.key]
-            if (!handler) return
-            event.preventDefault()
-            event.stopPropagation()
-            handler()
-          }}
-        >
-          {items.map((item, index) => {
-            if (item === 'separator') return <hr key={`separator-${String(index)}`} />
-            const position = runnable.indexOf(item)
-            return (
-              <button
-                key={index}
-                type="button"
-                role="menuitem"
-                tabIndex={-1}
-                disabled={item.disabled}
-                className={[
-                  position === active ? 'active' : '',
-                  item.danger ? 'danger' : ''
-                ].join(' ')}
-                onMouseEnter={() => {
-                  if (!item.disabled) setActive(position)
-                }}
-                onClick={() => pick(item)}
-              >
-                {iconColumn ? (
-                  <span className="menu-icon" aria-hidden="true">
-                    {item.icon}
-                  </span>
-                ) : null}
-                <span className="menu-label">{item.label}</span>
-                {item.shortcut ? <kbd>{item.shortcut}</kbd> : null}
-              </button>
-            )
-          })}
-        </div>
-      </div>
-    </Floating>
+        {items.map((item, index) =>
+          item === 'separator' ? (
+            <DropdownMenuSeparator key={`separator-${String(index)}`} />
+          ) : (
+            <DropdownMenuItem
+              key={index}
+              danger={item.danger ?? false}
+              disabled={item.disabled ?? false}
+              onSelect={() => item.run()}
+            >
+              {iconColumn ? (
+                <span className="grid size-4 place-items-center" aria-hidden="true">
+                  {item.icon}
+                </span>
+              ) : null}
+              <span className="min-w-0 flex-1 truncate">{item.label}</span>
+              {item.shortcut ? <DropdownMenuShortcut>{item.shortcut}</DropdownMenuShortcut> : null}
+            </DropdownMenuItem>
+          )
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
