@@ -8,6 +8,11 @@
 //   pnpm eval:ami                                   # ES2004a, IS1009a, TS3003a; first 10 min; far-field mic
 //   pnpm eval:ami --meetings ES2004a --minutes 5 --mic Mix-Headset
 //   pnpm eval:ami --minutes 0                       # whole meetings (slow)
+//   pnpm eval:voxconverse                           # six VoxConverse test files, 2–8 people (DER only)
+//   pnpm eval:voxconverse --files tkhgs,qadia --minutes 3
+//   pnpm eval:zoom                                  # recorded Zoom meetings from YouTube, labelled from
+//                                                   # the video's speaker border (Windows; DER only)
+//   pnpm eval:zoom --videos qGFoZ8yodc4 --minutes 10
 //   pnpm eval:local                                 # your own recordings (scripts/eval/local.cjs)
 //   node scripts/run-eval.cjs --score ref.json hyp.json   # score any two transcripts
 //   --check                   compare with the stored baseline for this suite, pipeline and
@@ -48,6 +53,8 @@ const { compare, summarize } = require('./eval/baseline.cjs')
 const calls = require('./eval/calls.cjs')
 const local = require('./eval/local.cjs')
 const sessions = require('./eval/sessions.cjs')
+const voxconverse = require('./eval/voxconverse.cjs')
+const zoomVideo = require('./eval/zoom-video.cjs')
 const { score } = require('./eval/metrics.cjs')
 
 const root = join(__dirname, '..')
@@ -62,7 +69,9 @@ const quick = process.argv.includes('--quick')
 /** One of each kind of trouble the full suites cover, chosen to finish in minutes. */
 const QUICK = {
   calls: ['call-speakers', 'call-quick-turns', 'call-similar-voices', 'room-far-field'],
-  sessions: ['room-2-desk', 'room-2-quick', 'room-2-music', 'hybrid-2+1', 'call-1+1-quick']
+  sessions: ['room-2-desk', 'room-2-quick', 'room-2-music', 'hybrid-2+1', 'call-1+1-quick'],
+  voxconverse: voxconverse.QUICK_FILES,
+  zoom: zoomVideo.QUICK_VIDEOS
 }
 const jobs = Math.max(1, Number(arg('jobs', quick ? '2' : '1')) || 1)
 const pipeline = arg('pipeline', 'live')
@@ -72,11 +81,13 @@ const asr = arg('asr', 'whisper')
 const noContext = process.argv.includes('--no-context')
 const largerSpeakerModel = process.argv.includes('--larger-speaker-model')
 const pct = (value) => `${(value * 100).toFixed(1)}%`.padStart(7)
+/** A word rate, or n/a for a reference of speaker turns without words (VoxConverse). */
+const wordPct = (value, words) => (words > 0 ? pct(value) : '    n/a')
 
 function report(id, result) {
   const { wer, cpWer, der } = result
   process.stdout.write(
-    `${id.padEnd(22)} WER ${pct(wer.rate)}  cpWER ${pct(cpWer.rate)}  DER ${pct(der.rate)}` +
+    `${id.padEnd(22)} WER ${wordPct(wer.rate, wer.words)}  cpWER ${wordPct(cpWer.rate, cpWer.words)}  DER ${pct(der.rate)}` +
       ` (miss ${pct(der.missed)} fa ${pct(der.falseAlarm)} conf ${pct(der.confusion)})` +
       `  speakers ${result.hypSpeakers}/${result.refSpeakers}` +
       `${relabeled(result.labels) === null ? '' : `  relabeled ${pct(relabeled(result.labels)).trim()}`}\n`
@@ -186,7 +197,25 @@ function plan(dataset, dataDir) {
       items: meetings.map((meeting) => ({ name: meeting, prepare: () => ami.prepare(dataDir, meeting, { mic, minutes }) }))
     }
   }
-  throw new Error(`unknown --dataset ${dataset}; use calls, sessions, local or ami`)
+  if (dataset === 'voxconverse') {
+    const files = list(arg('files', (quick ? QUICK.voxconverse : voxconverse.DEFAULT_FILES).join(',')))
+    const minutes = Number(arg('minutes', '0'))
+    if (!Number.isFinite(minutes) || minutes < 0) throw new Error('--minutes must be a number ≥ 0')
+    return {
+      options: { files, minutes },
+      items: files.map((file) => ({ name: file, prepare: () => voxconverse.prepare(dataDir, file, { minutes }) }))
+    }
+  }
+  if (dataset === 'zoom') {
+    const videos = list(arg('videos', (quick ? QUICK.zoom : zoomVideo.DEFAULT_VIDEOS).join(',')))
+    const minutes = Number(arg('minutes', '0'))
+    if (!Number.isFinite(minutes) || minutes < 0) throw new Error('--minutes must be a number ≥ 0')
+    return {
+      options: { videos, minutes },
+      items: videos.map((video) => ({ name: video, prepare: () => zoomVideo.prepare(dataDir, video, { minutes }) }))
+    }
+  }
+  throw new Error(`unknown --dataset ${dataset}; use calls, sessions, local, ami, voxconverse or zoom`)
 }
 
 async function main() {
@@ -252,8 +281,9 @@ async function main() {
   const run = save()
   const { overall } = run
   if (results.length > 0) {
+    const words = results.reduce((total, r) => total + r.wer.words, 0)
     process.stdout.write(
-      `${'overall'.padEnd(22)} WER ${pct(overall.wer)}  cpWER ${pct(overall.cpWer)}  DER ${pct(overall.der)}` +
+      `${'overall'.padEnd(22)} WER ${wordPct(overall.wer, words)}  cpWER ${wordPct(overall.cpWer, words)}  DER ${pct(overall.der)}` +
         `${overall.relabeled === undefined ? '' : `  relabeled ${pct(overall.relabeled).trim()}`}\n`
     )
   }
