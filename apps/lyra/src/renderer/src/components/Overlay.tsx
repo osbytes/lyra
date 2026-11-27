@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import type { HotkeyStatus, MicPrompt, SessionState } from '../../../shared/types'
 import { formatDuration } from '../lib/format'
 import { displayAccelerator } from './HotkeyInput'
-import { GripIcon, StopIcon } from './Icons'
+import { GripIcon, LyraIcon, StopIcon } from './Icons'
+import { Button } from './ui/button'
+import { LiveDot } from './ui/status'
 
 /** Same as the dock's waveform in the main window. */
 const BAR_COUNT = 20
@@ -44,53 +46,58 @@ function PromptCard({ prompt }: { prompt: MicPrompt }) {
   const meeting = prompt.kind === 'meeting'
   return (
     <div
-      className="overlay-prompt"
+      className="overlay-prompt grid grid-cols-[32px_minmax(0,1fr)] gap-x-3 gap-y-1 rounded-xl border-(length:--border-width) border-border bg-popover p-3 pl-3.5 text-body-sm text-popover-foreground shadow-lg"
       role="alertdialog"
       aria-label={meeting ? 'Record this meeting?' : 'Start a Lyra session?'}
     >
+      <span
+        className="row-span-2 grid size-8 place-items-center rounded-[8px] bg-primary text-primary-foreground"
+        aria-hidden="true"
+      >
+        <LyraIcon />
+      </span>
       {meeting ? (
-        <p>
-          A call started in {who}. Record it in Lyra, with the call’s audio?
+        <p className="m-0">
+          A call started in {who}. Record it with computer audio? Notes stay on this computer.
         </p>
       ) : (
-        <p>
-          {who} is using your microphone. Record it in Lyra?
+        <p className="m-0">
+          {who} is using the microphone. Start a Lyra session too?
         </p>
       )}
       {hotkey ? (
-        <p className="overlay-prompt-key">
+        <p className="overlay-prompt-key col-start-2 m-0 text-label text-text-3">
           Or press <kbd>{hotkey}</kbd> to start a session.
         </p>
       ) : null}
-      <div className="overlay-prompt-actions">
-        <button
-          type="button"
-          className="btn primary"
+      <div className="overlay-prompt-actions col-start-2 mt-1.5 flex flex-wrap gap-1.5">
+        <Button
+          size="sm"
+          variant="primary"
           onClick={() => {
             window.api.answerMicPrompt('start')
           }}
         >
-          {meeting ? 'Record' : 'Start session'}
-        </button>
-        <button
-          type="button"
-          className="btn"
+          {meeting ? 'Record meeting' : 'Start'}
+        </Button>
+        <Button
+          size="sm"
           onClick={() => {
             window.api.answerMicPrompt('dismiss')
           }}
         >
-          {meeting ? 'Dismiss' : 'Not now'}
-        </button>
+          Not now
+        </Button>
         {prompt.app ? (
-          <button
-            type="button"
-            className="btn ghost"
+          <Button
+            size="sm"
+            variant="ghost"
             onClick={() => {
               window.api.answerMicPrompt('ignore')
             }}
           >
-            Don’t ask for {prompt.app}
-          </button>
+            Never for this app
+          </Button>
         ) : null}
       </div>
     </div>
@@ -183,10 +190,11 @@ function RecordingPill() {
       <span className="overlay-grip" aria-hidden="true">
         <GripIcon />
       </span>
-      <button
+      <Button
         ref={stopButton}
-        type="button"
-        className="mic-btn overlay-stop"
+        size="sm"
+        variant="record"
+        className="overlay-stop rounded-full"
         onClick={() => {
           window.api.requestStop()
         }}
@@ -195,7 +203,8 @@ function RecordingPill() {
         aria-label={starting ? 'Cancel starting the recording' : 'Stop recording'}
       >
         <StopIcon />
-      </button>
+        Stop
+      </Button>
       <button
         type="button"
         className="overlay-body"
@@ -204,6 +213,7 @@ function RecordingPill() {
         }}
         aria-label={`${label}. Open Lyra`}
       >
+        {listening ? <LiveDot /> : null}
         <span className="dock-status" aria-hidden="true">
           {label}
         </span>

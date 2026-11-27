@@ -4,12 +4,15 @@ import { useNotesState } from '../hooks/useNotesState'
 import { log } from '../lib/log'
 import { writingNotes } from '../lib/status'
 import { ConfirmDialog } from './ConfirmDialog'
+import { tip } from './Tooltip'
+import { Button } from './ui/button'
 
 type Props = {
   pageId: string
   hasSummary: boolean
-  className: string
+  className?: string
   icon?: ReactNode
+  size?: 'sm' | 'md'
 }
 
 /**
@@ -18,7 +21,7 @@ type Props = {
  * While a summary is being written (from here or anywhere else) the button becomes Stop. A
  * summary an older version of Lyra wrote, untouched since, offers an update instead.
  */
-export function SummaryButton({ pageId, hasSummary, className, icon }: Props) {
+export function SummaryButton({ pageId, hasSummary, className, icon, size = 'md' }: Props) {
   const status = useMeetingStatus(pageId)
   // Covers the gap between the click and main's first status, so a double click can't start two.
   // It names the session that was clicked: the button is reused as the user moves between
@@ -80,36 +83,35 @@ export function SummaryButton({ pageId, hasSummary, className, icon }: Props) {
   return (
     <>
       {/* One button whose job changes, so keyboard focus stays put when writing starts. */}
-      <button
-        type="button"
+      <Button
+        variant="ghost"
+        size={size}
         className={className}
         disabled={!writing && otherJob}
-        title={
-          !writing && outdated
-            ? 'Written by an earlier version of Lyra. Updating rewrites it with sections and better action items.'
-            : undefined
-        }
+        {...(!writing && outdated
+          ? tip('Written by an earlier version of Lyra. Updating rewrites it with sections and better action items.')
+          : {})}
         onClick={() => {
           if (writing) onStop()
           else void onWrite()
         }}
       >
-        {icon}
+        {writing ? <span className="size-3 rounded-full border-2 border-current border-r-transparent motion-safe:animate-spin" aria-hidden="true" /> : icon}
         {writing ? 'Stop summary' : outdated ? 'Update summary' : hasSummary ? 'Rewrite summary' : 'Write summary'}
-      </button>
+      </Button>
       {asking === pageId ? (
         <ConfirmDialog
           title="Replace your edited summary?"
-          confirm="Replace summary"
-          danger
+          confirm="Rewrite summary"
+          cancel="Keep my summary"
           onCancel={() => setAsking(null)}
           onConfirm={() => {
             setAsking(null)
             write(pageId)
           }}
         >
-          You changed this summary since Lyra wrote it. Rewriting it replaces your changes, and
-          this can’t be undone.
+          You changed this summary since Lyra wrote it. Rewriting replaces your edits with a new
+          summary from the transcript, and this can’t be undone.
         </ConfirmDialog>
       ) : null}
     </>

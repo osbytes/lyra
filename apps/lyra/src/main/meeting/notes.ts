@@ -25,6 +25,7 @@ import {
 import { NOTES_PIPELINE } from './notesPipeline'
 import type { NotesWriter } from './notesWriter'
 import { onMeetingLabeled } from './events'
+import { worthSummarizing } from './notesWorth'
 import { reportMeetingStatus, SUMMARY_KEPT, SUMMARY_STOPPED } from './meetingActivity'
 import { clear as clearActivity, end as endActivity, onActivityAction, report as reportActivity } from '../activity'
 
@@ -125,6 +126,11 @@ export function createMeetingNotes(deps: {
     // Checked before taking the session's slot, so a skipped run never cancels a real one.
     if (trigger === 'auto' && summaryEdited(before.summary, before.fingerprint)) {
       log('notes', 'kept the edited summary', { pageId })
+      return false
+    }
+    // Every recorded session is summarized when it finishes, unless too little was said.
+    if (trigger === 'auto' && !before.summary.trim() && !worthSummarizing(before.lines)) {
+      log('notes', 'too short to summarize', { pageId, lines: before.lines.length })
       return false
     }
     const job = jobs.start(pageId)

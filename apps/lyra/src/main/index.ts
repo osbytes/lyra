@@ -215,7 +215,8 @@ function requireMainWindow(event: IpcMainEvent | IpcMainInvokeEvent): void {
 const BAND_HEIGHT = 56
 
 const DEFAULT_SIZE = { width: 1080, height: 720 }
-const MIN_SIZE = { width: 760, height: 520 }
+// 320 wide: the compact one-column layout beside a call (lib/layout.ts) is the smallest useful form.
+const MIN_SIZE = { width: 320, height: 480 }
 
 /**
  * Windows draws its caption buttons over the app's own top band instead of a separate title
