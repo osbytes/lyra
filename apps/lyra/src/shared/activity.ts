@@ -15,8 +15,11 @@ export type ActivityKind = z.infer<typeof ActivityKind>
 export const ActivityState = z.enum(['running', 'waiting', 'done', 'partial', 'failed'])
 export type ActivityState = z.infer<typeof ActivityState>
 
-/** What a row offers. `open` is the renderer's own (go to the session); the rest go to main. */
-export const ActivityAction = z.enum(['cancel', 'retry', 'install', 'open'])
+/**
+ * What a row offers. `open` is the renderer's own (go to the session); the rest go to main.
+ * `turnOff` turns off the optional feature that failed (the larger speaker model).
+ */
+export const ActivityAction = z.enum(['cancel', 'retry', 'install', 'open', 'turnOff'])
 export type ActivityAction = z.infer<typeof ActivityAction>
 
 /** Which screen shows the detail: an ending isn't announced while that screen is open. */

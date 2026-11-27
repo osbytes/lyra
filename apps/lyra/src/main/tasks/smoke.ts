@@ -84,6 +84,7 @@ import type { ProviderId } from '../../shared/ai'
 import { parseSettings, type Settings } from '../../shared/settings'
 import { createMeetingNotes } from '../meeting/notes'
 import { activityItem, markSeen } from '../activity'
+import { reportLargerModelFailure } from '../meeting/meetingActivity'
 import { NOTES_RUN_KEY, NotesRun } from '../meeting/notesJobs'
 import { NOTES_PIPELINE } from '../meeting/notesPipeline'
 import { createFakeNotesWriter, createModelNotesWriter } from '../meeting/notesWriter'
@@ -1311,6 +1312,23 @@ async function checkCopy(win: BrowserWindow): Promise<void> {
   if (clipboard.readText() !== text) throw new Error('copyText did not reach the clipboard')
 }
 
+/**
+ * The larger speaker model failed to start: Activity offers the standard model, and taking it
+ * from the window turns the setting off and clears the row.
+ */
+async function checkLargerModelFallback(win: BrowserWindow): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`larger speaker model: ${message}`)
+  }
+  await updateSettings({ largerSpeakerModel: true })
+  reportLargerModelFailure()
+  const row = activityItem('speakers:larger-model')
+  if (row?.state !== 'failed' || row.actions.join() !== 'retry,turnOff') fail(`activity row: ${JSON.stringify(row)}`)
+  await win.webContents.executeJavaScript(`window.api.activityAct('speakers:larger-model', 'turnOff')`)
+  if (getSettings().largerSpeakerModel) fail('"Use the standard model" left the setting on')
+  if (activityItem('speakers:larger-model')) fail('the row stayed after the setting was turned off')
+}
+
 export async function runUiSmoke(win: BrowserWindow): Promise<void> {
   try {
     checkConfigParsing()
@@ -1337,6 +1355,7 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
     await checkCopy(win)
     await checkRecordingManifest(win)
     await checkSessionSwitch(win)
+    await checkLargerModelFallback(win)
     const result: unknown = await win.webContents.executeJavaScript(`
       (async () => {
         const fail = (message) => { throw new Error(message) }

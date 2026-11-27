@@ -1,8 +1,9 @@
 /**
- * Runs the speaker-activity network (`speakerActivity.ts`) with ONNX Runtime. Only the speaker
- * worker loads this: the runtime is a native module and a recording takes seconds to minutes.
- * The runtime is loaded on first use, not with the worker: it has no build for Intel Macs, where
- * the setting is unavailable (`speakers.ts`) and the worker must still start.
+ * Runs the speaker-activity network (`speakerActivity.ts`) with ONNX Runtime. Only the activity
+ * worker (`activityWorker.ts`) loads this: the runtime is a native module, a recording takes
+ * seconds to minutes, and sherpa-onnx's own runtime can't share its process. The runtime is
+ * loaded on first use, not with the worker: it has no build for Intel Macs, where the setting is
+ * unavailable (`speakers.ts`).
  */
 import type * as Runtime from 'onnxruntime-node'
 import type { InferenceSession, Tensor } from 'onnxruntime-node'
@@ -22,9 +23,19 @@ function load(path: string, threads: number): Promise<Loaded> {
       runtime,
       session: await runtime.InferenceSession.create(path, { intraOpNumThreads: threads })
     }))
-    loaded = { path, model }
+    const entry = { path, model }
+    // A failed load isn't kept: the next step tries again.
+    model.catch(() => {
+      if (loaded === entry) loaded = null
+    })
+    loaded = entry
   }
   return loaded.model
+}
+
+/** Loads the runtime and the model without running it: whether it can run here at all. */
+export async function checkActivityModel(path: string, threads: number): Promise<void> {
+  await load(path, threads)
 }
 
 function floats(tensor: Tensor | undefined, name: string): Float32Array {

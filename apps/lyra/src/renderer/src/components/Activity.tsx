@@ -27,6 +27,8 @@ function actionLabel(item: ActivityItem, action: ActivityAction): string {
       return item.title === 'Restart to update' ? 'Restart' : 'Install'
     case 'open':
       return 'Open'
+    case 'turnOff':
+      return item.kind === 'speakers' ? 'Use the standard model' : 'Turn off'
   }
 }
 
