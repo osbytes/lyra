@@ -1,17 +1,17 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import type { SystemAudioState } from '../audio/recovery'
-import type { DictationPhase, Levels } from '../hooks/useDictation'
+import type { DictationPhase } from '../hooks/useDictation'
 import { shortcutLabel } from '../lib/format'
+import { cn } from '../lib/utils'
 import { phaseAnnouncement } from '../lib/status'
 import { notify } from '../lib/toast'
-import { MicIcon, RecordIcon, SpeakerIcon, StopIcon } from './Icons'
+import { MicIcon, RecordIcon, StopIcon } from './Icons'
+import { MicSystemIcon, useLevelHalo, type SubscribeLevel } from './Recording'
 import { Toast } from './ToastStack'
 import { tip } from './Tooltip'
 import { Button } from './ui/button'
 import { Spinner } from './ui/status'
 import { ToggleGroup, ToggleGroupItem } from './ui/toggle-group'
-
-export type SubscribeLevel = (listener: (levels: Levels) => void) => () => void
 
 /** The latest phase change to announce; stays put (and so silent) until the next change. */
 function usePhaseAnnouncement(phase: DictationPhase): string {
@@ -35,13 +35,17 @@ type RecordProps = {
   size?: 'lg' | 'sm'
   /** Shown beside Stop while this session records: the time and the levels. */
   readout?: ReactNode
+  /** The recorder's levels, so Stop breathes with the voice while this session records. */
+  subscribeLevel?: SubscribeLevel
 }
 
 /**
  * The record control, in the session header: one button whose label and icon change and whose
  * position never moves. Idle: a hollow ring, "Record" (or "Record more"). Starting: a dashed
- * ring, cancellable. Listening: red, a solid square, "Stop". Finishing: a spinner. Beside it the
- * source, mic or mic and computer audio, locked while listening.
+ * ring, cancellable. Listening: a soft red capsule the same height, holding a red "Stop" that
+ * breathes with the voice, then the time and a meter per source (the readout) — the same object
+ * as the floating pill. Finishing: a spinner. Beside it while idle the source, mic or mic and
+ * computer audio.
  */
 export function RecordControl({
   phase,
@@ -51,13 +55,16 @@ export function RecordControl({
   onToggle,
   elsewhere,
   size = 'lg',
-  readout
+  readout,
+  subscribeLevel
 }: RecordProps) {
   const announcement = usePhaseAnnouncement(phase)
   const listening = phase === 'listening' && !elsewhere
   const starting = phase === 'starting' && !elsewhere
   const finishing = phase === 'finishing' && !elsewhere
   const busy = phase !== 'idle'
+  const live = listening && !!readout
+  const halo = useLevelHalo<HTMLButtonElement>(subscribeLevel, live)
   return (
     <span className="record-control flex items-center gap-2">
       <span className="visually-hidden" aria-live="polite">
@@ -69,53 +76,67 @@ export function RecordControl({
           <span className="truncate">Recording “{elsewhere.title}”</span>
         </Button>
       ) : null}
-      <Button
-        size={size}
-        variant={listening || (elsewhere && phase === 'listening') ? 'record' : 'secondary'}
-        className="no-drag"
-        disabled={finishing}
-        onClick={onToggle}
-        aria-label={
-          starting
-            ? 'Cancel starting the recording'
-            : elsewhere && busy
-              ? `Stop recording “${elsewhere.title}”`
-              : listening
-                ? 'Stop recording'
-                : continues
-                  ? 'Record more into this session'
-                  : 'Record'
-        }
-        {...tip(
-          starting ? 'Cancel' : listening || (elsewhere && busy) ? 'Stop' : continues ? 'Record more · adds to the end' : 'Record',
-          shortcutLabel('D', true)
+      {/* Always this wrapper, so Stop is the same element as Record and keeps keyboard focus. */}
+      <span
+        className={cn(
+          'inline-flex shrink-0 items-center rounded-full',
+          live && 'gap-2.5 bg-record-soft pr-3.5',
+          live && (size === 'lg' ? 'h-10 pl-1' : 'h-[26px] pl-0.5')
         )}
       >
-        {finishing ? (
-          <Spinner />
-        ) : listening || (elsewhere && busy) ? (
-          <StopIcon />
-        ) : starting ? (
-          <RecordIcon className="text-record [&_circle]:[stroke-dasharray:3_2]" />
-        ) : (
-          <RecordIcon className="text-record" />
-        )}
-        {finishing
-          ? 'Finishing…'
-          : listening || (elsewhere && busy)
-            ? 'Stop'
-            : starting
-              ? 'Warming up…'
-              : continues
-                ? 'Record more'
-                : 'Record'}
-      </Button>
+        <Button
+          ref={halo}
+          size={live ? (size === 'lg' ? 'md' : 'sm') : size}
+          variant={listening || (elsewhere && phase === 'listening') ? 'record' : 'secondary'}
+          className={cn(
+            'no-drag',
+            live && 'level-halo rounded-full transition-[background-color,border-color,color,box-shadow]',
+            live && size !== 'lg' && 'h-[22px]'
+          )}
+          disabled={finishing}
+          onClick={onToggle}
+          aria-label={
+            starting
+              ? 'Cancel starting the recording'
+              : elsewhere && busy
+                ? `Stop recording “${elsewhere.title}”`
+                : listening
+                  ? 'Stop recording'
+                  : continues
+                    ? 'Record more into this session'
+                    : 'Record'
+          }
+          {...tip(
+            starting ? 'Cancel' : listening || (elsewhere && busy) ? 'Stop' : continues ? 'Record more · adds to the end' : 'Record',
+            shortcutLabel('D', true)
+          )}
+        >
+          {finishing ? (
+            <Spinner />
+          ) : listening || (elsewhere && busy) ? (
+            <StopIcon />
+          ) : starting ? (
+            <RecordIcon className="text-record [&_circle]:[stroke-dasharray:3_2]" />
+          ) : (
+            <RecordIcon className="text-record" />
+          )}
+          {finishing
+            ? 'Finishing…'
+            : listening || (elsewhere && busy)
+              ? 'Stop'
+              : starting
+                ? 'Warming up…'
+                : continues
+                  ? 'Record more'
+                  : 'Record'}
+        </Button>
+        {live ? readout : null}
+      </span>
       {starting ? (
         <Button size="sm" variant="ghost" className="no-drag" onClick={onToggle}>
           Cancel
         </Button>
       ) : null}
-      {listening ? readout : null}
       {busy ? null : (
         <ToggleGroup
           type="single"
@@ -137,61 +158,10 @@ export function RecordControl({
             aria-label="Mic and computer audio"
             {...tip('Mic and computer audio · for calls')}
           >
-            <SpeakerIcon />
+            <MicSystemIcon />
           </ToggleGroupItem>
         </ToggleGroup>
       )}
-    </span>
-  )
-}
-
-const BARS = 14
-/** A new bar joins the meter this often; the audio arrives far faster, and showing every frame flickers. */
-const STEP_MS = 90
-
-/**
- * A source's level as a short, slowly scrolling waveform: the loudest moment of each step, held
- * and let down gently, in quiet ink (amber when it clips). Decorative to assistive tech; silence
- * warnings are said in words elsewhere.
- */
-export function LevelMeter({ subscribe, track }: { subscribe: SubscribeLevel; track: keyof Levels }) {
-  const bars = useRef<(HTMLElement | null)[]>([])
-  useEffect(() => {
-    const history = new Array<number>(BARS).fill(0)
-    let peak = 0
-    let held = 0
-    let last = 0
-    return subscribe((levels) => {
-      peak = Math.max(peak, Math.min(1, (levels[track] ?? 0) * 1.6))
-      const now = performance.now()
-      if (now - last < STEP_MS) return
-      last = now
-      // Rise at once, fall gently: speech reads as shapes, not a strobe.
-      held = Math.max(peak, held * 0.6)
-      peak = 0
-      history.shift()
-      history.push(held)
-      history.forEach((value, index) => {
-        const bar = bars.current[index]
-        if (!bar) return
-        bar.style.transform = `scaleY(${String(0.12 + value * 0.88)})`
-        bar.dataset.hot = value > 0.95 ? 'true' : 'false'
-      })
-    })
-  }, [subscribe, track])
-  return (
-    <span className="inline-flex h-3.5 items-center gap-px" aria-hidden="true">
-      {Array.from({ length: BARS }, (_, index) => (
-        <i
-          key={index}
-          ref={(node) => {
-            bars.current[index] = node
-          }}
-          data-hot="false"
-          style={{ transform: 'scaleY(0.12)' }}
-          className="block h-full w-[2px] origin-center rounded-full bg-text-2 transition-transform duration-[90ms] ease-linear data-[hot=true]:bg-warning"
-        />
-      ))}
     </span>
   )
 }

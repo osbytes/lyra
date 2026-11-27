@@ -139,6 +139,49 @@ export const ChevronUpIcon = (props: IconProps) => (
   </Icon>
 )
 
+/** Moving the playhead to a time: an arrow up to a bar. */
+export const JumpIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M2.75 8h8M8 5.25 10.75 8 8 10.75M13.25 3v10" />
+  </Icon>
+)
+
+/** One speaker becoming two: a fork. */
+export const SplitIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M8 13.75V8.75L3.5 3.25M8 8.75l4.5-5.5M3.25 6.25v-3h3M12.75 6.25v-3h-3" />
+  </Icon>
+)
+
+/** Putting other words in place of what was heard: two opposed arrows. */
+export const ReplaceIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M2.75 5.5h10.5L10.5 2.75M13.25 10.5H2.75l2.75 2.75" />
+  </Icon>
+)
+
+/** Removing words from a transcript, kept struck through: a struck-out letter. */
+export const StrikeIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M2.5 8h11M11 4.75C10.6 3.5 9.4 2.75 8 2.75c-1.8 0-3 .95-3 2.3 0 .95.6 1.6 1.75 2" />
+    <path d="M5 11.1c.35 1.35 1.55 2.15 3.1 2.15 1.9 0 3.15-.95 3.15-2.4 0-.4-.1-.75-.3-1.05" />
+  </Icon>
+)
+
+/** Clearing marks off: an eraser. */
+export const EraserIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M6.5 13.25h6.75M2.95 9.55l6.5-6.5a1.4 1.4 0 0 1 2 0l2 2a1.4 1.4 0 0 1 0 2l-6.2 6.2H5.5L2.95 10.7a.8.8 0 0 1 0-1.15ZM5.75 6.75l3.5 3.5" />
+  </Icon>
+)
+
+/** Sending text out to another app: a paper plane. */
+export const SendIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M14.25 1.75 7 9M14.25 1.75 9.75 14.25 7 9 1.75 6.25l12.5-4.5Z" />
+  </Icon>
+)
+
 export const ChevronRightIcon = (props: IconProps) => (
   <Icon {...props}>
     <path d="M6.25 4.5 9.75 8l-3.5 3.5" />

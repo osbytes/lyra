@@ -1,73 +1,13 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import type { ActivityItem } from '../../../shared/activity'
-import type { SystemAudioState } from '../audio/recovery'
 import { useMeetingStatus } from '../hooks/useMeetingStatus'
-import { clockLabel } from '../lib/format'
 import { log } from '../lib/log'
 import type { Provenance } from '../lib/provenance'
 import { processingActivity, statusBusy } from '../lib/status'
-import { shortDeviceName } from '../lib/deviceName'
 import { ActivityButton } from './Activity'
-import { LevelMeter, type SubscribeLevel } from './Capture'
-import { CloudIcon, LocalIcon, MicIcon, ProcessingIcon, SpeakerIcon } from './Icons'
-import { tip } from './Tooltip'
+import { CloudIcon, LocalIcon, ProcessingIcon } from './Icons'
 import { Button } from './ui/button'
-import { LiveDot, Spinner } from './ui/status'
-
-/** Seconds since `since`, ticking once a second while it's set. */
-function useElapsed(since: number | null): number {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    if (since === null) return
-    const timer = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(timer)
-  }, [since])
-  return since === null ? 0 : Math.max(0, (now - since) / 1000)
-}
-
-type ReadoutProps = {
-  startedAt: number | null
-  micName: string | null
-  systemAudio: SystemAudioState
-  /** The recorder's levels, for a meter per source. */
-  subscribeLevel: SubscribeLevel
-}
-
-/**
- * While this session records: the live dot, the time, and a quiet meter per source, beside Stop
- * in the header (where the source choice sits while idle), so recording never adds a row.
- */
-export function RecordingReadout({ startedAt, micName, systemAudio, subscribeLevel }: ReadoutProps) {
-  const elapsed = useElapsed(startedAt)
-  return (
-    <span className="no-drag inline-flex items-center gap-2.5 text-[12.5px] text-text-2" role="status" aria-label="Recording">
-      <LiveDot />
-      <span className="font-mono text-[15px] font-medium tabular-nums text-foreground" role="timer">
-        {clockLabel(elapsed)}
-      </span>
-      <span className="inline-flex items-center gap-1" {...tip(micName ? shortDeviceName(micName) : 'Microphone')}>
-        <MicIcon className="shrink-0" />
-        <LevelMeter subscribe={subscribeLevel} track="mic" />
-      </span>
-      {systemAudio === 'live' ? (
-        <span className="inline-flex items-center gap-1" {...tip('Computer audio')}>
-          <SpeakerIcon className="shrink-0" />
-          <LevelMeter subscribe={subscribeLevel} track="system" />
-        </span>
-      ) : systemAudio === 'off' ? null : (
-        // A flat meter would look like a quiet call; say it isn't being recorded at all.
-        <span
-          className="inline-flex items-center opacity-40"
-          role="img"
-          aria-label="Computer audio isn’t being recorded"
-          {...tip('Computer audio isn’t being recorded')}
-        >
-          <SpeakerIcon className="shrink-0" />
-        </span>
-      )}
-    </span>
-  )
-}
+import { Spinner } from './ui/status'
 
 /**
  * Work still changing this session after recording (finding speakers, writing the summary), in

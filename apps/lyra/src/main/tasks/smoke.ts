@@ -145,6 +145,13 @@ function checkSettingsSchema(): void {
   if (base.largerSpeakerModel || parseSettings({ largerSpeakerModel: 'yes' }, base).largerSpeakerModel) {
     throw new Error('settings: larger speaker model default')
   }
+  // What Send to… includes: the transcript alone at first; a bad stored value is refused.
+  if (base.sendToParts.join() !== 'transcript') {
+    throw new Error('settings: send-to parts default')
+  }
+  if (parseSettings({ sendToParts: ['summary', 'everything'] }, base).sendToParts.join() !== base.sendToParts.join()) {
+    throw new Error('settings: a bad send-to part was kept')
+  }
 }
 
 /**
@@ -1315,8 +1322,12 @@ async function checkSessionEdits(win: BrowserWindow): Promise<void> {
     const id = ${id}
     const state = window.__smokeEdits
     for (let i = 0; i < 50 && state.changes.length < 2; i++) await new Promise((done) => setTimeout(done, 20))
+    // Some of the live line's words, said by someone else: the line splits around them.
+    await window.api.editSession(id, 2, [
+      { op: 'splitLine', id: 'w0', start: 2, end: 6, speaker: 'c9', create: { name: 'Ana', personId: null, confirmed: true } }
+    ])
     let refused = ''
-    await window.api.editSession(id, 2, [{ op: 'wipe' }]).catch((error) => { refused = String(error) })
+    await window.api.editSession(id, 3, [{ op: 'wipe' }]).catch((error) => { refused = String(error) })
     state.stop()
     window.api.closeSession(id)
     return { opened: state.opened.rev, rev: state.rev, changes: state.changes, refused }
@@ -1345,7 +1356,12 @@ async function checkSessionEdits(win: BrowserWindow): Promise<void> {
   }
   if ('notes' in own.changes || 'transcript' in own.changes) fail('a change carried fields it did not change')
   if (!seen.refused) fail('an unknown edit was accepted')
-  if ((await readSession(page.id)).title !== 'Edited in a window') fail('the edit did not land in main')
+  const saved = await readSession(page.id)
+  if (saved.title !== 'Edited in a window') fail('the edit did not land in main')
+  const split = saved.transcript.map((line) => [line.text, line.cluster])
+  if (JSON.stringify(split) !== JSON.stringify([['A', null], ['live', 'c9'], ['line', null]])) {
+    fail(`a split line: ${JSON.stringify(split)}`)
+  }
   await deletePage(page.id)
 }
 
@@ -1355,6 +1371,19 @@ async function checkCopy(win: BrowserWindow): Promise<void> {
   await win.webContents.executeJavaScript(`window.api.copyText(${JSON.stringify(text)})`)
   for (let i = 0; i < 50 && clipboard.readText() !== text; i++) await new Promise((done) => setTimeout(done, 20))
   if (clipboard.readText() !== text) throw new Error('copyText did not reach the clipboard')
+}
+
+/**
+ * Prompt apps: the window can ask which are installed, and an unknown app is refused at the
+ * boundary. Nothing is opened, so the smoke test never launches another app.
+ */
+async function checkPromptApps(win: BrowserWindow): Promise<void> {
+  const listed: unknown = await win.webContents.executeJavaScript('window.api.promptApps()')
+  if (!Array.isArray(listed)) throw new Error('promptApps did not return a list')
+  const refused: unknown = await win.webContents.executeJavaScript(
+    `window.api.openInPromptApp({ app: 'nope', text: 'x' }).then(() => false, () => true)`
+  )
+  if (refused !== true) throw new Error('openInPromptApp accepted an unknown app')
 }
 
 /**
@@ -1398,6 +1427,7 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
     // Last of the index checks: the rebuilt index holds only what changed since (see the report).
     await checkSearchIndexRecovery()
     await checkCopy(win)
+    await checkPromptApps(win)
     await checkRecordingManifest(win)
     await checkSessionSwitch(win)
     await checkSessionEdits(win)

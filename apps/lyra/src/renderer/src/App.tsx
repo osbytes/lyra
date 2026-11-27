@@ -28,6 +28,7 @@ import {
 import {
   ChevronDownIcon,
   CopyIcon,
+  SendIcon,
   FolderIcon,
   HomeIcon,
   ListIcon,
@@ -62,7 +63,7 @@ import { useActivity } from './hooks/useActivity'
 import { useActivityEndings } from './hooks/useActivityEndings'
 import { useDictation, type DictationPhase, type StartResult } from './hooks/useDictation'
 import { sessionCommandAction } from './hooks/sessionCommands'
-import { usePages, type OpenPage } from './hooks/usePages'
+import { usePages } from './hooks/usePages'
 import { useSettings } from './hooks/useSettings'
 import { useSettingsIssues } from './hooks/useSettingsIssues'
 import { clockLabel, homePath, relativeTime, shortcutLabel, wordCount } from './lib/format'
@@ -80,9 +81,13 @@ import { drawAttention, scrollBehavior } from './lib/motion'
 import { behindLabel, dockActivity } from './lib/status'
 import { notify, onToast, replacesToast, type ToastMessage } from './lib/toast'
 import { tip } from './components/Tooltip'
-import { RecordingReadout, SessionWork, StatusBar } from './components/SessionChrome'
+import { SessionWork, StatusBar } from './components/SessionChrome'
+import { RecordingReadout } from './components/Recording'
 import { Kbd } from './components/ui/status'
 import { overallProvenance } from './lib/provenance'
+import { sessionMarkdown } from './lib/sessionMarkdown'
+import { usePromptApps } from './hooks/usePromptApps'
+import { SendToMenu } from './components/SendToMenu'
 import { Button } from './components/ui/button'
 
 /** The overlay pill doesn't need every audio frame; ~12 updates a second look smooth. */
@@ -165,18 +170,6 @@ function startedLabel(value: string): string {
   return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', ...(year ? { year } : {}) })
 }
 
-function toMarkdown(page: OpenPage): string {
-  const names = new Map(page.speakers.map((speaker) => [speaker.id, speaker.name]))
-  const lines = page.transcript.map((line) => {
-    const name = line.cluster ? (names.get(line.cluster) ?? 'Speaker') : 'Speaker'
-    return `**${name}:** ${line.text}`
-  })
-  const body = [page.summary.trim(), page.body.trim(), lines.join('\n\n')]
-    .filter(Boolean)
-    .join('\n\n')
-  return page.title && page.title !== 'Untitled' ? `# ${page.title}\n\n${body}` : body
-}
-
 export default function App(): React.JSX.Element {
   const {
     pages,
@@ -187,6 +180,7 @@ export default function App(): React.JSX.Element {
     editSegment,
     editLineOverlay,
     assignLines,
+    splitLine,
     nameSpeaker,
     tag,
     untag,
@@ -249,6 +243,7 @@ export default function App(): React.JSX.Element {
   /** How many lines the transcript had when the person scrolled up to reread; null when following. */
   const [away, setAway] = useState<number | null>(null)
   const sessionMenu = useContextMenu()
+  const promptApps = usePromptApps()
 
   useEffect(() => {
     return window.api.onStatus(setStatus)
@@ -353,7 +348,9 @@ export default function App(): React.JSX.Element {
   }, [startSession])
 
   // Mirror recorder state to main for the tray and the overlay pill.
-  const { phase, progress, micName, subscribeLevel } = dictation
+  const { phase, micName, subscribeLevel } = dictation
+  // The source choice is locked while recording, so the setting is what's being captured.
+  const reportedSystemAudio = settings?.captureSystemAudio ?? true
   const [listeningSince, setListeningSince] = useState<number | null>(null)
   const sinceRef = useRef<number | null>(null)
   useEffect(() => {
@@ -363,20 +360,18 @@ export default function App(): React.JSX.Element {
     window.api.reportSession({
       phase,
       startedAt: sinceRef.current,
-      micName
+      micName,
+      systemAudio: reportedSystemAudio
     })
-  }, [phase, micName])
+  }, [phase, micName, reportedSystemAudio])
 
-  const transcribing = (progress?.queued ?? 0) > 0
-  const statusRef = useRef('')
-  statusRef.current = transcribing ? 'Transcribing…' : ''
   useEffect(() => {
     let last = 0
     return subscribeLevel((levels) => {
       const now = performance.now()
       if (now - last < OVERLAY_FRAME_MS) return
       last = now
-      window.api.reportOverlayFrame({ level: Math.max(levels.mic, levels.system ?? 0), status: statusRef.current })
+      window.api.reportOverlayFrame({ mic: levels.mic, system: levels.system })
     })
   }, [subscribeLevel])
 
@@ -502,7 +497,7 @@ export default function App(): React.JSX.Element {
     })
   }
 
-  const activity = dockActivity(status, progress ? behindLabel(progress) : null)
+  const activity = dockActivity(status, dictation.progress ? behindLabel(dictation.progress) : null)
   const activityElement = activity ? <ActivityToast activity={activity} /> : null
 
   // Hovering or focusing the toast holds it; F6 reaches its button from anywhere (see onKey).
@@ -549,7 +544,7 @@ export default function App(): React.JSX.Element {
 
   const copy = (): void => {
     if (!current) return
-    window.api.copyText(toMarkdown(current))
+    window.api.copyText(sessionMarkdown(current))
     setCopied(true)
     notify('Copied as Markdown')
   }
@@ -681,6 +676,7 @@ export default function App(): React.JSX.Element {
           onShow: () => void openPage(recordingId)
         }
       : null
+  const transcribing = (dictation.progress?.queued ?? 0) > 0
   const pending = recordingHere ? { working: transcribing, finishing: dictation.phase === 'finishing' } : null
   const hasTranscript = !!current && (current.transcript.length > 0 || pending !== null)
   const summaryText = current?.summary ?? ''
@@ -765,12 +761,14 @@ export default function App(): React.JSX.Element {
       onToggle={toggleDictation}
       elsewhere={elsewhere}
       size={width === 'compact' ? 'sm' : 'lg'}
+      subscribeLevel={dictation.subscribeLevel}
       readout={
         recordingHere && listening ? (
           <RecordingReadout
             startedAt={listeningSince}
             micName={dictation.micName}
-            systemAudio={dictation.systemAudio}
+            // Mic only in the readout while computer audio isn't actually being recorded.
+            systemAudio={dictation.systemAudio === 'live'}
             subscribeLevel={dictation.subscribeLevel}
           />
         ) : null
@@ -852,6 +850,7 @@ export default function App(): React.JSX.Element {
           onEditOverlay={editLineOverlay}
           onQuote={quote}
           onAssign={assignLines}
+          onSplitLine={splitLine}
           onName={nameSpeaker}
           onUndo={() => void undo()}
           showSpeakersBar={false}
@@ -1105,6 +1104,15 @@ export default function App(): React.JSX.Element {
                         label: 'Session actions',
                         items: [
                           { label: copied ? 'Copied' : 'Copy as Markdown', icon: <CopyIcon />, run: copy },
+                          ...(promptApps.length
+                            ? [
+                                {
+                                  label: 'Send to…',
+                                  icon: <SendIcon />,
+                                  next: { label: 'Send to', content: <SendToMenu session={current} apps={promptApps} /> }
+                                }
+                              ]
+                            : []),
                           {
                             label: 'Find in session',
                             icon: <SearchIcon />,

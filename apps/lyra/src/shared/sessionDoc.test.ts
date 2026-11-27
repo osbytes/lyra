@@ -23,6 +23,7 @@ import {
   setSegmentsCluster,
   setSegmentText,
   speakerToMergeInto,
+  splitLineSpeaker,
   upsertSpeaker,
   type NewSegment,
   type SessionDoc,
@@ -430,6 +431,116 @@ describe('applyOp', () => {
     const doc = meeting()
     applyOp(doc, { op: 'lineEdits', id: 'b', edits: [{ kind: 'delete', start: 0, end: 9 }] })
     expect(doc.transcript[1]).toMatchObject({ text: 'hi', edits: [], edited: false })
+  })
+})
+
+describe('splitLineSpeaker', () => {
+  function oneLine(): SessionDoc {
+    const doc = newDoc()
+    upsertSpeaker(doc, 'c0', speaker('Speaker 1'))
+    upsertSpeaker(doc, 'c1', speaker('Speaker 2'))
+    // 20 characters over 10 seconds: two characters a second.
+    replaceTranscript(doc, [{ ...line('a', 'c0', 10, 20, 'one two three four f'), rawId: 'r0', confidence: 0.9 }])
+    return doc
+  }
+  const rows = (doc: SessionDoc) =>
+    doc.transcript.map((entry) => [entry.id, entry.cluster, entry.userCluster, entry.text, entry.start, entry.end])
+
+  it('gives the middle of a line to another speaker, sharing out its time by length', () => {
+    const doc = oneLine()
+    // "two three " (4–14): the space after it stays with nobody.
+    splitLineSpeaker(doc, 'a', { start: 4, end: 14 }, 'c1')
+    expect(rows(doc)).toEqual([
+      ['a.0', 'c0', false, 'one', 10, 12],
+      ['a.4', 'c1', true, 'two three', 12, 17],
+      ['a.14', 'c0', false, 'four f', 17, 20]
+    ])
+    // The moved words no longer stand for the pass's line; the rest still do.
+    expect(doc.transcript.map((entry) => [entry.rawId, entry.confidence])).toEqual([
+      ['r0', 0.9],
+      [null, null],
+      ['r0', 0.9]
+    ])
+  })
+
+  it('splits once when the words start or end the line', () => {
+    const doc = oneLine()
+    splitLineSpeaker(doc, 'a', { start: 0, end: 7 }, 'c1')
+    expect(doc.transcript.map((entry) => [entry.id, entry.cluster, entry.text])).toEqual([
+      ['a.0', 'c1', 'one two'],
+      ['a.8', 'c0', 'three four f']
+    ])
+  })
+
+  it('keeps punctuation with the words it ends', () => {
+    const doc = newDoc()
+    replaceTranscript(doc, [line('a', 'c0', 0, 4, 'Is it on, or off?')])
+    splitLineSpeaker(doc, 'a', { start: 10, end: 16 }, 'c1')
+    expect(doc.transcript.map((entry) => [entry.cluster, entry.text])).toEqual([
+      ['c0', 'Is it on,'],
+      ['c1', 'or off?']
+    ])
+  })
+
+  it('moves the whole line in place when every word is chosen', () => {
+    const doc = oneLine()
+    splitLineSpeaker(doc, 'a', { start: 0, end: 20 }, 'c1')
+    expect(rows(doc)).toEqual([['a', 'c1', true, 'one two three four f', 10, 20]])
+  })
+
+  it('carries edits into the piece they fall in, whole', () => {
+    const doc = oneLine()
+    setSegmentEdits(doc, 'a', [
+      { kind: 'replace', start: 4, end: 7, text: 'too' },
+      { kind: 'highlight', start: 0, end: 13 }
+    ])
+    // The selection starts inside the correction: it takes all of it.
+    splitLineSpeaker(doc, 'a', { start: 5, end: 13 }, 'c1')
+    expect(doc.transcript.map((entry) => [entry.text, entry.edits, entry.edited])).toEqual([
+      ['one', [{ kind: 'highlight', start: 0, end: 3 }], false],
+      [
+        'too three',
+        [
+          { kind: 'replace', start: 0, end: 3, text: 'too' },
+          { kind: 'highlight', start: 0, end: 9 }
+        ],
+        true
+      ],
+      ['four f', [], false]
+    ])
+  })
+
+  it('creates the speaker, changes nothing when applied twice, and undoes', () => {
+    const doc = oneLine()
+    const before = copyDoc(doc)
+    const op: SessionOp = {
+      op: 'splitLine',
+      id: 'a',
+      start: 4,
+      end: 13,
+      speaker: 'c2',
+      create: { name: 'Ana', personId: null, confirmed: true }
+    }
+    applyOp(doc, op)
+    const once = copyDoc(doc)
+    applyOp(doc, op)
+    expect(doc).toEqual(once)
+    expect(names(doc)).toMatchObject({ c2: 'Ana' })
+    const patch = patchBetween(before, doc)
+    if (!patch) throw new Error('no patch')
+    applyOp(doc, { op: 'restore', patch: invertPatch(patch) })
+    expect(doc.transcript).toEqual(before.transcript)
+    expect(doc.speakers).toEqual(before.speakers)
+    applyOp(doc, { op: 'restore', patch })
+    expect(doc.transcript).toEqual(once.transcript)
+  })
+
+  it('ignores a span of only spaces, or a line that is gone', () => {
+    const doc = oneLine()
+    const before = copyDoc(doc)
+    splitLineSpeaker(doc, 'a', { start: 3, end: 4 }, 'c1')
+    splitLineSpeaker(doc, 'gone', { start: 0, end: 3 }, 'c1')
+    expect(doc).toEqual(before)
   })
 })
 

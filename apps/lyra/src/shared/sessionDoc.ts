@@ -1,6 +1,14 @@
 import { z } from 'zod'
 import { appendTranscript } from './transcriptText'
-import { applyOverlay, hasTextEdits, readEdits, rewriteLine, TranscriptEdit } from './transcriptOverlay'
+import {
+  applyOverlay,
+  expandToEdits,
+  hasTextEdits,
+  readEdits,
+  rewriteLine,
+  TranscriptEdit,
+  type Span
+} from './transcriptOverlay'
 
 /**
  * The editable layer of a session, as plain data. Main owns it (`sessionStore.ts`) and applies
@@ -296,6 +304,73 @@ export function setSegmentsCluster(
   }
 }
 
+/**
+ * Gives some of a line's words to another speaker: the line becomes up to three (the words
+ * before, the span, the words after), and the span's line is the user's choice of speaker, so a
+ * relabel pins those words to it. A line keeps no word times, so its time is shared out by
+ * length. Ids are made from the line's id and offsets: applying the split twice does nothing.
+ */
+export function splitLineSpeaker(
+  doc: SessionDoc,
+  id: string,
+  span: Span,
+  cluster: string
+): void {
+  const index = doc.transcript.findIndex((line) => line.id === id)
+  const line = doc.transcript[index]
+  if (!line) return
+  const { original } = line
+  // A correction or removal goes whole to one side, never cut in half.
+  const cut = expandToEdits(line.edits, {
+    start: Math.max(0, Math.min(span.start, original.length)),
+    end: Math.max(0, Math.min(span.end, original.length))
+  })
+  if (!original.slice(cut.start, cut.end).trim()) return
+  // Punctuation alone on either side ends or starts the chosen words, not a line of its own.
+  const bare = (text: string): boolean => /^[\s\p{P}]*$/u.test(text)
+  if (bare(original.slice(0, cut.start))) cut.start = 0
+  if (bare(original.slice(cut.end))) cut.end = original.length
+  const at = (offset: number): number =>
+    original.length ? line.start + ((line.end - line.start) * offset) / original.length : line.start
+  const piece = (from: number, to: number, own: boolean): TranscriptSegment | null => {
+    let a = from
+    let b = to
+    while (a < b && /\s/.test(original.charAt(a))) a++
+    while (b > a && /\s/.test(original.charAt(b - 1))) b--
+    if (b <= a) return null
+    const edits = line.edits.flatMap((edit): TranscriptEdit[] => {
+      const start = Math.max(edit.start, a)
+      const end = Math.min(edit.end, b)
+      const inside = edit.start === edit.end ? edit.start >= a && edit.start <= b : end > start
+      return inside ? [{ ...edit, start: start - a, end: end - a }] : []
+    })
+    const words = original.slice(a, b)
+    const valid = readEdits(edits, words.length)
+    return {
+      id: `${id}.${String(a)}`,
+      // The pass didn't give the moved words their speaker, so they no longer stand for its line.
+      rawId: own ? null : line.rawId,
+      start: at(from),
+      end: at(to),
+      cluster: own ? cluster : line.cluster,
+      userCluster: own || line.userCluster,
+      text: applyOverlay(words, valid),
+      original: words,
+      edits: valid,
+      edited: hasTextEdits(valid),
+      confidence: own ? null : line.confidence
+    }
+  }
+  const pieces = [
+    piece(0, cut.start, false),
+    piece(cut.start, cut.end, true),
+    piece(cut.end, original.length, false)
+  ].filter((entry) => entry !== null)
+  // The whole line: a plain move, which keeps the line as it is.
+  if (pieces.length === 1) setSegmentsCluster(doc, [id], cluster, true)
+  else doc.transcript.splice(index, 1, ...pieces)
+}
+
 /** Whether the user chose this line's speaker (see `TranscriptSegment.userCluster`). */
 export function isUserAssigned(doc: SessionDoc, lineId: string): boolean {
   return findSegment(doc, lineId)?.userCluster === true
@@ -517,7 +592,11 @@ export const SessionPatch = z.object({
   speakers: z
     .array(z.object({ id: z.string(), from: SpeakerEntry.nullable(), to: SpeakerEntry.nullable() }))
     .optional(),
-  lines: z.array(z.object({ id: z.string(), from: LineFields, to: LineFields })).optional()
+  lines: z.array(z.object({ id: z.string(), from: LineFields, to: LineFields })).optional(),
+  /** A run of lines that became other lines (a line split between speakers). */
+  runs: z
+    .array(z.object({ from: z.array(TranscriptSegment).min(1), to: z.array(TranscriptSegment).min(1) }))
+    .optional()
 })
 export type SessionPatch = z.infer<typeof SessionPatch>
 
@@ -537,6 +616,15 @@ export const SessionOp = z.discriminatedUnion('op', [
   z.object({
     op: z.literal('assign'),
     ids: z.array(z.string()),
+    speaker: z.string(),
+    create: NewSpeakerFields.optional()
+  }),
+  /** Gives a line's words in `[start, end)` to a speaker, creating it first when `create` is given. */
+  z.object({
+    op: z.literal('splitLine'),
+    id: z.string(),
+    start: z.number().int().nonnegative(),
+    end: z.number().int().nonnegative(),
     speaker: z.string(),
     create: NewSpeakerFields.optional()
   }),
@@ -581,6 +669,11 @@ function applyPatch(doc: SessionDoc, patch: SessionPatch): void {
     const line = findSegment(doc, id)
     if (line && same(lineFields(line), from)) Object.assign(line, structuredClone(to))
   }
+  for (const { from, to } of patch.runs ?? []) {
+    const index = doc.transcript.findIndex((line) => line.id === from[0]?.id)
+    if (index < 0 || !same(doc.transcript.slice(index, index + from.length), from)) continue
+    doc.transcript.splice(index, from.length, ...structuredClone(to))
+  }
 }
 
 /** Applies a window's edit. */
@@ -611,6 +704,10 @@ export function applyOp(doc: SessionDoc, op: SessionOp): void {
       if (op.create) upsertSpeaker(doc, op.speaker, { ...op.create, confidence: null, matches: [] })
       setSegmentsCluster(doc, op.ids, op.speaker, true)
       return
+    case 'splitLine':
+      if (op.create) upsertSpeaker(doc, op.speaker, { ...op.create, confidence: null, matches: [] })
+      splitLineSpeaker(doc, op.id, { start: op.start, end: op.end }, op.speaker)
+      return
     case 'name': {
       const into = speakerToMergeInto(doc, op.id, op.name, op.personId)
       upsertSpeaker(doc, into ?? op.id, { name: op.name, personId: op.personId, confirmed: true })
@@ -636,10 +733,13 @@ export function patchBetween(before: SessionDoc, after: SessionDoc): SessionPatc
     return same(from, to) ? [] : [{ id, from, to }]
   })
   if (speakers.length) patch.speakers = speakers
+  const run = changedRun(before.transcript, after.transcript)
+  if (run) patch.runs = [run]
+  const inRun = new Set(run?.to.map((line) => line.id))
   const old = new Map(before.transcript.map((line) => [line.id, line]))
   const lines = after.transcript.flatMap((line) => {
     const was = old.get(line.id)
-    if (!was) return []
+    if (!was || inRun.has(line.id)) return []
     const from = lineFields(was)
     const to = lineFields(line)
     return same(from, to) ? [] : [{ id: line.id, from, to }]
@@ -647,6 +747,31 @@ export function patchBetween(before: SessionDoc, after: SessionDoc): SessionPatc
   if (lines.length) patch.lines = lines
   // A copy: the documents' arrays and entries may be changed in place after this.
   return Object.keys(patch).length ? structuredClone(patch) : null
+}
+
+/**
+ * Where the lines themselves changed (not just their fields): the run between the lines both
+ * transcripts start and end with. Null when every line is still there, in order.
+ */
+function changedRun(
+  before: readonly TranscriptSegment[],
+  after: readonly TranscriptSegment[]
+): { from: TranscriptSegment[]; to: TranscriptSegment[] } | null {
+  const shorter = Math.min(before.length, after.length)
+  let head = 0
+  while (head < shorter && before[head]?.id === after[head]?.id) head++
+  if (head === before.length && head === after.length) return null
+  let tail = 0
+  while (
+    tail < shorter - head &&
+    before[before.length - 1 - tail]?.id === after[after.length - 1 - tail]?.id
+  ) {
+    tail++
+  }
+  const from = before.slice(head, before.length - tail)
+  const to = after.slice(head, after.length - tail)
+  // Undo finds a run by its first line, so lines only added or only removed aren't covered.
+  return from.length && to.length ? { from, to } : null
 }
 
 /** The patch that takes a change back. */
@@ -662,5 +787,6 @@ export function invertPatch(patch: SessionPatch): SessionPatch {
   if (tags) out.tags = tags
   if (patch.speakers) out.speakers = patch.speakers.map(({ id, from, to }) => ({ id, from: to, to: from }))
   if (patch.lines) out.lines = patch.lines.map(({ id, from, to }) => ({ id, from: to, to: from }))
+  if (patch.runs) out.runs = patch.runs.map(({ from, to }) => ({ from: to, to: from })).reverse()
   return out
 }

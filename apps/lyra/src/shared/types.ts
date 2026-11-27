@@ -1,6 +1,8 @@
+import { z } from 'zod'
 import type { Settings } from './settings'
 import type { KeySource, ProviderId } from './ai'
 import type { ActivityAction, ActivityItem } from './activity'
+import type { PromptApp, PromptAppRequest } from './promptApps'
 import type { SessionChanges, SessionDoc, SessionOp } from './sessionDoc'
 
 export type Page = {
@@ -41,19 +43,25 @@ export type AppUsage = {
   samples: UsageSample[]
 }
 
-export type SessionPhase = 'idle' | 'starting' | 'listening' | 'finishing'
+export const SessionPhase = z.enum(['idle', 'starting', 'listening', 'finishing'])
+export type SessionPhase = z.infer<typeof SessionPhase>
 
 /** What the main window's recorder is doing; mirrored to the tray and the overlay. */
-export type SessionState = {
-  phase: SessionPhase
+export const SessionState = z.object({
+  phase: SessionPhase,
   /** Epoch ms when listening began, or null when idle. */
-  startedAt: number | null
-  micName: string
-}
+  startedAt: z.number().nullable().catch(null),
+  micName: z.string().catch(''),
+  /** Computer audio is recorded too, so the pill's meter icon says so. */
+  systemAudio: z.boolean().catch(false)
+})
+export type SessionState = z.infer<typeof SessionState>
 
-/** High-frequency recording feedback for the overlay pill. */
-/** The recording pill's input level, and what it says besides "Listening" (or nothing). */
-export type OverlayFrame = { level: number; status: string }
+const Level = z.number().transform((value) => Math.max(0, Math.min(1, value)))
+
+/** The recording pill's levels, per source; `system` is null when computer audio is off. */
+export const OverlayFrame = z.object({ mic: Level, system: Level.nullable() })
+export type OverlayFrame = z.infer<typeof OverlayFrame>
 
 /** Sent from main to the main window's recorder. */
 export type SessionCommand =
@@ -490,6 +498,10 @@ export type VoicePagesApi = {
   permissionStatus: () => Promise<PermissionStatus>
   /** Main window only. Opens the system settings page for a permission; false if there is none. */
   openPermissionSettings: (kind: PermissionKind) => Promise<boolean>
+  /** The coding and chat apps installed here that open with a prompt filled in. */
+  promptApps: () => Promise<PromptApp[]>
+  /** Main window only. Opens an app with the text as its prompt, unsent; says if it was cut. */
+  openInPromptApp: (request: PromptAppRequest) => Promise<{ truncated: boolean }>
   /** Puts plain text on the system clipboard. */
   copyText: (text: string) => void
   platform: string

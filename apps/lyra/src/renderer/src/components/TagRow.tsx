@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
 import { normalizeTag } from '../../../shared/sessionDoc'
 import { useContextMenu } from './ContextMenu'
-import { CloseIcon, PlusIcon } from './Icons'
+import { CloseIcon, CopyIcon, PlusIcon } from './Icons'
 import { tip } from './Tooltip'
 
 type Props = {
@@ -55,7 +55,7 @@ export function TagRow({ tags, known, onAdd, onRemove }: Props) {
           className="tag-chip"
           onContextMenu={(event) => {
             menu.open(event, `#${tag}`, [
-              { label: 'Copy tag', run: () => window.api.copyText(`#${tag}`) },
+              { label: 'Copy tag', icon: <CopyIcon />, run: () => window.api.copyText(`#${tag}`) },
               { label: 'Remove tag', icon: <CloseIcon />, danger: true, run: () => onRemove(tag) }
             ])
           }}

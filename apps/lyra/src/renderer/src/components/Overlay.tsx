@@ -1,27 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { HotkeyStatus, MicPrompt, SessionState } from '../../../shared/types'
-import { formatDuration } from '../lib/format'
 import { displayAccelerator } from './HotkeyInput'
-import { GripIcon, LyraIcon, StopIcon } from './Icons'
+import { CheckIcon, GripIcon, LyraIcon, RecordIcon, StopIcon } from './Icons'
+import { RecordingReadout, useLevelHalo, type SubscribeLevel } from './Recording'
 import { Button } from './ui/button'
-import { LiveDot } from './ui/status'
-
-/** Same as the dock's waveform in the main window. */
-const BAR_COUNT = 20
-
-function useNow(running: boolean): number {
-  const [now, setNow] = useState(Date.now)
-  useEffect(() => {
-    if (!running) return
-    const timer = setInterval(() => {
-      setNow(Date.now())
-    }, 500)
-    return () => {
-      clearInterval(timer)
-    }
-  }, [running])
-  return now
-}
+import { Spinner } from './ui/status'
 
 /** The session shortcut as the platform writes it, or null when none is registered. */
 function useSessionHotkey(): string | null {
@@ -111,16 +94,18 @@ export function Overlay() {
   return prompt ? <PromptCard prompt={prompt} /> : <RecordingPill />
 }
 
-/** The floating recording pill shown while Lyra's main window is out of view. */
+/**
+ * The floating recording pill shown while Lyra's main window is out of view: the header's
+ * recording capsule on its own. A round Stop that breathes with the voice, then the time and a
+ * meter per source; the rest opens Lyra. Words only when there's something to wait for.
+ */
 function RecordingPill() {
   // `saved`: a recording just ended and the pill is staying a moment as the way back to Lyra.
   const [{ state, saved }, setView] = useState<{ state: SessionState | null; saved: boolean }>({
     state: null,
     saved: false
   })
-  const [status, setStatus] = useState('')
-  const bars = useRef<(HTMLSpanElement | null)[]>([])
-  const stopButton = useRef<HTMLButtonElement>(null)
+  const subscribeLevel = useCallback<SubscribeLevel>((listener) => window.api.onOverlayFrame(listener), [])
 
   useEffect(() => {
     // Subscribe first, then fetch, so a change in between isn't lost.
@@ -138,31 +123,12 @@ function RecordingPill() {
     return stop
   }, [])
 
-  useEffect(() => {
-    const history = new Array<number>(BAR_COUNT).fill(0)
-    return window.api.onOverlayFrame((frame) => {
-      setStatus(frame.status)
-      history.shift()
-      history.push(frame.level)
-      history.forEach((value, i) => {
-        const bar = bars.current[i]
-        if (bar) bar.style.transform = `scaleY(${String(0.12 + Math.min(1, value * 1.6) * 0.88)})`
-      })
-      stopButton.current?.style.setProperty('--level', String(Math.min(1, frame.level * 1.6)))
-    })
-  }, [])
-
-  const listening = state?.phase === 'listening'
-  const starting = state?.phase === 'starting'
-  const now = useNow(listening)
-  const elapsed = state?.startedAt ? Math.max(0, now - state.startedAt) : 0
-
-  const label =
-    state?.phase === 'starting'
-      ? 'Warming up…'
-      : state?.phase === 'finishing'
-        ? 'Saving…'
-        : status || 'Listening'
+  const phase = state?.phase ?? 'idle'
+  const listening = phase === 'listening'
+  const halo = useLevelHalo<HTMLButtonElement>(subscribeLevel, listening)
+  const openLyra = (): void => {
+    window.api.showMainWindow()
+  }
 
   if (saved) {
     return (
@@ -170,67 +136,55 @@ function RecordingPill() {
         <span className="overlay-grip" aria-hidden="true">
           <GripIcon />
         </span>
-        <button
-          type="button"
-          className="overlay-body overlay-saved"
-          onClick={() => {
-            window.api.showMainWindow()
-          }}
-        >
-          <span className="dock-status">Recording saved</span>
+        <button type="button" className="overlay-body overlay-saved" onClick={openLyra}>
+          <CheckIcon className="shrink-0 text-success" aria-hidden="true" />
+          <span className="flex-1 font-semibold">Saved</span>
           <span className="overlay-open">Open Lyra</span>
         </button>
       </div>
     )
   }
 
-  // Laid out like the dock in the main window: stop on the left, then status, level and time.
+  const label = phase === 'starting' ? 'Warming up…' : phase === 'finishing' ? 'Saving…' : 'Recording'
   return (
-    <div className={`overlay-pill${listening ? ' is-listening' : ''}`}>
+    <div className="overlay-pill">
       <span className="overlay-grip" aria-hidden="true">
         <GripIcon />
       </span>
-      <Button
-        ref={stopButton}
-        size="sm"
-        variant="record"
-        className="overlay-stop rounded-full"
-        onClick={() => {
-          window.api.requestStop()
-        }}
-        // A stop while warming up cancels the start (the model may still be downloading).
-        disabled={!listening && !starting}
-        aria-label={starting ? 'Cancel starting the recording' : 'Stop recording'}
-      >
-        <StopIcon />
-        Stop
-      </Button>
-      <button
-        type="button"
-        className="overlay-body"
-        onClick={() => {
-          window.api.showMainWindow()
-        }}
-        aria-label={`${label}. Open Lyra`}
-      >
-        {listening ? <LiveDot /> : null}
-        <span className="dock-status" aria-hidden="true">
-          {label}
+      {phase === 'finishing' ? (
+        <span className="grid size-[28px] shrink-0 place-items-center text-text-2">
+          <Spinner />
         </span>
-        <span className="waveform" aria-hidden="true">
-          {Array.from({ length: BAR_COUNT }, (_, i) => (
-            <span
-              key={i}
-              ref={(el) => {
-                bars.current[i] = el
-              }}
+      ) : (
+        <Button
+          ref={halo}
+          size="icon-sm"
+          variant={listening ? 'record' : 'secondary'}
+          className="overlay-stop level-halo size-[28px] rounded-full transition-[background-color,border-color,color,box-shadow]"
+          onClick={() => {
+            window.api.requestStop()
+          }}
+          // A stop while warming up cancels the start (the model may still be downloading).
+          aria-label={listening ? 'Stop recording' : 'Cancel starting the recording'}
+        >
+          {listening ? <StopIcon /> : <RecordIcon className="text-record [&_circle]:[stroke-dasharray:3_2]" />}
+        </Button>
+      )}
+      <button type="button" className="overlay-body" onClick={openLyra} aria-label={`${label}. Open Lyra`}>
+        {listening && state ? (
+          <span aria-hidden="true">
+            <RecordingReadout
+              startedAt={state.startedAt}
+              micName={state.micName}
+              systemAudio={state.systemAudio}
+              subscribeLevel={subscribeLevel}
             />
-          ))}
-        </span>
-        {/* Ticks twice a second; announcing it would drown everything else out. */}
-        <span className="dock-timer" aria-hidden="true">
-          {formatDuration(elapsed)}
-        </span>
+          </span>
+        ) : (
+          <span className="truncate font-semibold" aria-hidden="true">
+            {label}
+          </span>
+        )}
       </button>
     </div>
   )

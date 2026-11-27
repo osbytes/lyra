@@ -17,7 +17,7 @@ import {
   type SpeakerEntry,
   type TranscriptSegment
 } from '../../../shared/sessionDoc'
-import type { TranscriptEdit } from '../../../shared/transcriptOverlay'
+import { expandToEdits, visibleText, type Span, type TranscriptEdit } from '../../../shared/transcriptOverlay'
 import type { NewSpeaker } from '../hooks/usePages'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { rovingIndex } from '../lib/focus'
@@ -25,9 +25,11 @@ import { clockLabel as clock } from '../lib/format'
 import { log } from '../lib/log'
 import { unusedSpeakerName } from '../lib/status'
 import { notify } from '../lib/toast'
+import { sendToPromptApp, usePromptApps } from '../hooks/usePromptApps'
 import { useContextMenu } from './ContextMenu'
 import { pausePlayback, play, playbackState, resumePlayback, stopPlayback, usePlayback } from '../lib/playback'
 import { scrollBehavior } from '../lib/motion'
+import { defaultHighlight, GROUP_LABEL, speakerOptions, type SpeakerOption } from '../lib/speakerOptions'
 import { speakerSlot } from '../lib/speakerTone'
 import { cn } from '../lib/utils'
 import { Floating, ScrollArea, Segmented } from './Controls'
@@ -38,8 +40,10 @@ import {
   ErrorIcon,
   LowConfidenceIcon,
   PauseIcon,
+  PersonIcon,
   PlayIcon,
   PlusIcon,
+  SplitIcon,
   StopIcon,
   WarningIcon
 } from './Icons'
@@ -83,6 +87,8 @@ type Props = {
   /** Adds words from the transcript to the notes. */
   onQuote: (line: TranscriptSegment, text: string) => void
   onAssign: (ids: readonly string[], speaker: string | NewSpeaker) => string | null
+  /** Gives some of a line's words to a speaker, splitting the line around them. */
+  onSplitLine: (id: string, span: Span, speaker: string | NewSpeaker) => string | null
   /** Names a speaker in the document (after main has worked out who it is). */
   onName: (id: string, name: string, personId: string | null) => void
   onUndo: () => void
@@ -98,7 +104,8 @@ type Props = {
   transcribing: Pending | null
 }
 
-type Picker = { speaker: string; line: string | null; anchor: DOMRect }
+/** `span`: only these words of the line (a range of its original), not all of it. */
+type Picker = { speaker: string; line: string | null; span?: Span; anchor: DOMRect }
 
 /** Where transcription stands while recording: speech waiting for Whisper, or the last of it. */
 export type Pending = { working: boolean; finishing: boolean }
@@ -175,32 +182,41 @@ function usePlayingKey(pageId: string): string | null {
 
 // --- Speaker picker --------------------------------------------------------------------
 
-type Option =
-  | { kind: 'person'; person: Person; score: number | null }
-  | { kind: 'new'; name: string }
-  | { kind: 'keep' }
+type Option = SpeakerOption
+
+/** Offers to give all of `rest` (the old speaker's other lines) to whoever the line went to. */
+function offerAllLines(rest: readonly string[], fromName: string, to: string, name: string, onAssign: Props['onAssign']): void {
+  if (rest.length === 0) return
+  const count = rest.length === 1 ? 'line' : `${String(rest.length)} lines`
+  notify(`Moved to ${name}`, { label: `Label ${fromName}’s other ${count} too`, run: () => void onAssign(rest, to) })
+}
 
 /**
  * After one line moves to another speaker, offers to move the old speaker's other lines that
- * sound like it, so one correction fixes every line the labeling got wrong the same way.
+ * sound like it, so one correction fixes every line the labeling got wrong the same way. When
+ * none stand out, offers all of them: setting a person on one line is often meant for them all.
  */
 function offerSimilarLines(
   pageId: string,
   moved: string,
-  from: string,
+  from: { id: string; name: string; rest: readonly string[] },
   to: string,
   name: string,
   onAssign: Props['onAssign']
 ): void {
   window.api
-    .similarLines(pageId, [moved], from)
+    .similarLines(pageId, [moved], from.id)
     .then((ids) => {
-      if (ids.length === 0) return
+      if (ids.length === 0) {
+        offerAllLines(from.rest, from.name, to, name, onAssign)
+        return
+      }
       const count = ids.length === 1 ? '1 more line sounds' : `${String(ids.length)} more lines sound`
       notify(`${count} like ${name}`, { label: 'Move them', run: () => void onAssign(ids, to) })
     })
     .catch((error: unknown) => {
       log('transcript', 'could not find similar lines', String(error))
+      offerAllLines(from.rest, from.name, to, name, onAssign)
     })
 }
 
@@ -213,6 +229,7 @@ function SpeakerPicker({
   people,
   onClose,
   onAssign,
+  onSplitLine,
   onName,
   onSplit
 }: {
@@ -224,12 +241,12 @@ function SpeakerPicker({
   people: Person[]
   onClose: () => void
   onAssign: Props['onAssign']
+  onSplitLine: Props['onSplitLine']
   onName: Props['onName']
   onSplit: () => void
 }) {
   const [query, setQuery] = useState('')
   const nowPlaying = usePlayingKey(pageId)
-  const [highlight, setHighlight] = useState(0)
   const [scope, setScope] = useState<'line' | 'all'>(picker.line ? 'line' : 'all')
   const [remember, setRemember] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -239,27 +256,24 @@ function SpeakerPicker({
   const state = stateOf(speaker)
   const own = lines.filter((line) => line.cluster === speaker.id)
   const line = picker.line ? lines.find((entry) => entry.id === picker.line) : undefined
+  // Some of the line's words: always just those, never the speaker's other lines.
+  const words =
+    line && picker.span
+      ? visibleText(line.original, line.edits, expandToEdits(line.edits, picker.span))
+      : null
+  const justLine = scope === 'line' && !!line
   const odd = own.filter((entry) => entry.confidence !== null && entry.confidence < LOW_CONFIDENCE)
   const matched = speaker.personId
     ? people.find((person) => person.id === speaker.personId)
     : undefined
 
-  const options = useMemo((): Option[] => {
-    const needle = query.trim().toLowerCase()
-    const score = (person: Person): number | null =>
-      speaker.matches.find((match) => match.personId === person.id)?.score ?? null
-    const ranked = people
-      .filter((person) => person.name.toLowerCase().includes(needle))
-      .map((person) => ({ kind: 'person' as const, person, score: score(person) }))
-      .sort(
-        (a, b) => (b.score ?? -1) - (a.score ?? -1) || a.person.name.localeCompare(b.person.name)
-      )
-    const out: Option[] = ranked
-    const exact = people.some((person) => person.name.toLowerCase() === needle)
-    if (needle && !exact) out.push({ kind: 'new', name: query.trim() })
-    out.push({ kind: 'keep' })
-    return out
-  }, [people, query, speaker.matches])
+  const options = useMemo(
+    () => speakerOptions({ query, speaker, speakers: allSpeakers, people }),
+    [allSpeakers, people, query, speaker]
+  )
+  // The row the user moved to, else the default for what's offered now (`defaultHighlight`).
+  const [moved, setHighlight] = useState<number | null>(null)
+  const highlight = moved !== null && moved < options.length ? moved : defaultHighlight(options, query)
 
   const run = async (option: Option | undefined): Promise<void> => {
     if (!option) return
@@ -269,17 +283,37 @@ function SpeakerPicker({
         onClose()
         return
       }
-      if (scope === 'line' && line) {
+      if (justLine) {
         // Just this line: move it to whoever that is, reusing their speaker if present.
         const personId = option.kind === 'person' ? option.person.id : null
-        const name = option.kind === 'person' ? option.person.name : option.name
-        const existing = allSpeakers.find((entry) =>
-          personId ? entry.personId === personId : entry.name.toLowerCase() === name.toLowerCase()
-        )
-        const created = onAssign([line.id], existing ? existing.id : { name, personId, confirmed: true })
+        const name =
+          option.kind === 'person' ? option.person.name : option.kind === 'speaker' ? option.speaker.name : option.name
+        const existing =
+          option.kind === 'speaker'
+            ? option.speaker
+            : allSpeakers.find((entry) =>
+                personId ? entry.personId === personId : entry.name.toLowerCase() === name.toLowerCase()
+              )
+        const target = existing ? existing.id : { name, personId, confirmed: true }
+        // The old speaker's other lines, to label across the transcript too. Not when the user
+        // already named that speaker: those lines are theirs on purpose.
+        const rest = speaker.confirmed ? [] : own.flatMap((entry) => (entry.id === line.id ? [] : [entry.id]))
+        if (picker.span) {
+          const split = onSplitLine(line.id, picker.span, target)
+          onClose()
+          const to = existing?.id ?? split
+          if (to) offerAllLines(rest, speaker.name, to, name, onAssign)
+          return
+        }
+        const created = onAssign([line.id], target)
         onClose()
         const to = existing?.id ?? created
-        if (to) offerSimilarLines(pageId, line.id, speaker.id, to, name, onAssign)
+        if (to) offerSimilarLines(pageId, line.id, { id: speaker.id, name: speaker.name, rest }, to, name, onAssign)
+        return
+      }
+      if (option.kind === 'speaker') {
+        onAssign(own.map((entry) => entry.id), option.speaker.id)
+        onClose()
         return
       }
       const who = await window.api.resolveSpeaker(
@@ -301,8 +335,13 @@ function SpeakerPicker({
     const inField = event.target === input.current
     if (inField && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
       event.preventDefault()
-      const step = event.key === 'ArrowDown' ? 1 : options.length - 1
-      setHighlight((value) => (value + step) % options.length)
+      const next =
+        highlight < 0
+          ? event.key === 'ArrowDown'
+            ? 0
+            : options.length - 1
+          : (highlight + (event.key === 'ArrowDown' ? 1 : options.length - 1)) % options.length
+      setHighlight(next)
     } else if (inField && event.key === 'Enter') {
       event.preventDefault()
       void run(options[highlight])
@@ -313,7 +352,9 @@ function SpeakerPicker({
   }
 
   const title =
-    scope === 'line' && line
+    words !== null
+      ? `Who said “${words.length > 32 ? `${words.slice(0, 31).trimEnd()}…` : words}”?`
+      : justLine
       ? 'Who said this?'
       : state === 'likely' && matched
         ? `Is this ${matched.name}?`
@@ -325,7 +366,7 @@ function SpeakerPicker({
   const left = Math.min(picker.anchor.left, window.innerWidth - 356)
 
   const active = options[highlight]
-  const count = scope === 'line' && line ? 1 : own.length
+  const count = justLine ? 1 : own.length
   const sampleButton = sample ? (
     <Button
       size="icon-sm"
@@ -371,7 +412,7 @@ function SpeakerPicker({
           <div className="grid min-w-0 flex-1">
             <b className="truncate text-body-sm font-semibold">{title}</b>
             <small className="text-label text-text-3">
-              {scope === 'line' && line
+              {justLine
                 ? `${clock(line.start)}${line.confidence === null ? '' : ` · ${percent(line.confidence)} like ${speaker.name}`}`
                 : `${String(own.length)} ${own.length === 1 ? 'line' : 'lines'}${speaker.confidence === null ? '' : ` · ${percent(speaker.confidence)} voice match`}`}
             </small>
@@ -382,7 +423,7 @@ function SpeakerPicker({
           </Button>
         </div>
 
-        {line && own.length > 1 ? (
+        {line && own.length > 1 && !picker.span ? (
           <Segmented
             className="picker-scope mb-2 flex w-full [&>button]:flex-1"
             label="Change"
@@ -418,7 +459,7 @@ function SpeakerPicker({
             <Button
               variant="primary"
               className="flex-1"
-              onClick={() => void run({ kind: 'person', person: matched, score: speaker.confidence })}
+              onClick={() => void run({ kind: 'person', person: matched, score: speaker.confidence, group: 'match' })}
             >
               Yes, it’s {matched.name}
             </Button>
@@ -437,47 +478,69 @@ function SpeakerPicker({
           role="combobox"
           aria-expanded="true"
           aria-controls="picker-options"
-          aria-activedescendant={`picker-option-${String(highlight)}`}
+          aria-activedescendant={highlight >= 0 ? `picker-option-${String(highlight)}` : undefined}
           onChange={(event) => {
             setQuery(event.target.value)
-            setHighlight(0)
+            setHighlight(null)
           }}
         />
 
-        <div className={'px-2 pt-1.5 pb-0.5 text-caps font-semibold tracking-[0.06em] text-text-3 uppercase'}>{speaker.matches.length ? 'Sounds like' : 'Saved voices'}</div>
         <ul className="m-0 list-none p-0" id="picker-options" role="listbox" aria-label="People">
-          {options.map((option, index) => (
-            <li
-              key={option.kind === 'person' ? option.person.id : option.kind}
-              id={`picker-option-${String(index)}`}
-              role="option"
-              aria-selected={index === highlight}
-              className={cn(
-                'flex h-[30px] cursor-default items-center gap-2 rounded-sm px-2',
-                index === highlight && 'bg-brand-soft text-brand-text hc:outline-2 hc:outline-ring'
-              )}
-              onMouseEnter={() => setHighlight(index)}
-              onClick={() => void run(option)}
-            >
-              {option.kind === 'person' ? (
-                <>
-                  <SpeakerBadge name={option.person.name} slot={speakerSlot(people, option.person.id)} />
-                  <span className="min-w-0 flex-1 truncate">
-                    {option.person.name}
-                    {option.person.self ? ' (you)' : ''}
-                  </span>
-                  <MatchStrength score={option.score} />
-                </>
-              ) : option.kind === 'new' ? (
-                <>
-                  <PlusIcon />
-                  <span className="min-w-0 flex-1 truncate">New person “{option.name}”</span>
-                </>
-              ) : (
-                <span className="min-w-0 flex-1 truncate text-text-2">Leave as “{speaker.name}”</span>
-              )}
-            </li>
-          ))}
+          {options.map((option, index) => {
+            const group = option.kind === 'person' || option.kind === 'speaker' ? option.group : null
+            const before = options[index - 1]
+            const previous = before && (before.kind === 'person' || before.kind === 'speaker') ? before.group : null
+            const heading =
+              group !== null && group !== previous ? GROUP_LABEL[group] : group === null && previous !== null ? '' : null
+            return (
+              <Fragment
+                key={option.kind === 'person' ? option.person.id : option.kind === 'speaker' ? `s:${option.speaker.id}` : option.kind}
+              >
+                {heading === null ? null : heading ? (
+                  <li role="presentation" className="px-2 pt-1.5 pb-0.5 text-caps font-semibold tracking-[0.06em] text-text-3 uppercase">
+                    {heading}
+                  </li>
+                ) : (
+                  <li role="presentation" className="mx-0.5 my-1 h-px bg-border" />
+                )}
+                <li
+                  id={`picker-option-${String(index)}`}
+                  role="option"
+                  aria-selected={index === highlight}
+                  className={cn(
+                    'flex h-[30px] cursor-default items-center gap-2 rounded-sm px-2',
+                    index === highlight && 'bg-brand-soft text-brand-text hc:outline-2 hc:outline-ring'
+                  )}
+                  onMouseEnter={() => setHighlight(index)}
+                  onClick={() => void run(option)}
+                >
+                  {option.kind === 'person' ? (
+                    <>
+                      <SpeakerBadge name={option.person.name} slot={speakerSlot(people, option.person.id)} />
+                      <span className="min-w-0 flex-1 truncate">
+                        {option.person.name}
+                        {option.person.self ? ' (you)' : ''}
+                      </span>
+                      {option.group === 'match' ? <MatchStrength score={option.score} /> : null}
+                    </>
+                  ) : option.kind === 'speaker' ? (
+                    <>
+                      <SpeakerBadge name={option.speaker.name} slot={speakerSlot(allSpeakers, option.speaker.id)} />
+                      <span className="min-w-0 flex-1 truncate">{option.speaker.name}</span>
+                      <span className="text-label text-text-3">{justLine ? 'Move here' : 'Merge'}</span>
+                    </>
+                  ) : option.kind === 'new' ? (
+                    <>
+                      <PlusIcon />
+                      <span className="min-w-0 flex-1 truncate">New person “{option.name}”</span>
+                    </>
+                  ) : (
+                    <span className="min-w-0 flex-1 truncate text-text-2">Leave as “{speaker.name}”</span>
+                  )}
+                </li>
+              </Fragment>
+            )
+          })}
         </ul>
 
         {error ? (
@@ -508,9 +571,10 @@ function SpeakerPicker({
           ) : (
             <span />
           )}
-          {active && active.kind !== 'keep' ? (
-            <Button size="sm" variant="primary" onClick={() => void run(active)}>
-              {scope === 'line' && line ? 'Move this line' : `Name ${String(count)} ${count === 1 ? 'line' : 'lines'}`}
+          {active?.kind !== 'keep' ? (
+            // Disabled, not hidden, until a row is picked: the row below the list keeps its place.
+            <Button size="sm" variant="primary" disabled={!active} onClick={() => void run(active)}>
+              {words !== null ? 'Move these words' : justLine ? 'Move this line' : `Name ${String(count)} ${count === 1 ? 'line' : 'lines'}`}
             </Button>
           ) : null}
         </div>
@@ -809,6 +873,7 @@ export function Transcript({
   onEditOverlay,
   onQuote,
   onAssign,
+  onSplitLine,
   onName,
   onUndo,
   showSpeakersBar,
@@ -818,6 +883,7 @@ export function Transcript({
   onReference
 }: Props) {
   const people = usePeople()
+  const promptApps = usePromptApps()
   const nowPlaying = usePlayingKey(pageId)
   // Leaving the session (or closing it) stops whatever is playing from it.
   useEffect(() => stopPlayback, [pageId])
@@ -908,6 +974,11 @@ export function Transcript({
       settle()
       notify('Copied')
     },
+    promptApps,
+    ask: (app, text) => {
+      settle()
+      sendToPromptApp(app, text)
+    },
     listen: (line) => {
       playFromLine(pageId, line, transcript)
     },
@@ -915,6 +986,12 @@ export function Transcript({
       if (!line.cluster) return
       setSplit(null)
       setPicker({ speaker: line.cluster, line: line.id, anchor })
+    },
+    attribute: (line, span, anchor) => {
+      if (!line.cluster) return
+      settle()
+      setSplit(null)
+      setPicker({ speaker: line.cluster, line: line.id, span, anchor })
     }
   }
 
@@ -1124,10 +1201,12 @@ export function Transcript({
                 speakerMenu.open(event, speaker.name, [
                   {
                     label: stateOf(speaker) === 'sure' ? 'Rename…' : 'Who is this…',
+                    icon: <PersonIcon />,
                     run: () => openPicker(speaker.id, null, target)
                   },
                   {
                     label: 'Split into two speakers…',
+                    icon: <SplitIcon />,
                     run: () => {
                       setPicker(null)
                       setSplit({ speaker: speaker.id, anchor: target.getBoundingClientRect() })
@@ -1257,7 +1336,7 @@ export function Transcript({
       {picker && pickedSpeaker ? (
         <Floating>
           <SpeakerPicker
-            key={`${picker.speaker}:${picker.line ?? ''}`}
+            key={`${picker.speaker}:${picker.line ?? ''}:${picker.span ? `${String(picker.span.start)}-${String(picker.span.end)}` : ''}`}
             pageId={pageId}
             picker={picker}
             speaker={pickedSpeaker}
@@ -1266,6 +1345,7 @@ export function Transcript({
             people={people}
             onClose={() => setPicker(null)}
             onAssign={onAssign}
+            onSplitLine={onSplitLine}
             onName={onName}
             onSplit={() => {
               setSplit({ speaker: picker.speaker, anchor: picker.anchor })

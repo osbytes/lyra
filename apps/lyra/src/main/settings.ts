@@ -3,6 +3,7 @@ import { mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { defaultLanguage } from '../shared/languages'
+import { DEFAULT_SEND_PARTS } from '../shared/sendParts'
 import { PANEL_WIDTHS, parseSettings, type Settings } from '../shared/settings'
 import { writeFileAtomic } from './atomicFile'
 import { config } from './config'
@@ -34,6 +35,7 @@ export function defaultSettings(): Settings {
     semanticSearch: false,
     // Off until asked for: a large download, and more work for the CPU after each session.
     largerSpeakerModel: false,
+    sendToParts: DEFAULT_SEND_PARTS,
     sidebar: true,
     sidebarWidth: PANEL_WIDTHS.sidebar.initial
   }
