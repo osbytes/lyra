@@ -471,5 +471,5 @@ async function relabel(pageId: string): Promise<void> {
     liveLabeledSeconds: +stability.labeled.toFixed(1),
     changedSeconds: +stability.changed.toFixed(1)
   })
-  if (fields.size >= 2) notifyLabeled(pageId)
+  if (fields.size >= 1) notifyLabeled(pageId)
 }

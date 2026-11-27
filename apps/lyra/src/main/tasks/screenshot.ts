@@ -25,7 +25,7 @@ async function seedScreenshotMeeting(): Promise<string> {
       editDoc(doc, {
         title: 'Design review',
         summary:
-          'Summary\nAgreed to ship the dock redesign first, then settings.\n\nAction items\n- [ ] Dana: port tokens into styles.css\n- [ ] Sam: check contrast in dark mode'
+          'Summary\nAgreed to ship the dock redesign first, then settings.\n\nSections\n- 0:00 The dock: what people see first\n- 0:15 Shortcuts and the meeting button\n- 0:31 First run and support\n\nAction items\n- [ ] Dana: port tokens into styles.css\n- [ ] Sam: check contrast in dark mode'
       }, 'seed')
       upsertSpeaker(doc, 'c0', { name: 'Dana', personId: null, confirmed: true, confidence: 0.96, matches: [] }, 'seed')
       upsertSpeaker(doc, 'c1', {
@@ -155,7 +155,7 @@ async function reviewTranscriptEditing(
   win.webContents.sendInputEvent({ type: 'mouseUp', x: box[0], y: box[1], button: 'right', clickCount: 1 })
   await settle()
   await save(dir, `transcript-menu-${theme}.png`)
-  for (let open = 0; open < 3 && (await run(`!!document.querySelector('.picker-layer, .menu-layer')`)); open++) {
+  for (let open = 0; open < 3 && (await run(`!!document.querySelector('.picker-layer, [data-slot="dropdown-menu-content"]')`)); open++) {
     win.webContents.sendInputEvent({ type: 'mouseDown', x: 600, y: 20, button: 'left', clickCount: 1 })
     win.webContents.sendInputEvent({ type: 'mouseUp', x: 600, y: 20, button: 'left', clickCount: 1 })
     await settle()
@@ -170,11 +170,11 @@ async function reviewTranscriptEditing(
 }
 
 /**
- * Review shots of dragging the layout's edges with the details panel open: both side panels
- * widened to their maximum, then each dragged past its breakpoint to close, and the transcript
- * bar dragged to the top to close the notes. Puts the layout back afterwards.
+ * Review shots of the window grid: the session at full, wide, medium (library as a drawer, panes
+ * stacked) and compact width (one column with tabs), and the transcript split dragged. Puts the
+ * window back afterwards.
  */
-async function reviewPanelResizing(
+async function reviewLayouts(
   win: BrowserWindow,
   theme: 'light' | 'dark',
   dir: string,
@@ -182,66 +182,63 @@ async function reviewPanelResizing(
   settle: () => Promise<void>
 ): Promise<void> {
   const run = (script: string): Promise<unknown> => win.webContents.executeJavaScript(script)
-  const center = async (selector: string): Promise<[number, number]> => {
-    const point = await run(
-      `(() => { const r = document.querySelector(${JSON.stringify(selector)})?.getBoundingClientRect(); return r ? [Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2)] : null })()`
-    )
-    if (!Array.isArray(point) || typeof point[0] !== 'number' || typeof point[1] !== 'number') {
-      throw new Error(`nothing to drag at ${selector}`)
-    }
-    return [point[0], point[1]]
-  }
-  const drag = async (selector: string, to: (from: [number, number]) => [number, number]): Promise<void> => {
-    const from = await center(selector)
-    const [x, y] = to(from)
-    win.webContents.sendInputEvent({ type: 'mouseDown', x: from[0], y: from[1], button: 'left', clickCount: 1 })
-    for (let step = 1; step <= 8; step++) {
-      const at = (a: number, b: number): number => Math.round(a + ((b - a) * step) / 8)
-      win.webContents.sendInputEvent({
-        type: 'mouseMove',
-        x: at(from[0], x),
-        y: at(from[1], y),
-        button: 'left',
-        modifiers: ['leftbuttondown']
-      })
-      await new Promise((resolve) => setTimeout(resolve, 16))
-    }
-    win.webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 })
+  const [width, height] = win.getContentSize()
+  const resize = async (next: number): Promise<void> => {
+    win.setContentSize(next, height ?? 800)
     await settle()
   }
+  // The speaker picker and context menu from the shots before may still be open over the page.
+  for (let open = 0; open < 3 && (await run(`!!document.querySelector('.picker-layer')`)); open++) {
+    await run(`document.querySelector('.picker-layer')?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`)
+    await settle()
+  }
+  const steps: string[] = []
   const layout = (): Promise<unknown> =>
     run(`JSON.stringify({
-      sidebar: document.querySelector('.sidebar')?.getBoundingClientRect().width ?? 0,
-      details: document.querySelector('.details')?.getBoundingClientRect().width ?? 0,
-      notes: !!document.querySelector('.notes-pane:not(.is-collapsed)')
+      width: window.innerWidth,
+      sidebar: Math.round(document.querySelector('.app > .sidebar')?.getBoundingClientRect().width ?? 0),
+      panes: document.querySelectorAll('.workspace-column .scroller').length,
+      split: document.querySelector('[role="separator"]')?.getAttribute('aria-orientation') ?? null
     })`)
-  const steps: string[] = []
-  // The speaker picker and context menu from the shots before are still open over the page.
-  for (let open = 0; open < 3 && (await run(`!!document.querySelector('.picker-layer, .menu-layer')`)); open++) {
-    win.webContents.sendInputEvent({ type: 'mouseDown', x: 600, y: 20, button: 'left', clickCount: 1 })
-    win.webContents.sendInputEvent({ type: 'mouseUp', x: 600, y: 20, button: 'left', clickCount: 1 })
+
+  await resize(1440)
+  steps.push(`full: ${String(await layout())}`)
+  await save(dir, `layout-full-${theme}.png`)
+  await resize(1100)
+  steps.push(`wide: ${String(await layout())}`)
+  await save(dir, `layout-wide-${theme}.png`)
+  // Drag the split to give the transcript more room.
+  const handle = (await run(
+    `(() => { const r = document.querySelector('.split-handle')?.getBoundingClientRect(); return r ? [Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2)] : null })()`
+  )) as [number, number] | null
+  if (handle) {
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: handle[0], y: handle[1], button: 'left', clickCount: 1 })
+    for (let step = 1; step <= 6; step++) {
+      win.webContents.sendInputEvent({ type: 'mouseMove', x: handle[0] + step * 20, y: handle[1], button: 'left', modifiers: ['leftbuttondown'] })
+      await new Promise((resolve) => setTimeout(resolve, 16))
+    }
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: handle[0] + 120, y: handle[1], button: 'left', clickCount: 1 })
     await settle()
+    steps.push(`split dragged: ${String(await run(`document.querySelector('.split-handle')?.getAttribute('aria-valuenow')`))}`)
   }
-
-  await drag('.panel-resizer.is-left', ([x, y]) => [x + 600, y])
-  await drag('.panel-resizer.is-right', ([x, y]) => [x - 600, y])
-  steps.push(`widened: ${String(await layout())}`)
-  await save(dir, `resize-wide-${theme}.png`)
-  await drag('.panel-resizer.is-left', ([, y]) => [40, y])
-  await drag('.panel-resizer.is-right', ([x, y]) => [x + 400, y])
-  steps.push(`closed: ${String(await layout())}`)
-  await drag('.transcript-bar', ([x]) => [x, 60])
-  steps.push(`bar at top: ${String(await layout())}`)
-  await save(dir, `resize-closed-${theme}.png`)
-  // The closed sidebar's edge waits at the window's edge; dragging it out opens it again.
-  await drag('.panel-resizer.is-left', ([x, y]) => [x + 200, y])
-  steps.push(`sidebar dragged open: ${String(await layout())}`)
-  process.stdout.write(`panel resizing (${theme}):\n  ${steps.join('\n  ')}\n`)
-
-  await run(
-    `window.api.updateSettings({ sidebar: true, sidebarWidth: 256, detailsPanel: true, detailsWidth: 288 })`
-  )
-  await run(`document.querySelector('.transcript-bar-tools button[aria-label="Show notes"]')?.click()`)
+  await resize(760)
+  steps.push(`medium: ${String(await layout())}`)
+  await save(dir, `layout-medium-${theme}.png`)
+  await run(`document.querySelector('.sidebar-toggle')?.click()`)
+  await settle()
+  await save(dir, `layout-drawer-${theme}.png`)
+  win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
+  await run(`document.querySelector('.library-drawer')?.parentElement?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`)
+  await settle()
+  await resize(400)
+  steps.push(`compact: ${String(await layout())}`)
+  await save(dir, `layout-compact-${theme}.png`)
+  await run(`[...document.querySelectorAll('[role="radio"]')].find((b) => b.textContent === 'Summary')?.click()`)
+  await settle()
+  await save(dir, `layout-compact-summary-${theme}.png`)
+  await run(`[...document.querySelectorAll('[role="radio"]')].find((b) => b.textContent === 'Transcript')?.click()`)
+  process.stdout.write(`layouts (${theme}):\n  ${steps.join('\n  ')}\n`)
+  win.setContentSize(width ?? 1280, height ?? 800)
   await settle()
 }
 
@@ -290,6 +287,11 @@ export async function captureScreenshot(win: BrowserWindow, reviewDir: string | 
         nativeTheme.themeSource = theme
         await reload()
         await save(reviewDir, `page-${theme}.png`)
+        // Home: the dashboard, with no session open.
+        await click('.home-link')
+        await settle()
+        await save(reviewDir, `home-${theme}.png`)
+        await reload()
         await pressShortcut('k')
         await settle()
         await save(reviewDir, `search-recent-${theme}.png`)
@@ -361,12 +363,6 @@ export async function captureScreenshot(win: BrowserWindow, reviewDir: string | 
         await win.webContents.executeJavaScript(`document.querySelector('.transcript')?.scrollIntoView()`)
         await settle()
         await save(reviewDir, `meeting-${theme}.png`)
-        // The same view with the details panel open, before any popover: the website's picture.
-        await pressShortcut('.')
-        await settle()
-        await save(reviewDir, `meeting-panel-${theme}.png`)
-        await pressShortcut('.')
-        await settle()
         // Still processing, scrolled to the end: the status stays in view in the toast stack, with
         // the time left, and the sidebar marks the session.
         if (meetingId) {
@@ -379,14 +375,13 @@ export async function captureScreenshot(win: BrowserWindow, reviewDir: string | 
           }
           win.webContents.send('meeting:status', busy)
           await win.webContents.executeJavaScript(
-            `document.querySelector('.transcript-pane')?.scrollTo({ top: 1e6 })`
+            `document.querySelector('.transcript-pane .scroller')?.scrollTo({ top: 1e6 })`
           )
           await settle()
           await save(reviewDir, `processing-${theme}.png`)
           win.webContents.send('meeting:status', { ...busy, state: 'done', progress: 1 })
         }
-        // Activity: a download still going and a failed summary, then the same with the sidebar
-        // hidden (the top-bar button and its popover).
+        // Activity: a download still going and a failed summary, in the status bar and its panel.
         if (meetingId) {
           reportActivity({
             id: 'model:semanticSearch',
@@ -413,50 +408,31 @@ export async function captureScreenshot(win: BrowserWindow, reviewDir: string | 
           await new Promise((done) => setTimeout(done, 3200))
           await settle()
           await save(reviewDir, `activity-${theme}.png`)
-          await pressShortcut('\\')
-          await settle()
-          await save(reviewDir, `activity-collapsed-${theme}.png`)
           await click('.activity-button')
           await settle()
           await save(reviewDir, `activity-popover-${theme}.png`)
           await win.webContents.executeJavaScript(
             `document.querySelector('.picker-layer')?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`
           )
-          await pressShortcut('\\')
           clearActivity('model:semanticSearch')
           clearActivity(`notes:${meetingId}`)
           await settle()
         }
-        // The transcript bar's layouts: collapsed to the bar, then the transcript alone.
-        const pane = async (label: string): Promise<void> => {
-          await click(`.transcript-bar-tools button[aria-label="${label}"]`)
-          await settle()
-        }
-        await pane('Collapse transcript')
-        await save(reviewDir, `transcript-collapsed-${theme}.png`)
-        await pane('Show transcript')
-        await pane('Expand transcript')
-        await save(reviewDir, `transcript-expanded-${theme}.png`)
-        await pane('Show notes')
         await reviewTranscriptEditing(win, theme, reviewDir, save, settle)
-        await click('.speaker-chip.likely')
+        // Naming starts from the summary pane's speaker list.
+        await win.webContents.executeJavaScript(
+          `[...document.querySelectorAll('.speaker-row')].find((b) => b.textContent.includes('Sam'))?.click()`
+        )
         await settle()
         await save(reviewDir, `picker-${theme}.png`)
-        // The same session in the side-panel layout.
-        await pressShortcut('.')
-        await settle()
-        await save(reviewDir, `panel-${theme}.png`)
-        await reviewPanelResizing(win, theme, reviewDir, save, settle)
-        await pressShortcut('.')
-        await settle()
+        await reviewLayouts(win, theme, reviewDir, save, settle)
       }
-      // What the session records, and an open themed select.
+      // An open themed select, in Preferences.
       nativeTheme.themeSource = 'light'
       await reload()
-      await click('.dock-sources')
+      await pressShortcut(',')
       await settle()
-      await save(reviewDir, 'sources-light.png')
-      await click('.picker.sources .select')
+      await click('.settings-main .select')
       await settle()
       await save(reviewDir, 'select-light.png')
       // A session's right-click menu, and a tooltip.
@@ -473,7 +449,7 @@ export async function captureScreenshot(win: BrowserWindow, reviewDir: string | 
         win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
         await settle()
         const point: unknown = await win.webContents.executeJavaScript(`(() => {
-          const box = document.querySelector('.sidebar-footer .ghost-btn')?.getBoundingClientRect()
+          const box = document.querySelector('.sidebar-footer [data-slot="button"]')?.getBoundingClientRect()
           return box ? [Math.round(box.left + box.width / 2), Math.round(box.top + box.height / 2)] : [0, 0]
         })()`)
         const [x = 0, y = 0] = Array.isArray(point) ? point.map(Number) : []

@@ -4,6 +4,7 @@ import type { Diagnostics, RevealTarget } from '../../../shared/types'
 import { ipcErrorMessage } from '../lib/ipcError'
 import { notify } from '../lib/toast'
 import { Row, Section } from './SettingsParts'
+import { Button } from './ui/button'
 
 /** Settings' About tab icon: an "i" in a circle, drawn like the icons in Icons.tsx. */
 export const InfoIcon = () => (
@@ -72,8 +73,8 @@ export function AboutSettings() {
     <>
       <Section title="About Lyra">
         <Row label={`Lyra ${info.version}`} hint={`${info.os} (${info.arch}) · Electron ${info.electron}`}>
-          <button
-            className="btn"
+          <Button
+           
             type="button"
             onClick={() => {
               window.api.copyText(info.text)
@@ -81,7 +82,7 @@ export function AboutSettings() {
             }}
           >
             Copy diagnostics
-          </button>
+          </Button>
         </Row>
         <p className="settings-notice is-footnote">
           Versions, this computer and its load, folders, sizes and engines only: never your notes, transcripts,
@@ -117,12 +118,12 @@ export function AboutSettings() {
         </ul>
         <Row label="Folders" hint="Logs help with a bug report. Models download again if they are removed.">
           <div className="settings-buttons">
-            <button className="btn" type="button" onClick={() => reveal('logs')}>
+            <Button type="button" onClick={() => reveal('logs')}>
               Reveal logs
-            </button>
-            <button className="btn" type="button" onClick={() => reveal('models')}>
+            </Button>
+            <Button type="button" onClick={() => reveal('models')}>
               Reveal models folder
-            </button>
+            </Button>
           </div>
         </Row>
       </Section>

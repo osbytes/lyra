@@ -1,74 +1,56 @@
-import { useEffect, useId, useRef, type ReactNode } from 'react'
-import { Floating } from './Controls'
-import { useDialogFocus } from '../hooks/useDialogFocus'
+import type { ReactNode } from 'react'
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogTitle
+} from './ui/alert-dialog'
+import { Button } from './ui/button'
 
 type Props = {
   title: string
   children?: ReactNode
-  /** The confirming button's label, e.g. "Delete session". */
+  /** The confirming button's label, a verb that repeats the outcome ("Delete session"). */
   confirm: string
+  /** The safe choice's label, when it says more than "Cancel" ("Keep my summary"). */
+  cancel?: string
   danger?: boolean
   onConfirm: () => void
   onCancel: () => void
 }
 
 /**
- * A themed yes/no question, instead of `window.confirm` (unstyled, and blocks the window).
- * Enter confirms, Escape or clicking outside cancels; focus starts on the confirming button.
+ * A decision, never feedback: the title is the question and the body the consequence. Focus
+ * starts on Cancel (the safe choice) and Escape cancels. A click outside does nothing: a decision
+ * is made with a button.
  */
-export function ConfirmDialog({ title, children, confirm, danger = false, onConfirm, onCancel }: Props) {
-  const dialog = useRef<HTMLDivElement>(null)
-  const cancel = useRef(onCancel)
-  cancel.current = onCancel
-  const titleId = useId()
-  const bodyId = useId()
-
-  useDialogFocus(dialog, true)
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent): void => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      event.stopPropagation()
-      cancel.current()
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [])
-
+export function ConfirmDialog({ title, children, confirm, cancel = 'Cancel', danger = false, onConfirm, onCancel }: Props) {
   return (
-    <Floating>
-    <div className="modal-backdrop confirm-backdrop" onMouseDown={onCancel}>
-      <div
-        ref={dialog}
+    <AlertDialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onCancel()
+      }}
+    >
+      <AlertDialogContent
         className="confirm"
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        aria-describedby={children ? bodyId : undefined}
-        onMouseDown={(event) => event.stopPropagation()}
       >
-        <h2 id={titleId}>{title}</h2>
+        <AlertDialogTitle>{title}</AlertDialogTitle>
         {children ? (
-          <div id={bodyId} className="confirm-body">
-            {children}
-          </div>
+          <AlertDialogDescription asChild>
+            <div className="confirm-body">{children}</div>
+          </AlertDialogDescription>
         ) : null}
-        <div className="confirm-buttons">
-          <button className="btn" type="button" onClick={onCancel}>
-            Cancel
-          </button>
-          <button
-            data-autofocus
-            className={danger ? 'btn primary is-danger' : 'btn primary'}
-            type="button"
-            onClick={onConfirm}
-          >
+        <AlertDialogFooter className="confirm-buttons">
+          <AlertDialogCancel>{cancel}</AlertDialogCancel>
+          {/* A plain button, not Radix's Action: closing through Action would also report a cancel. */}
+          <Button variant={danger ? 'danger' : 'primary'} onClick={onConfirm}>
             {confirm}
-          </button>
-        </div>
-      </div>
-    </div>
-    </Floating>
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   )
 }

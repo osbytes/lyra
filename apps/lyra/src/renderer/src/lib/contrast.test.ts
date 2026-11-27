@@ -16,19 +16,40 @@ function contrast(a: string, b: string): number {
 // Pairs from assets/styles.css. Change a token there, change it here.
 describe('theme contrast', () => {
   it('reads white text on destructive buttons (--accent-text on --danger-fill)', () => {
-    expect(contrast('#ffffff', '#c81e1e')).toBeGreaterThanOrEqual(4.5) // light
-    expect(contrast('#ffffff', '#b91c1c')).toBeGreaterThanOrEqual(4.5) // dark
+    expect(contrast('#ffffff', '#b42318')).toBeGreaterThanOrEqual(4.5) // light
+    expect(contrast('#ffffff', '#b42318')).toBeGreaterThanOrEqual(4.5) // dark
   })
 
   it('shows input edges (--border-input on --surface, WCAG 1.4.11)', () => {
-    expect(contrast('#8a8a98', '#ffffff')).toBeGreaterThanOrEqual(3) // light
-    expect(contrast('#73737f', '#1e1e24')).toBeGreaterThanOrEqual(3) // dark
+    expect(contrast('#858a9c', '#ffffff')).toBeGreaterThanOrEqual(3) // light
+    expect(contrast('#6e7387', '#181a21')).toBeGreaterThanOrEqual(3) // dark
   })
 
   it('keeps text readable on find highlights (--find-match, --find-current)', () => {
-    expect(contrast('#18181f', '#fcefb4')).toBeGreaterThanOrEqual(4.5) // light: --text on match
-    expect(contrast('#ececf1', '#5c4d12')).toBeGreaterThanOrEqual(4.5) // dark: --text on match
-    expect(contrast('#18181f', '#f59e0b')).toBeGreaterThanOrEqual(4.5) // --find-current-text
+    expect(contrast('#16171d', '#ffe38a')).toBeGreaterThanOrEqual(4.5) // light: --text on match
+    expect(contrast('#ecedf3', '#5a480c')).toBeGreaterThanOrEqual(4.5) // dark: --text on match
+    expect(contrast('#16171d', '#f59e0b')).toBeGreaterThanOrEqual(4.5) // --find-current-text
+  })
+
+  it('reads tertiary text on every ground (--text-subtle on --bg and --surface)', () => {
+    expect(contrast('#626678', '#f6f6f9')).toBeGreaterThanOrEqual(4.5) // light canvas
+    expect(contrast('#626678', '#ffffff')).toBeGreaterThanOrEqual(4.5) // light surface
+    expect(contrast('#9195a7', '#111217')).toBeGreaterThanOrEqual(4.5) // dark canvas
+    expect(contrast('#9195a7', '#181a21')).toBeGreaterThanOrEqual(4.5) // dark surface
+  })
+
+  it('reads labels on the accent (--accent-text on --accent)', () => {
+    expect(contrast('#ffffff', '#3e45be')).toBeGreaterThanOrEqual(4.5) // light
+    expect(contrast('#0e1030', '#8f96ff')).toBeGreaterThanOrEqual(4.5) // dark
+    expect(contrast('#000000', '#3fe0ff')).toBeGreaterThanOrEqual(4.5) // high contrast
+  })
+
+  it('reads provenance and status chips on their soft grounds', () => {
+    expect(contrast('#0b6e66', '#dff3f0')).toBeGreaterThanOrEqual(4.5) // local, light
+    expect(contrast('#8b3fbf', '#f3e8fa')).toBeGreaterThanOrEqual(4.5) // cloud, light
+    expect(contrast('#d11f3a', '#fde9ec')).toBeGreaterThanOrEqual(4.5) // recording, light
+    expect(contrast('#3cc7b8', '#0f2e2b')).toBeGreaterThanOrEqual(4.5) // local, dark
+    expect(contrast('#c78bf0', '#2c1c38')).toBeGreaterThanOrEqual(4.5) // cloud, dark
   })
 
   it('agrees with known ratios', () => {

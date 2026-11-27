@@ -1,4 +1,5 @@
 import {
+  Fragment,
   memo,
   useCallback,
   useEffect,
@@ -25,9 +26,27 @@ import { log } from '../lib/log'
 import { unusedSpeakerName } from '../lib/status'
 import { notify } from '../lib/toast'
 import { useContextMenu } from './ContextMenu'
-import { speakerTone } from '../lib/speakerTone'
-import { Floating, ScrollArea, Segmented, Switch } from './Controls'
-import { CloseIcon, PlayIcon, PlusIcon, StopIcon } from './Icons'
+import { pausePlayback, play, playbackState, resumePlayback, stopPlayback, usePlayback } from '../lib/playback'
+import { scrollBehavior } from '../lib/motion'
+import { speakerSlot } from '../lib/speakerTone'
+import { cn } from '../lib/utils'
+import { Floating, ScrollArea, Segmented } from './Controls'
+import {
+  CloseIcon,
+  CopyIcon,
+  NoteIcon,
+  ErrorIcon,
+  LowConfidenceIcon,
+  PauseIcon,
+  PlayIcon,
+  PlusIcon,
+  StopIcon,
+  WarningIcon
+} from './Icons'
+import { SpeakerBadge, SpeakerName } from './SpeakerBadge'
+import { Badge } from './ui/badge'
+import { Checkbox } from './ui/checkbox'
+import { LiveDot } from './ui/status'
 import { usePeople } from './People'
 import { SummaryButton } from './SummaryButton'
 import {
@@ -43,6 +62,7 @@ import {
   type MenuRequest
 } from './TranscriptEditing'
 import { tip } from './Tooltip'
+import { Button } from './ui/button'
 
 /**
  * A session's transcript: one locked line per segment, speakers in the left margin, and a
@@ -70,6 +90,10 @@ type Props = {
   showSpeakersBar: boolean
   /** Opens the picker from outside (the side panel); a new object each time. */
   pickerRequest: { speaker: string; anchor: DOMRect } | null
+  /** The summary's sections by the id of each one's first line: a sticky heading goes above it. */
+  sectionAt?: ReadonlyMap<string, { start: number; title: string; summary: string }>
+  /** Puts a reference to a line (a section's first line) in the notes, as a chip. */
+  onReference?: (label: string, lineId: string) => void
   /** While recording into the transcript: whether speech is being transcribed (null when not). */
   transcribing: Pending | null
 }
@@ -88,24 +112,30 @@ function PendingLine({ pending }: { pending: Pending }) {
   const working = pending.finishing || pending.working
   const label = pending.finishing ? 'Finishing' : working ? 'Transcribing' : 'Listening'
   return (
-    <div className="line pending-line" role="status" aria-live="polite">
-      <div className="gutter">
-        <span className="who unknown">{label}</span>
-      </div>
-      <div className="line-body">
-        <p className="line-text pending-text">
-          <span className={`pending-dots${working ? ' is-working' : ''}`} aria-hidden="true">
-            <span />
-            <span />
-            <span />
-          </span>
-        </p>
-      </div>
+    <div className={cn(LINE_GRID, 'line pending-line')} role="status" aria-live="polite">
+      <span />
+      <span className="flex justify-center pt-[9px]">
+        <LiveDot />
+      </span>
+      <span className="col-start-3 text-[12.5px] leading-[18px]">
+        <SpeakerName name={`${label}…`} slot={0} certainty="unknown" />
+      </span>
+      <p className="col-start-3 m-0 text-text-3 italic">
+        <span className={`pending-dots${working ? ' is-working' : ''}`} aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </span>
+      </p>
     </div>
   )
 }
 
 // --- Small helpers ------------------------------------------------------------------
+
+/** A line's grid: time, gutter (play, confidence, live), speaker over text, marks. */
+const LINE_GRID =
+  'grid scroll-mt-10 grid-cols-[62px_26px_minmax(0,1fr)_auto] gap-x-2 rounded-sm px-2.5 py-1.5 text-transcript relative @max-md:grid-cols-[44px_0_minmax(0,1fr)_auto] @max-md:gap-x-1.5'
 
 type SpeakerState = 'sure' | 'likely' | 'unknown'
 
@@ -122,99 +152,25 @@ function tier(confidence: number | null): 1 | 2 | 3 {
 
 const percent = (value: number): string => `${String(Math.round(value * 100))}%`
 
-function Signal({ confidence }: { confidence: number | null }) {
-  const level = tier(confidence)
-  const label = confidence === null ? 'voice match unknown' : `${percent(confidence)} voice match`
-  return (
-    <span className={`signal l${String(level)}`} role="img" aria-label={label} {...tip(label)}>
-      <i />
-      <i />
-      <i />
-    </span>
-  )
-}
-
-/**
- * One clip plays at a time, app-wide. `key` says which button started it (a line id, or the
- * picker), so that button can show Stop; every Listen button reads this through `usePlayback`.
- */
-type Playing = { key: string; context: AudioContext; source: AudioBufferSourceNode }
-let playing: Playing | null = null
-/** Bumped by every stop and every new Listen, so a clip still loading knows it was superseded. */
-let playbackRequest = 0
-const playbackListeners = new Set<(key: string | null) => void>()
-
-function setPlaying(next: Playing | null): void {
-  playing = next
-  for (const listener of playbackListeners) listener(next?.key ?? null)
-}
-
-function stopPlayback(): void {
-  playbackRequest++
-  const current = playing
-  if (!current) return
-  setPlaying(null)
-  current.source.onended = null
-  try {
-    current.source.stop()
-  } catch {
-    // Already finished.
-  }
-  void current.context.close()
-}
-
 const AUDIO_GONE = 'This session’s audio is no longer kept.'
 
-/**
- * Plays a stretch of the session's audio, stopping anything already playing. False when the
- * audio isn't kept any more; a request overtaken by a newer click (or Stop) just does nothing.
- */
-async function listen(key: string, pageId: string, start: number, end: number): Promise<boolean> {
-  stopPlayback()
-  const request = playbackRequest
-  const pcm = await window.api.sessionAudio(pageId, start, end)
-  if (request !== playbackRequest) return true
-  if (!pcm.length) return false
-  const context = new AudioContext({ sampleRate: 16000 })
-  const buffer = context.createBuffer(1, pcm.length, 16000)
-  const channel = buffer.getChannelData(0)
-  for (let i = 0; i < pcm.length; i++) channel[i] = (pcm[i] ?? 0) / 0x8000
-  const source = context.createBufferSource()
-  source.buffer = buffer
-  source.connect(context.destination)
-  const entry: Playing = { key, context, source }
-  source.onended = () => {
-    if (playing === entry) setPlaying(null)
-    void context.close()
-  }
-  source.start()
-  setPlaying(entry)
-  return true
-}
-
-/** Listen for a transcript line, with the picker's error as a toast when there's no audio. */
-function listenToLine(pageId: string, line: TranscriptSegment): void {
-  listen(line.id, pageId, line.start, line.end).then(
+/** Plays the session from a line on, through to the end, following the words. */
+function playFromLine(pageId: string, line: TranscriptSegment, lines: readonly TranscriptSegment[]): void {
+  play({ pageId, from: line.start, end: lines.at(-1)?.end ?? line.end, lines }).then(
     (ok) => {
       if (!ok) notify(AUDIO_GONE)
     },
     (error: unknown) => {
       log('transcript', 'could not play a line', String(error))
-      notify('Couldn’t play this line.')
+      notify('Couldn’t play from this line.')
     }
   )
 }
 
-/** Which clip is playing (by key), kept in sync across every Listen button. */
-function usePlayback(): string | null {
-  const [key, setKey] = useState<string | null>(playing?.key ?? null)
-  useEffect(() => {
-    playbackListeners.add(setKey)
-    return () => {
-      playbackListeners.delete(setKey)
-    }
-  }, [])
-  return key
+/** The key playing in this session (a line id, or 'picker'), or null. */
+function usePlayingKey(pageId: string): string | null {
+  const state = usePlayback()
+  return state?.pageId === pageId ? state.key : null
 }
 
 // --- Speaker picker --------------------------------------------------------------------
@@ -272,7 +228,7 @@ function SpeakerPicker({
   onSplit: () => void
 }) {
   const [query, setQuery] = useState('')
-  const nowPlaying = usePlayback()
+  const nowPlaying = usePlayingKey(pageId)
   const [highlight, setHighlight] = useState(0)
   const [scope, setScope] = useState<'line' | 'all'>(picker.line ? 'line' : 'all')
   const [remember, setRemember] = useState(true)
@@ -368,11 +324,40 @@ function SpeakerPicker({
   const top = Math.min(picker.anchor.bottom + 8, window.innerHeight - 420)
   const left = Math.min(picker.anchor.left, window.innerWidth - 356)
 
+  const active = options[highlight]
+  const count = scope === 'line' && line ? 1 : own.length
+  const sampleButton = sample ? (
+    <Button
+      size="icon-sm"
+      variant="ghost"
+      aria-pressed={nowPlaying === 'picker'}
+      aria-label={nowPlaying === 'picker' ? 'Stop the sample' : 'Play a sample'}
+      {...tip(nowPlaying === 'picker' ? 'Stop' : 'Play a sample')}
+      onClick={() => {
+        if (nowPlaying === 'picker') {
+          stopPlayback()
+          return
+        }
+        play({ pageId, from: sample.start, end: Math.min(sample.end, sample.start + 8), key: 'picker' }).then(
+          (ok) => {
+            if (!ok) setError(AUDIO_GONE)
+          },
+          (caught: unknown) => {
+            log('transcript', 'could not play a sample', String(caught))
+            setError('Couldn’t play this sample.')
+          }
+        )
+      }}
+    >
+      {nowPlaying === 'picker' ? <StopIcon /> : <PlayIcon />}
+    </Button>
+  ) : null
+
   return (
     <div className="picker-layer" onMouseDown={onClose}>
       <ScrollArea
         ref={dialog}
-        className="picker"
+        className={cn('picker fixed z-[100] flex max-h-[calc(100vh-16px)] flex-col overflow-y-auto rounded-lg border-(length:--border-width) border-border bg-popover p-2.5 text-body-sm text-popover-foreground shadow-md', 'w-[320px]')}
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -382,48 +367,24 @@ function SpeakerPicker({
         }}
         onKeyDown={onKeyDown}
       >
-        <div className="picker-head">
-          <div className="picker-title">
-            <strong>{title}</strong>
-            <small>
+        <div className="mb-2 flex items-center gap-2">
+          <div className="grid min-w-0 flex-1">
+            <b className="truncate text-body-sm font-semibold">{title}</b>
+            <small className="text-label text-text-3">
               {scope === 'line' && line
                 ? `${clock(line.start)}${line.confidence === null ? '' : ` · ${percent(line.confidence)} like ${speaker.name}`}`
                 : `${String(own.length)} ${own.length === 1 ? 'line' : 'lines'}${speaker.confidence === null ? '' : ` · ${percent(speaker.confidence)} voice match`}`}
             </small>
           </div>
-          {sample ? (
-            <button
-              type="button"
-              className="chip-btn"
-              aria-pressed={nowPlaying === 'picker'}
-              onClick={() => {
-                if (nowPlaying === 'picker') {
-                  stopPlayback()
-                  return
-                }
-                listen('picker', pageId, sample.start, Math.min(sample.end, sample.start + 8)).then(
-                  (ok) => {
-                    if (!ok) setError(AUDIO_GONE)
-                  },
-                  (caught: unknown) => {
-                    log('transcript', 'could not play a sample', String(caught))
-                    setError('Couldn’t play this sample.')
-                  }
-                )
-              }}
-            >
-              {nowPlaying === 'picker' ? <StopIcon /> : <PlayIcon />}
-              {nowPlaying === 'picker' ? 'Stop' : 'Listen'}
-            </button>
-          ) : null}
-          <button type="button" className="icon-btn" aria-label="Close" onClick={onClose}>
+          {sampleButton}
+          <Button size="icon-sm" variant="ghost" aria-label="Close" onClick={onClose}>
             <CloseIcon />
-          </button>
+          </Button>
         </div>
 
         {line && own.length > 1 ? (
           <Segmented
-            className="picker-scope"
+            className="picker-scope mb-2 flex w-full [&>button]:flex-1"
             label="Change"
             value={scope}
             options={[
@@ -435,112 +396,135 @@ function SpeakerPicker({
         ) : null}
 
         {scope === 'all' && odd.length > 0 && odd.length < own.length ? (
-          <div className="picker-hint" role="note">
-            <span>
+          <div
+            className="picker-hint mb-2 flex items-center gap-2 rounded-sm border-(length:--border-width) border-warning/40 bg-warning-soft px-2.5 py-2 text-label text-foreground"
+            role="note"
+          >
+            <WarningIcon className="shrink-0 text-warning" />
+            <span className="min-w-0 flex-1">
               <b>
                 {odd.length} of {own.length} lines
               </b>{' '}
               sound like someone else.
             </span>
-            <button type="button" className="btn" onClick={onSplit}>
+            <Button size="sm" onClick={onSplit}>
               Split…
-            </button>
+            </Button>
           </div>
         ) : null}
 
         {scope === 'all' && state === 'likely' && matched ? (
-          <div className="picker-confirm">
-            <button
-              type="button"
-              className="btn primary"
-              onClick={() =>
-                void run({ kind: 'person', person: matched, score: speaker.confidence })
-              }
+          <div className="picker-confirm mb-2 flex gap-2">
+            <Button
+              variant="primary"
+              className="flex-1"
+              onClick={() => void run({ kind: 'person', person: matched, score: speaker.confidence })}
             >
               Yes, it’s {matched.name}
-            </button>
-            <button type="button" className="btn" onClick={() => input.current?.focus()}>
-              Someone else
-            </button>
+            </Button>
+            <Button onClick={() => input.current?.focus()}>Someone else</Button>
           </div>
         ) : null}
 
-        <label className="picker-search">
-          <input
-            ref={input}
-            data-autofocus
-            type="text"
-            value={query}
-            placeholder={state === 'likely' ? 'Or pick someone else…' : 'Type a name…'}
-            aria-label="Name"
-            aria-controls="picker-options"
-            aria-activedescendant={`picker-option-${String(highlight)}`}
-            onChange={(event) => {
-              setQuery(event.target.value)
-              setHighlight(0)
-            }}
-          />
-        </label>
+        <input
+          ref={input}
+          data-autofocus
+          type="text"
+          className="mb-1.5 h-8 w-full min-w-0 rounded-sm border-(length:--border-width) border-input bg-card px-2.5 text-body text-foreground placeholder:text-text-3 focus-visible:border-ring focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
+          value={query}
+          placeholder={state === 'likely' ? 'Or type someone else…' : 'Type a name'}
+          aria-label="Name"
+          role="combobox"
+          aria-expanded="true"
+          aria-controls="picker-options"
+          aria-activedescendant={`picker-option-${String(highlight)}`}
+          onChange={(event) => {
+            setQuery(event.target.value)
+            setHighlight(0)
+          }}
+        />
 
-        <ul className="picker-options" id="picker-options" role="listbox" aria-label="People">
+        <div className={'px-2 pt-1.5 pb-0.5 text-caps font-semibold tracking-[0.06em] text-text-3 uppercase'}>{speaker.matches.length ? 'Sounds like' : 'Saved voices'}</div>
+        <ul className="m-0 list-none p-0" id="picker-options" role="listbox" aria-label="People">
           {options.map((option, index) => (
             <li
               key={option.kind === 'person' ? option.person.id : option.kind}
               id={`picker-option-${String(index)}`}
               role="option"
               aria-selected={index === highlight}
-              className={option.kind === 'person' ? 'picker-option' : 'picker-option plain'}
+              className={cn(
+                'flex h-[30px] cursor-default items-center gap-2 rounded-sm px-2',
+                index === highlight && 'bg-brand-soft text-brand-text hc:outline-2 hc:outline-ring'
+              )}
               onMouseEnter={() => setHighlight(index)}
               onClick={() => void run(option)}
             >
               {option.kind === 'person' ? (
                 <>
-                  <span className="picker-name">
+                  <SpeakerBadge name={option.person.name} slot={speakerSlot(people, option.person.id)} />
+                  <span className="min-w-0 flex-1 truncate">
                     {option.person.name}
                     {option.person.self ? ' (you)' : ''}
                   </span>
-                  <span className="meter" aria-hidden="true">
-                    <i style={{ width: percent(option.score ?? 0) }} />
-                  </span>
-                  <span className="picker-score">
-                    {option.score === null ? '–' : percent(option.score)}
-                  </span>
+                  <MatchStrength score={option.score} />
                 </>
               ) : option.kind === 'new' ? (
-                <span className="picker-name">
-                  <PlusIcon /> Add “{option.name}” as a new person
-                </span>
+                <>
+                  <PlusIcon />
+                  <span className="min-w-0 flex-1 truncate">New person “{option.name}”</span>
+                </>
               ) : (
-                <span className="picker-name">Leave as “{speaker.name}”</span>
+                <span className="min-w-0 flex-1 truncate text-text-2">Leave as “{speaker.name}”</span>
               )}
             </li>
           ))}
         </ul>
 
         {error ? (
-          <p className="picker-error" role="alert">
+          <p className="picker-error m-0 mt-1.5 flex items-start gap-1.5 px-2 text-label text-destructive" role="alert">
+            <ErrorIcon className="mt-px shrink-0" />
             {error}
           </p>
         ) : null}
 
-        <div className="picker-foot">
-          {scope === 'all' ? (
-            <label className="picker-remember">
-              <Switch label="Remember this voice" checked={remember} onChange={setRemember} />
-              Remember this voice
+        {scope === 'all' ? (
+          <>
+            <div className="mx-0.5 my-1.5 h-px bg-border" />
+            <label className="flex items-center gap-2 px-2 py-1 text-[12.5px]">
+              <Checkbox checked={remember} onCheckedChange={(next) => setRemember(next === true)} />
+              Remember this voice for future sessions
             </label>
+            <p className="m-0 px-2 pb-1 text-label text-text-3">
+              Saves a voiceprint on this computer only. You can delete it in Saved voices.
+            </p>
+          </>
+        ) : null}
+
+        <div className="mt-1.5 flex items-center justify-between gap-2">
+          {own.length > 1 && !(scope === 'all' && odd.length > 0 && odd.length < own.length) ? (
+            <Button size="sm" variant="ghost" onClick={onSplit}>
+              Two people here? Split
+            </Button>
           ) : (
             <span />
           )}
-          {own.length > 1 && !(scope === 'all' && odd.length > 0 && odd.length < own.length) ? (
-            <button type="button" className="link-btn" onClick={onSplit}>
-              Two people here? Split
-            </button>
+          {active && active.kind !== 'keep' ? (
+            <Button size="sm" variant="primary" onClick={() => void run(active)}>
+              {scope === 'line' && line ? 'Move this line' : `Name ${String(count)} ${count === 1 ? 'line' : 'lines'}`}
+            </Button>
           ) : null}
         </div>
       </ScrollArea>
     </div>
   )
+}
+
+/** How well a saved voice matches, in plain words rather than a percentage. */
+function MatchStrength({ score }: { score: number | null }) {
+  if (score === null) return null
+  if (score >= SURE_MATCH) return <Badge tone="success" className="h-[18px]">Strong match</Badge>
+  if (score >= LOW_CONFIDENCE) return <span className="text-label text-text-3">Possible</span>
+  return <span className="text-label text-text-3">Unlikely</span>
 }
 
 // --- Split ---------------------------------------------------------------------------------
@@ -579,11 +563,12 @@ function SplitDialog({
   const top = Math.min(anchor.bottom + 8, window.innerHeight - 440)
   const left = Math.min(anchor.left, window.innerWidth - 536)
 
+  const least = own[0]?.id
   return (
     <div className="picker-layer" onMouseDown={onCancel}>
       <ScrollArea
         ref={dialog}
-        className="picker split"
+        className={cn('picker fixed z-[100] flex max-h-[calc(100vh-16px)] flex-col overflow-y-auto rounded-lg border-(length:--border-width) border-border bg-popover p-2.5 text-body-sm text-popover-foreground shadow-md', 'split w-[520px] max-w-[calc(100vw-16px)]')}
         role="dialog"
         aria-modal="true"
         aria-label={`Split ${speaker.name}`}
@@ -597,19 +582,23 @@ function SplitDialog({
           onCancel()
         }}
       >
-        <strong>Split {speaker.name} into two speakers</strong>
-        <p>
-          Tick the lines someone else said. Lyra ticked the ones whose voice is furthest from the
-          rest.
-        </p>
-        <ScrollArea as="ul" className="split-list">
+        <div className="flex items-baseline justify-between gap-2 px-1">
+          <b className="text-body-sm font-semibold">Split {speaker.name}</b>
+          <span className="text-label text-text-3">Tick the lines someone else said</span>
+        </div>
+        <ScrollArea as="ul" className="split-list m-0 mt-2 grid max-h-[320px] list-none gap-0.5 p-0" aria-multiselectable="true">
           {own.map((line) => (
             <li key={line.id}>
-              <label className={picked.has(line.id) ? 'split-row on' : 'split-row'}>
-                <input
-                  type="checkbox"
+              <label
+                className={cn(
+                  'flex items-start gap-2 rounded-xs p-1 text-body-sm',
+                  picked.has(line.id) && 'bg-brand-soft'
+                )}
+              >
+                <Checkbox
+                  className="mt-0.5"
                   checked={picked.has(line.id)}
-                  onChange={() => {
+                  onCheckedChange={() => {
                     setPicked((current) => {
                       const next = new Set(current)
                       if (next.has(line.id)) next.delete(line.id)
@@ -618,32 +607,31 @@ function SplitDialog({
                     })
                   }}
                 />
-                <span className="split-time">{clock(line.start)}</span>
-                <span className="split-text">{line.text}</span>
-                <span className="split-score">
-                  {line.confidence === null ? '–' : percent(line.confidence)}
-                </span>
+                <span className="shrink-0 font-mono text-[11.5px] leading-5 text-text-3">{clock(line.start)}</span>
+                <span className="min-w-0 flex-1">{line.text}</span>
+                {line.id === least && line.confidence !== null && line.confidence < LOW_CONFIDENCE ? (
+                  <Badge tone="warning" className="h-[18px]">
+                    Least alike
+                  </Badge>
+                ) : null}
               </label>
             </li>
           ))}
         </ScrollArea>
-        <div className="picker-foot">
-          <span className="split-count">
+        <div className="mt-2 flex items-center justify-between gap-2 px-1">
+          <span className="text-label text-text-3">
             {picked.size
-              ? `${String(picked.size)} ${picked.size === 1 ? 'line goes' : 'lines go'} to a new speaker you can name next.`
-              : 'Nothing ticked.'}
+              ? `${String(picked.size)} of ${String(own.length)} lines will become a new speaker you can name next`
+              : 'Nothing ticked'}
           </span>
-          <button type="button" className="btn" onClick={onCancel}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="btn primary"
-            disabled={!valid}
-            onClick={() => onSplit([...picked])}
-          >
-            Split
-          </button>
+          <span className="flex gap-2">
+            <Button size="sm" variant="ghost" onClick={onCancel}>
+              Cancel
+            </Button>
+            <Button size="sm" variant="primary" disabled={!valid} onClick={() => onSplit([...picked])}>
+              Split {picked.size} {picked.size === 1 ? 'line' : 'lines'}
+            </Button>
+          </span>
         </div>
       </ScrollArea>
     </div>
@@ -656,6 +644,8 @@ function SplitDialog({
 type LineHandlers = {
   openPicker: (speaker: string, line: string, target: Element) => void
   listen: (line: TranscriptSegment) => void
+  /** Pauses or resumes the stream playing through this session. */
+  togglePause: () => void
   save: (id: string, text: string) => void
   doneRewriting: (id: string) => void
   focused: (id: string) => void
@@ -664,6 +654,8 @@ type LineHandlers = {
 type LineProps = {
   line: TranscriptSegment
   speaker: SpeakerEntry | undefined
+  /** The speaker's palette slot in this session (badge hue and shape). */
+  slotOf: (id: string) => number
   continues: boolean
   picked: boolean
   playing: boolean
@@ -682,6 +674,7 @@ type LineProps = {
 const TranscriptLine = memo(function TranscriptLine({
   line,
   speaker,
+  slotOf,
   continues,
   picked,
   playing,
@@ -693,15 +686,17 @@ const TranscriptLine = memo(function TranscriptLine({
   const id = useId()
   const level = tier(line.confidence)
   const state = stateOf(speaker)
+  const name = speaker?.name ?? 'Speaker'
   return (
     <div
-      className={[
-        'line',
-        continues ? 'continues' : '',
-        level === 1 ? 'low' : '',
-        picked ? 'picked' : '',
-        playing ? 'playing' : ''
-      ].join(' ')}
+      className={cn(
+        LINE_GRID,
+        'line group/line',
+        continues && 'continues',
+        level === 1 && 'low',
+        picked && 'picked bg-selection',
+        playing && 'playing bg-brand-soft shadow-[inset_3px_0_0_var(--accent)]'
+      )}
       data-row={line.id}
       role="group"
       aria-labelledby={`${id}-label ${id}-text`}
@@ -709,46 +704,73 @@ const TranscriptLine = memo(function TranscriptLine({
       tabIndex={tabbable ? 0 : -1}
       onFocus={() => handlers.focused(line.id)}
     >
-      <div className="gutter">
+      <button
+        type="button"
+        className={cn(
+          'line-play inline-flex h-6 items-start gap-1 rounded-xs pt-[3px] font-mono text-[11.5px] tabular-nums text-text-3',
+          'hover:text-brand-text focus-visible:outline-2 focus-visible:outline-ring',
+          playing && 'text-brand-text'
+        )}
+        aria-pressed={playing}
+        aria-label={playing ? 'Pause or resume playback' : `Play from ${clock(line.start)}`}
+        {...tip(playing ? 'Pause' : 'Play from here')}
+        onClick={() => {
+          if (playing) handlers.togglePause()
+          else handlers.listen(line)
+        }}
+      >
+        {clock(line.start)}
+      </button>
+      <span className="flex justify-center pt-1">
+        {playing ? (
+          <button
+            type="button"
+            tabIndex={-1}
+            aria-hidden="true"
+            className="grid size-5 place-items-center rounded-xs text-brand-text hover:bg-accent"
+            onClick={() => handlers.togglePause()}
+          >
+            <PauseIcon />
+          </button>
+        ) : level === 1 && line.cluster ? (
+          <span
+            role="img"
+            className="text-suggested"
+            aria-label="May be mislabeled"
+            {...tip(line.confidence === null ? 'May be mislabeled' : `${percent(line.confidence)} voice match: may be mislabeled`)}
+          >
+            <LowConfidenceIcon />
+          </span>
+        ) : (
+          // The time is the play control too; this is the bigger target beside it.
+          <button
+            type="button"
+            tabIndex={-1}
+            aria-hidden="true"
+            className="grid size-5 place-items-center rounded-xs text-text-3 opacity-0 group-hover/line:opacity-100 hover:bg-accent hover:text-brand-text"
+            onClick={() => handlers.listen(line)}
+          >
+            <PlayIcon />
+          </button>
+        )}
+      </span>
+      <span className={cn('who-row col-start-3 mb-px text-[12.5px] leading-[18px]', continues && 'hidden')}>
         {line.cluster ? (
           <button
             type="button"
-            className={`who ${state}`}
+            className="who rounded-xs focus-visible:outline-2 focus-visible:outline-ring"
             {...tip('Change who said this')}
             onClick={(event) => {
               if (line.cluster) handlers.openPicker(line.cluster, line.id, event.currentTarget)
             }}
           >
-            {speaker?.name ?? 'Speaker'}
-            {state === 'likely' ? '?' : ''}
+            <SpeakerName name={name} slot={slotOf(line.cluster)} certainty={state} />
           </button>
         ) : (
-          <span className="who unknown">Live</span>
+          <SpeakerName name="Labeling…" slot={0} certainty="unknown" />
         )}
-        <span className="line-meta">
-          <button
-            type="button"
-            className="line-play"
-            aria-pressed={playing}
-            aria-label={playing ? 'Stop playback' : `Listen from ${clock(line.start)}`}
-            {...tip(playing ? 'Stop' : 'Listen')}
-            onClick={() => {
-              if (playing) stopPlayback()
-              else handlers.listen(line)
-            }}
-          >
-            {playing ? <StopIcon /> : <PlayIcon />}
-            {clock(line.start)}
-          </button>
-          {line.cluster ? <Signal confidence={line.confidence} /> : null}
-          {level < 3 && line.confidence !== null ? (
-            <span className={level === 1 ? 'line-pct low' : 'line-pct'}>
-              {percent(line.confidence)}
-            </span>
-          ) : null}
-        </span>
-      </div>
-      <div className="line-body">
+      </span>
+      <div className={cn('line-body col-start-3 min-w-0', level === 1 && 'is-unsure')}>
         {/* Not drawn: names the focused line for screen readers (time and speaker, then words). */}
         <span id={`${id}-label`} hidden>
           {`${clock(line.start)}, ${speaker?.name ?? 'Live'}:`}
@@ -791,15 +813,19 @@ export function Transcript({
   onUndo,
   showSpeakersBar,
   pickerRequest,
-  transcribing
+  transcribing,
+  sectionAt,
+  onReference
 }: Props) {
   const people = usePeople()
-  const nowPlaying = usePlayback()
+  const nowPlaying = usePlayingKey(pageId)
   // Leaving the session (or closing it) stops whatever is playing from it.
   useEffect(() => stopPlayback, [pageId])
   const [picker, setPicker] = useState<Picker | null>(null)
   const [split, setSplit] = useState<{ speaker: string; anchor: DOMRect } | null>(null)
   const byId = useMemo(() => new Map(speakers.map((speaker) => [speaker.id, speaker])), [speakers])
+  // Stable for the memoized lines: a speaker keeps its slot for the life of the session.
+  const slotOf = useCallback((id: string) => speakerSlot(speakers, id), [speakers])
   const labeled = useMemo(() => transcript.some((line) => line.cluster !== null), [transcript])
   const present = useMemo(() => {
     const heard = new Set<string>()
@@ -810,6 +836,17 @@ export function Transcript({
   const unsure = useMemo(() => transcript.filter((line) => tier(line.confidence) === 1), [transcript])
 
   const linesRef = useRef<HTMLDivElement>(null)
+  // Playback walks down the lines; when the next one goes just past the bottom of the view, the
+  // view follows. Scrolled away to read something else, it's left alone.
+  useEffect(() => {
+    if (!nowPlaying || nowPlaying === 'picker') return
+    const row = rowOf(linesRef.current, nowPlaying)
+    const view = row?.closest<HTMLElement>('.scroller')
+    if (!row || !view) return
+    const box = view.getBoundingClientRect()
+    const at = row.getBoundingClientRect()
+    if (at.bottom > box.bottom && at.top - box.bottom < 160) row.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() })
+  }, [nowPlaying])
   const [selection, setSelection] = useState<LineSelection | null>(null)
   const [menu, setMenu] = useState<MenuRequest | null>(null)
   const [correcting, setCorrecting] = useState<LineSelection | null>(null)
@@ -872,7 +909,7 @@ export function Transcript({
       notify('Copied')
     },
     listen: (line) => {
-      listenToLine(pageId, line)
+      playFromLine(pageId, line, transcript)
     },
     speaker: (line, anchor) => {
       if (!line.cluster) return
@@ -943,8 +980,8 @@ export function Transcript({
   }
 
   // Lines read the parent's current props through this, so their handlers never change.
-  const live = useRef({ pageId, onEditLine })
-  live.current = { pageId, onEditLine }
+  const live = useRef({ pageId, onEditLine, transcript })
+  live.current = { pageId, onEditLine, transcript }
   const handlers = useMemo(
     (): LineHandlers => ({
       openPicker: (speaker, line, target) => {
@@ -952,7 +989,12 @@ export function Transcript({
         setPicker({ speaker, line, anchor: target.getBoundingClientRect() })
       },
       listen: (line) => {
-        listenToLine(live.current.pageId, line)
+        playFromLine(live.current.pageId, line, live.current.transcript)
+      },
+      togglePause: () => {
+        const state = playbackState()
+        if (state?.paused) resumePlayback()
+        else pausePlayback()
       },
       save: (id, text) => {
         live.current.onEditLine(id, text)
@@ -993,18 +1035,80 @@ export function Transcript({
   const pickedSpeaker = picker ? byId.get(picker.speaker) : undefined
   const splitSpeaker = split ? byId.get(split.speaker) : undefined
 
+  /** A section's lines: from its first line up to the next section's. */
+  const sectionLines = (first: TranscriptSegment): TranscriptSegment[] => {
+    const from = transcript.indexOf(first)
+    let to = transcript.length
+    for (let index = from + 1; index < transcript.length; index++) {
+      const id = transcript[index]?.id
+      if (id && sectionAt?.has(id)) {
+        to = index
+        break
+      }
+    }
+    return transcript.slice(from, to)
+  }
+  const sectionMenu = (
+    event: ReactMouseEvent,
+    first: TranscriptSegment,
+    section: { start: number; title: string; summary: string }
+  ): void => {
+    const label = `§ ${section.title} · ${clock(section.start)}`
+    speakerMenu.open(event, section.title, [
+      {
+        label: 'Reference in notes',
+        icon: <NoteIcon />,
+        disabled: !onReference,
+        run: () => {
+          onReference?.(label, first.id)
+          notify('Added a reference to your notes')
+        }
+      },
+      {
+        label: 'Play this section',
+        icon: <PlayIcon />,
+        run: () => playFromLine(pageId, first, transcript)
+      },
+      'separator',
+      {
+        label: 'Copy section transcript',
+        icon: <CopyIcon />,
+        run: () => {
+          const lines = sectionLines(first).map((line) => {
+            const who = line.cluster ? (byId.get(line.cluster)?.name ?? 'Speaker') : 'Speaker'
+            return `**${who}** (${clock(line.start)}): ${line.text}`
+          })
+          window.api.copyText(`## ${section.title}\n\n${lines.join('\n\n')}`)
+          notify('Copied the section')
+        }
+      },
+      {
+        label: 'Copy section summary',
+        icon: <CopyIcon />,
+        disabled: !section.summary,
+        run: () => {
+          window.api.copyText(`${section.title}: ${section.summary}`)
+          notify('Copied the section summary')
+        }
+      }
+    ])
+  }
+
   return (
     <section className="transcript" aria-label="Transcript">
       {/* In the panel layout the speakers live in the panel. */}
       {showSpeakersBar ? (
-        <div className="speakers-bar">
+        <div className="speakers-bar flex flex-wrap items-center gap-1.5">
           {/* The avatar chips say what they are; only the unlabeled live state needs a word. */}
           {labeled ? null : <span className="speakers-label">Live</span>}
           {present.map((speaker) => (
             <button
               key={speaker.id}
               type="button"
-              className={`speaker-chip ${stateOf(speaker)}`}
+              className={cn(
+                'speaker-chip inline-flex h-7 max-w-full items-center rounded-full border-(length:--border-width) border-border bg-card pr-2.5 pl-1',
+                'hover:bg-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring'
+              )}
               aria-haspopup="dialog"
               aria-expanded={picker?.speaker === speaker.id && !picker.line}
               {...tip(
@@ -1032,22 +1136,14 @@ export function Transcript({
                 ])
               }}
             >
-              <span
-                className="speaker-avatar"
-                data-tone={speakerTone(speakers, speaker.id)}
-                aria-hidden="true"
-              >
-                {stateOf(speaker) === 'unknown' ? '?' : (speaker.name[0] ?? '?').toUpperCase()}
-              </span>
-              {speaker.name}
-              {stateOf(speaker) === 'likely' ? <span className="speaker-q">?</span> : null}
+              <SpeakerName name={speaker.name} slot={slotOf(speaker.id)} certainty={stateOf(speaker)} />
             </button>
           ))}
-          <span className="speakers-tools">
+          <span className="speakers-tools ml-auto flex items-center gap-1.5">
             {pending.length ? (
               <button
                 type="button"
-                className="pill"
+                className="inline-flex h-[22px] items-center gap-[5px] rounded-full bg-warning-soft px-2 text-[11.5px] font-medium text-warning hover:brightness-95 hc:border hc:border-current"
                 onClick={(event) => {
                   const first = pending[0]
                   if (first) openPicker(first.id, null, event.currentTarget)
@@ -1059,7 +1155,7 @@ export function Transcript({
             {unsure.length ? (
               <button
                 type="button"
-                className="pill"
+                className="inline-flex h-[22px] items-center gap-[5px] rounded-full bg-warning-soft px-2 text-[11.5px] font-medium text-warning hover:brightness-95 hc:border hc:border-current"
                 {...tip('Lines whose voice doesn’t match their speaker well')}
                 onClick={(event) => {
                   const first = unsure[0]
@@ -1071,7 +1167,7 @@ export function Transcript({
             ) : null}
             {/* Once there is a summary, rewriting it is offered on the summary itself. */}
             {notesEngine !== 'off' && labeled && !hasSummary ? (
-              <SummaryButton pageId={pageId} hasSummary={hasSummary} className="btn ghost" />
+              <SummaryButton pageId={pageId} hasSummary={hasSummary} />
             ) : null}
           </span>
         </div>
@@ -1084,11 +1180,26 @@ export function Transcript({
         onContextMenu={onContextMenu}
         onKeyDown={onLinesKeyDown}
       >
-        {transcript.map((line, index) => (
+        {transcript.map((line, index) => {
+          const section = sectionAt?.get(line.id)
+          return (
+          <Fragment key={line.id}>
+          {section ? (
+            // Sticks to the top of the transcript while its section is on screen; the next
+            // section's heading takes its place.
+            <h3
+              className="section-heading sticky top-0 z-[2] m-0 -mx-2 flex cursor-context-menu items-baseline gap-2.5 border-b border-border bg-background/95 px-4 py-1.5 text-body-sm font-semibold backdrop-blur-[2px]"
+              data-section-start={section.start}
+              onContextMenu={(event) => sectionMenu(event, line, section)}
+            >
+              <span className="font-mono text-label font-medium text-brand-text">{clock(section.start)}</span>
+              <span className="min-w-0 truncate">{section.title}</span>
+            </h3>
+          ) : null}
           <TranscriptLine
-            key={line.id}
             line={line}
             speaker={line.cluster ? byId.get(line.cluster) : undefined}
+            slotOf={slotOf}
             continues={index > 0 && transcript[index - 1]?.cluster === line.cluster}
             picked={picker?.line === line.id}
             playing={nowPlaying === line.id}
@@ -1097,7 +1208,9 @@ export function Transcript({
             hint={hintId}
             handlers={handlers}
           />
-        ))}
+          </Fragment>
+          )
+        })}
         <span id={hintId} hidden>
           Arrow keys move between lines, Enter edits the line, Shift+F10 shows more actions.
         </span>

@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import { keyLabel } from '../lib/format'
-import { ChevronDownIcon, CloseIcon } from './Icons'
+import { cn } from '../lib/utils'
+import { ChevronDownIcon, CloseIcon, SearchIcon } from './Icons'
 import { tip } from './Tooltip'
+import { Button } from './ui/button'
 
 type Props = {
   /** What to search: the open session's notes, summary and transcript. */
@@ -167,8 +169,15 @@ export function FindBar({ root, initial, request, onClose }: Props) {
     : ''
 
   return (
-    <div className="find-bar" role="search" aria-label="Find in session" data-find-skip>
+    <div
+      className="find-bar flex max-w-[520px] items-center gap-2 rounded-md border-(length:--border-width) border-border bg-popover px-2 py-1.5 shadow-md"
+      role="search"
+      aria-label="Find in session"
+      data-find-skip
+    >
+      <SearchIcon className="shrink-0 text-text-3" />
       <input
+        className="h-6 min-w-0 flex-1 bg-transparent text-body text-foreground outline-none placeholder:text-text-3"
         ref={input}
         type="text"
         value={query}
@@ -186,32 +195,35 @@ export function FindBar({ root, initial, request, onClose }: Props) {
           }
         }}
       />
-      <span className={ranges.length || !query.trim() ? 'find-count' : 'find-count is-empty'} aria-live="polite">
+      <span
+        className={cn('shrink-0 font-mono text-label tabular-nums text-text-3', query.trim() && !ranges.length && 'text-destructive')}
+        aria-live="polite"
+      >
         {label}
       </span>
-      <button
+      <Button
         type="button"
-        className="icon-btn find-prev"
+        variant="ghost" size="icon-sm" className="find-prev [&_svg]:rotate-180"
         aria-label="Previous match"
         disabled={!ranges.length}
         onClick={() => step(-1)}
         {...tip('Previous', keyLabel('Shift+Enter'))}
       >
         <ChevronDownIcon />
-      </button>
-      <button
+      </Button>
+      <Button
         type="button"
-        className="icon-btn"
+        variant="ghost" size="icon-sm"
         aria-label="Next match"
         disabled={!ranges.length}
         onClick={() => step(1)}
         {...tip('Next', keyLabel('Enter'))}
       >
         <ChevronDownIcon />
-      </button>
-      <button type="button" className="icon-btn" aria-label="Close find" onClick={onClose} {...tip('Close', keyLabel('Esc'))}>
+      </Button>
+      <Button type="button" variant="ghost" size="icon-sm" aria-label="Close find" onClick={onClose} {...tip('Close', keyLabel('Esc'))}>
         <CloseIcon />
-      </button>
+      </Button>
     </div>
   )
 }

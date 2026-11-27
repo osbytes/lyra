@@ -1,6 +1,7 @@
 import type { PermissionKind, PermissionState, PermissionStatus } from '../../../shared/types'
 import { notify } from '../lib/toast'
 import { Row } from './SettingsParts'
+import { Button } from './ui/button'
 
 const WHAT: Record<PermissionKind, { label: string; mac: string; win: string }> = {
   microphone: {
@@ -59,9 +60,9 @@ export function PermissionRow({ kind, status }: { kind: PermissionKind; status: 
     <div className={refused ? 'settings-group has-issue' : 'settings-group'}>
       <Row label={what.label} hint={platform === 'darwin' ? what.mac : what.win}>
         <span className={refused ? 'settings-status is-refused' : 'settings-status'}>{stateText(state)}</span>
-        <button className="btn" type="button" onClick={open}>
+        <Button type="button" onClick={open}>
           Open Settings
-        </button>
+        </Button>
       </Row>
     </div>
   )
