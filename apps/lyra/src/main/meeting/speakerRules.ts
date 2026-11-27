@@ -96,6 +96,23 @@ export function ownedVoiceprints(
 }
 
 /**
+ * `owned` with the voiceprints the latest round heard while recording (`liveLabels.ts`), which
+ * cover everything said so far and so outrank any pass. Live lines are no pass's, so the round
+ * vouches for a speaker only while lines it gave them (not ones the user moved) still show them.
+ * Without these, a voice named while recording had no voiceprint to save.
+ */
+export function withLiveVoiceprints(
+  owned: ReadonlyMap<string, SessionVoiceprint>,
+  live: ReadonlyMap<string, SessionVoiceprint>,
+  transcript: readonly { cluster: string | null; userCluster?: boolean | undefined }[]
+): Map<string, SessionVoiceprint> {
+  const heard = new Set(transcript.flatMap((line) => (line.cluster && !line.userCluster ? [line.cluster] : [])))
+  const out = new Map(owned)
+  for (const [id, print] of live) if (heard.has(id) && print.vector.length) out.set(id, print)
+  return out
+}
+
+/**
  * Lines whose speaker the user chose: marked so in the document (`userCluster`), which covers
  * live lines too. Documents from before the mark fall back to comparing with the pass: a line
  * its pass gave one speaker that now shows another was moved. A live line there has no record

@@ -29,7 +29,7 @@ import { SPEAKER_EMBEDDING } from './speakerModel'
 import { movedLines, pinnedSpeakers } from './speakerRules'
 import { DIARIZE_THRESHOLD } from './thresholds'
 import { snapTurns } from './turnEdges'
-import { passClusters, type WrittenPass } from './voiceprints'
+import { clearLiveVoiceprints, passClusters, type WrittenPass } from './voiceprints'
 import { reportMeetingStatus } from './meetingActivity'
 
 /**
@@ -452,6 +452,7 @@ async function relabel(pageId: string): Promise<void> {
     ...manifest,
     passes: [...manifest.passes, { id: passId, kind: 'diarized', createdAt: pass.createdAt, model: pass.model }]
   }))
+  clearLiveVoiceprints(pageId)
   timing.finish()
   broadcast({ pageId, task: 'speakers', state: 'done', progress: 1 })
   // How much of what was labeled while recording this pass changed (`labelChanges.ts`).
