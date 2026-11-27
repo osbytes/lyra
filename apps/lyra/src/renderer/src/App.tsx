@@ -3,7 +3,7 @@ import { PANEL_WIDTHS } from '../../shared/settings'
 import { summarySections } from '../../shared/summarySections'
 import type { PageSummary, WhisperStatus } from '../../shared/types'
 import type { TranscriptSegment } from '../../shared/sessionDoc'
-import { DictationMessage, RecordControl } from './components/Capture'
+import { DictationMessage, RecordControl, SystemAudioMessage } from './components/Capture'
 import { useContextMenu } from './components/ContextMenu'
 import { SummaryButton } from './components/SummaryButton'
 import { SummaryPane } from './components/SummaryPane'
@@ -767,7 +767,8 @@ export default function App(): React.JSX.Element {
           <RecordingReadout
             startedAt={listeningSince}
             micName={dictation.micName}
-            systemAudio={systemAudio}
+            // Mic only in the readout while computer audio isn't actually being recorded.
+            systemAudio={dictation.systemAudio === 'live'}
             subscribeLevel={dictation.subscribeLevel}
           />
         ) : null
@@ -1174,6 +1175,13 @@ export default function App(): React.JSX.Element {
                     />
                   ) : null}
                   <DictationMessage error={dictation.error} notice={dictation.notice} onDismiss={dictation.dismissMessage} />
+                  {dictation.systemAudioMessageShown ? (
+                    <SystemAudioMessage
+                      state={dictation.systemAudio}
+                      onRetry={dictation.retrySystemAudio}
+                      onDismiss={dictation.dismissSystemAudio}
+                    />
+                  ) : null}
                   {toastElement}
                 </ToastStack>
               </div>
