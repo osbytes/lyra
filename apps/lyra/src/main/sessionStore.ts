@@ -135,6 +135,8 @@ const docPathIn = (root: string, id: string): string => join(sessionDirIn(root, 
 const legacyLogPathIn = (root: string, id: string): string => join(sessionDirIn(root, id), 'doc.yjs')
 export const sessionAudioDir = (id: string): string => join(sessionDir(id), 'audio')
 export const sessionRawDir = (id: string): string => join(sessionDir(id), 'raw')
+/** Work a long step has done so far (`checkpoints.ts`); not a pass, so not in `raw/`. */
+export const sessionCheckpointDir = (id: string): string => join(sessionDir(id), 'checkpoint')
 
 /** One model pass over a session's audio, kept as it was produced (docs/SESSION-MODEL.md). */
 export type RawPass = {
@@ -514,7 +516,8 @@ async function migrateNote(id: string, root: string): Promise<Entry> {
     // The file is already what the document says; leave it byte-for-byte as it is.
     exportHash: sha256(raw),
     // A migrated meeting's export gains the metadata file; plain notes stay untouched.
-    dirty: meeting !== null
+    dirty: meeting !== null,
+    pending: []
   }
   createDocFile(root, id, doc)
   writeManifest({ root, manifest, manifestRaw: undefined })
@@ -570,7 +573,8 @@ async function rebuildManifest(id: string, root: string, snapshot: SessionDoc): 
     ...docSummaryFields(snapshot),
     titleAuto: !snapshot.title.trim(),
     exportHash: null,
-    dirty: true
+    dirty: true,
+    pending: []
   }
 }
 
@@ -1140,7 +1144,8 @@ export async function createSession(options: CreateSessionOptions = {}): Promise
         tags: [],
         speakers: 0,
         exportHash: sha256(text),
-        dirty: false
+        dirty: false,
+        pending: []
       }
       const entry = makeEntry({ id, root, doc, docRaw: undefined, manifest, manifestRaw: undefined })
       writeManifest(entry)

@@ -126,7 +126,7 @@ export class ChunkedTranscriber {
   constructor(
     tracks: readonly AudioTrack[],
     /** Where this take starts on the session timeline, in samples. */
-    start: number,
+    private readonly start: number,
     private readonly transcribe: Transcribe,
     private readonly onChunk: (chunk: TranscribedChunk) => void,
     private readonly onProgress: (progress: TranscriberProgress) => void = () => undefined,
@@ -189,11 +189,33 @@ export class ChunkedTranscriber {
    */
   unfinished(): UnfinishedSpan[] {
     return [...this.lanes.values()].flatMap((lane) => {
-      const waiting = this.pending.find((entry) => entry.track === lane.track)
-      const from = Math.min(waiting?.start ?? Infinity, lane.chunker.pendingFrom() / SAMPLE_RATE)
-      const end = (lane.at + lane.bufferedLength) / SAMPLE_RATE
+      const from = this.handedOutTo(lane)
+      const end = this.receivedTo(lane)
       return from < end ? [{ track: lane.track, start: +from.toFixed(3), end: +end.toFixed(3) }] : []
     })
+  }
+
+  /**
+   * Per track, where the audio not handed out as words yet starts (where it ends if all of it
+   * was). Saved while recording, so a crash leaves a mark of what to transcribe again: from there
+   * to wherever the audio on disk ends.
+   */
+  handedOut(): { track: AudioTrack; at: number }[] {
+    return [...this.lanes.values()].map((lane) => ({
+      track: lane.track,
+      at: +Math.min(this.handedOutTo(lane), this.receivedTo(lane)).toFixed(3)
+    }))
+  }
+
+  private handedOutTo(lane: Lane): number {
+    const waiting = this.pending.find((entry) => entry.track === lane.track)
+    const from = Math.min(waiting?.start ?? Infinity, lane.chunker.pendingFrom() / SAMPLE_RATE)
+    // Before its first frame a chunker says 0, not where the take starts: never before the take.
+    return Math.max(this.start / SAMPLE_RATE, from)
+  }
+
+  private receivedTo(lane: Lane): number {
+    return (lane.at + lane.bufferedLength) / SAMPLE_RATE
   }
 
   stats(): Record<string, number | boolean | null> {

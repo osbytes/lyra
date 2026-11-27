@@ -25,16 +25,25 @@ function pcm16(samples: Float32Array): Int16Array {
   return out
 }
 
+/**
+ * `crashAt` (seconds): the app dies there instead of stopping, leaving what a crash leaves
+ * (`recorderFixture.crash`): the audio and words saved so far, nothing finished.
+ */
 export async function replayRecording(
   pageId: string,
   micPath: string,
   systemPath: string | null,
-  transcribe?: TranscribeExperiment
+  transcribe?: TranscribeExperiment,
+  crashAt?: number
 ): Promise<void> {
   const mic = await readWav(micPath)
   const system = systemPath ? await readWav(systemPath) : null
   await recorderFixture.start(pageId, system !== null, transcribe)
   for (let at = 0; at < mic.length; at += BATCH) {
+    if (crashAt !== undefined && at >= crashAt * SAMPLE_RATE) {
+      await recorderFixture.crash()
+      return
+    }
     recorderFixture.append('mic', pcm16(mic.subarray(at, at + BATCH)))
     if (system) recorderFixture.append('system', pcm16(system.subarray(at, at + BATCH)))
     // Let transcription and speaker labeling keep up between batches, as they do while recording:

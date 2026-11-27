@@ -2,7 +2,12 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { readManifestOf, readSession, sessionRawDir, type RawPass } from '../sessionStore'
-import { ownedVoiceprints, type PassVoiceprints, type SessionVoiceprint } from './speakerRules'
+import {
+  ownedVoiceprints,
+  withLiveVoiceprints,
+  type PassVoiceprints,
+  type SessionVoiceprint
+} from './speakerRules'
 
 /** A raw pass as written now: each speaker's voiceprint records the model that made it. */
 export type WrittenPass = Omit<RawPass, 'clusters'> & {
@@ -46,10 +51,28 @@ async function readPasses(pageId: string): Promise<PassVoiceprints[]> {
   return out
 }
 
-/** The voiceprint of each speaker who still owns lines of the transcript (`ownedVoiceprints`). */
+/** Each session's speakers as the latest live round heard them; gone once a pass is written. */
+const heardLive = new Map<string, Map<string, SessionVoiceprint>>()
+
+/** Keeps what a live round heard, so a speaker named while recording can be saved as a voice. */
+export function setLiveVoiceprints(pageId: string, prints: Map<string, SessionVoiceprint>): void {
+  heardLive.set(pageId, prints)
+}
+
+/** A pass now holds the session's voiceprints; the live ones would only shadow it. */
+export function clearLiveVoiceprints(pageId: string): void {
+  heardLive.delete(pageId)
+}
+
+/**
+ * The voiceprint of each speaker who still owns lines of the transcript (`ownedVoiceprints`), or,
+ * while recording, as the latest live round heard them (`withLiveVoiceprints`).
+ */
 export async function sessionVoiceprints(pageId: string): Promise<Map<string, SessionVoiceprint>> {
   const [passes, session] = await Promise.all([readPasses(pageId), readSession(pageId)])
-  return ownedVoiceprints(passes, session.transcript)
+  const owned = ownedVoiceprints(passes, session.transcript)
+  const live = heardLive.get(pageId)
+  return live ? withLiveVoiceprints(owned, live, session.transcript) : owned
 }
 
 /** The speaker each pass gave each of its segments, by segment id (unique across passes). */

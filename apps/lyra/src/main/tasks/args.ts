@@ -14,6 +14,8 @@ import { ConfigError } from '../config'
  *     [--larger-speaker-model]                  label with the opt-in speaker-activity model
  *     [--capture]                               play mic.wav as a fake microphone through the
  *                                               window's real capture path, in real time
+ *     [--crash]                                 the app dies half way through the recording;
+ *                                               then resumed as the next start resumes it
  *
  * In development the scripts launch `electron . <task>`. Each task runs in a throwaway profile
  * and exits with its result.
@@ -55,7 +57,8 @@ const Meeting = z
     '--asr': z.enum(['whisper', 'parakeet']).optional(),
     '--no-context': z.literal(true).optional(),
     '--larger-speaker-model': z.literal(true).optional(),
-    '--capture': z.literal(true).optional()
+    '--capture': z.literal(true).optional(),
+    '--crash': z.literal(true).optional()
   })
   .strict()
   .transform((args) => ({
@@ -82,9 +85,15 @@ const Meeting = z
      * microphone playing the WAV, instead of feeding main directly. Mic only: loopback can't be
      * faked.
      */
-    capture: args['--capture'] === true
+    capture: args['--capture'] === true,
+    /** Stop half way through as a crash would (nothing finished or saved), then resume. */
+    crash: args['--crash'] === true
   }))
   .refine((task) => !task.capture || task.system === null, '--capture replays the mic track only')
+  .refine(
+    (task) => !task.crash || (!task.capture && task.pipeline === 'live'),
+    '--crash replays a live recording'
+  )
 
 export type Task = z.output<typeof Smoke> | z.output<typeof Screenshot> | z.output<typeof Meeting>
 

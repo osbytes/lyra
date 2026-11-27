@@ -2,6 +2,7 @@ import { log } from '../lib/log'
 import { SAMPLE_RATE } from '../../../shared/audio/vad'
 import {
   RECONNECT_DELAYS_MS,
+  SYSTEM_START_DELAYS_MS,
   microphoneDidNotStart,
   microphoneErrorMessage,
   retryOpen,
@@ -75,11 +76,14 @@ export type CaptureHandle = {
     context: string
     track: string
     muted: boolean
+    system: 'live' | 'none' | 'off'
     systemReopens: number
     micReopens: number
   }
   /** Frames stopped arriving: resume the audio engine, and reopen a microphone that died. */
   recover: () => void
+  /** Tries computer audio again now (the user pressed Retry); nothing while it's recording. */
+  retrySystem: () => void
   stop: () => void
 }
 
@@ -87,6 +91,11 @@ export type CaptureHandle = {
 export type CaptureEvent =
   | { type: 'mic-reconnecting'; micName: string }
   | { type: 'mic-restored'; micName: string }
+  /** Computer audio isn't being recorded, and is being opened (again). */
+  | { type: 'system-retrying' }
+  | { type: 'system-restored' }
+  /** Every try failed: the recording carries on with the mic and a silent computer track. */
+  | { type: 'system-unavailable' }
 
 export type OpenedMicrophone = {
   stream: MediaStream
@@ -157,8 +166,11 @@ export async function openMicrophone(deviceId: string | null = null): Promise<Op
 }
 
 export type CaptureOptions = {
-  /** System audio (the other side of a call), recorded as its own track. */
-  system?: MediaStream
+  /**
+   * System audio (the other side of a call), recorded as its own track. Null when it was asked
+   * for but didn't open: the track is kept (silent) and `reopenSystem` keeps trying.
+   */
+  system?: MediaStream | null
   /** Opens system audio again, when its track ends or the default output changes. */
   reopenSystem?: () => Promise<MediaStream | null>
   /**
@@ -246,7 +258,8 @@ export async function startCapture(
   }
 
   const { system, onTracks, reopenSystem, reopenMic, onEvent } = options
-  const channels = system ? 2 : 1
+  const wantsSystem = system !== undefined
+  const channels = wantsSystem ? 2 : 1
   let micStream = stream
   let micSource = context.createMediaStreamSource(stream)
   const highPass = new BiquadFilterNode(context, {
@@ -262,6 +275,7 @@ export async function startCapture(
   keepAlive.start()
   let systemStream = system ?? null
   let systemSource = system ? context.createMediaStreamSource(system) : null
+  const systemLive = (): boolean => systemStream?.getAudioTracks()[0]?.readyState === 'live'
   const collector = new AudioWorkletNode(context, 'frame-collector', {
     channelCount: channels,
     channelCountMode: 'explicit',
@@ -286,12 +300,12 @@ export async function startCapture(
     if (!stopped) onLost('The audio processor stopped unexpectedly.')
   }
   let merger: ChannelMergerNode | null = null
-  if (systemSource) {
+  if (wantsSystem) {
     // Each merger input is downmixed to mono: channel 0 = mic, channel 1 = system audio. While
-    // system audio is being reopened its input is silent, so the two tracks stay aligned.
+    // system audio is being (re)opened its input is silent, so the two tracks stay aligned.
     merger = new ChannelMergerNode(context, { numberOfInputs: 2 })
     highPass.connect(merger, 0, 0)
-    systemSource.connect(merger, 0, 1)
+    systemSource?.connect(merger, 0, 1)
     merger.connect(collector)
   } else {
     highPass.connect(collector)
@@ -319,19 +333,25 @@ export async function startCapture(
    * the default output changed: loopback opens on whatever output was the default at the time,
    * and may keep listening to it after the call moves to headphones. A gap is silence, not drift.
    */
-  const reconnectSystem = async (reason: string): Promise<void> => {
+  const reconnectSystem = async (
+    reason: string,
+    delays: readonly number[] = RECONNECT_DELAYS_MS
+  ): Promise<void> => {
     const input = merger
     if (!input || !reopenSystem || reopening || stopped) return
     reopening = true
+    // Following a default output that moved is quiet; only a lost or missing track is news.
+    if (!systemLive()) onEvent?.({ type: 'system-retrying' })
     try {
       const result = await retryOpen(reopenSystem, {
-        delays: RECONNECT_DELAYS_MS,
+        delays,
         cancelled: isStopped,
         dispose: stopTracks
       })
       if (!result) {
         if (!isStopped()) {
           log('capture', 'system audio could not be reopened; recording the mic only', { reason })
+          if (!systemLive()) onEvent?.({ type: 'system-unavailable' })
         }
         return
       }
@@ -344,6 +364,7 @@ export async function startCapture(
       systemReopens++
       await rememberOutput()
       log('capture', 'system audio reopened', { reason, attempt: result.attempt })
+      onEvent?.({ type: 'system-restored' })
     } finally {
       reopening = false
     }
@@ -361,10 +382,11 @@ export async function startCapture(
       if (isStopped()) return
       void logDevices('changed')
       // Only system audio follows the default output; a recording without it has nothing to move.
-      if (!system) return
+      if (!wantsSystem) return
       void defaultOutput().then((after) => {
         if (isStopped()) return
-        const trackEnded = systemStream?.getAudioTracks()[0]?.readyState !== 'live'
+        // Also when it never opened: a different output device is worth another try.
+        const trackEnded = !systemLive()
         if (shouldReopenSystem({ trackEnded, before: outputKey, after })) {
           void reconnectSystem('devicechange')
         }
@@ -464,6 +486,7 @@ export async function startCapture(
     system: system?.getAudioTracks()[0]?.getSettings() ?? null
   })
   void logDevices('started')
+  if (wantsSystem && !system) void reconnectSystem('unavailable at start', SYSTEM_START_DELAYS_MS)
 
   return {
     micName,
@@ -472,6 +495,7 @@ export async function startCapture(
       context: context.state,
       track: micReopening ? 'reopening' : (micTrack?.readyState ?? 'none'),
       muted: micTrack?.muted ?? false,
+      system: !wantsSystem ? 'off' : systemLive() ? 'live' : 'none',
       systemReopens,
       micReopens
     }),
@@ -479,6 +503,10 @@ export async function startCapture(
       if (stopped) return
       resumeContext()
       if (micTrack?.readyState === 'ended') void reconnectMic()
+    },
+    retrySystem: () => {
+      if (stopped || systemLive()) return
+      void reconnectSystem('retry', [0])
     },
     stop: () => {
       if (stopped) return

@@ -7,7 +7,9 @@ import type {
   NotesBackfillResult,
   NotesState
 } from '../../shared/types'
+import { clearCheckpoint, readCheckpoint, writeCheckpoint } from '../checkpoints'
 import { log } from '../log'
+import { settle } from '../pendingWork'
 import { changeSession, editSession, listSessions } from '../sessionStore'
 import { notesLinesOf } from './notesChunks'
 import { renderNotes, type NotesLine } from './notesFormat'
@@ -22,7 +24,7 @@ import {
   type NotesRun,
   type NotesTrigger
 } from './notesJobs'
-import { NOTES_PIPELINE } from './notesPipeline'
+import { NOTES_PIPELINE, type NotesAnswers } from './notesPipeline'
 import type { NotesWriter } from './notesWriter'
 import { onMeetingLabeled } from './events'
 import { worthSummarizing } from './notesWorth'
@@ -60,8 +62,51 @@ export type MeetingNotesService = {
   backfill(kind: NotesBackfillKind): Promise<NotesBackfillResult>
   /** Stops a bulk run on the session it is on; returns whether one was going. */
   stopBackfill(): boolean
+  /**
+   * Writes the summary a labeled recording owes its session (unless the user edited it, or
+   * too little was said), then marks it no longer owed. After each labeled meeting, and at
+   * startup for one a quit or crash cut off (`resume.ts`).
+   */
+  writeOwed(pageId: string): Promise<void>
   /** Generates notes after each labeled meeting, and answers the renderer's requests. */
   register(): void
+}
+
+/** The answers a writer got for a session's notes so far, by call (`NotesAnswers`). */
+const NotesCheckpoint = z.object({ writer: z.string(), answers: z.record(z.string(), z.unknown()) })
+
+type CheckpointedAnswers = NotesAnswers & { saved: () => Promise<void> }
+
+/**
+ * The answers an earlier, unfinished try by this writer got, and a `save` that keeps each new one
+ * on disk as it comes: a long meeting is many calls, and a retry then only asks what's missing.
+ * `saved` resolves once what was saved so far is on disk. Once `signal` aborts (the run was
+ * replaced or stopped) nothing more is saved, so a late answer can't bring back a checkpoint the
+ * run that replaced it has cleared.
+ */
+async function checkpointedAnswers(
+  pageId: string,
+  writer: string,
+  signal: AbortSignal
+): Promise<CheckpointedAnswers> {
+  const kept = await readCheckpoint(pageId, 'notes', NotesCheckpoint)
+  const known = kept?.writer === writer ? kept.answers : {}
+  const calls = Object.keys(known).length
+  if (calls) log('notes', 'answers kept from an earlier try', { pageId, calls })
+  const answers: Record<string, unknown> = { ...known }
+  let saving = Promise.resolve()
+  return {
+    known,
+    save: (key, answer) => {
+      if (signal.aborted) return
+      answers[key] = answer
+      // Checked again when the write's turn comes: the run may have been replaced since.
+      saving = saving.then(() =>
+        signal.aborted ? undefined : writeCheckpoint(pageId, 'notes', { writer, answers })
+      )
+    },
+    saved: () => saving
+  }
 }
 
 /** The session as notes need it, plus the fingerprint of the summary Lyra last wrote. */
@@ -141,8 +186,10 @@ export function createMeetingNotes(deps: {
       if (!before.lines.length) throw new Error('This note has no transcript to summarize')
       broadcast(pageId, 'summarizing', 0)
       const started = Date.now()
+      const answers = await checkpointedAnswers(pageId, writer.name, job.signal)
       const notes = await writer.notes(before.lines, {
         signal: job.signal,
+        answers,
         onProgress: (done, total) => {
           broadcast(pageId, 'summarizing', total ? done / total : 0, total > 1 ? `step ${String(done)} of ${String(total)}` : undefined)
         },
@@ -152,6 +199,8 @@ export function createMeetingNotes(deps: {
       })
       // A writer that finished despite an abort still mustn't write; the catch reports why.
       job.signal.throwIfAborted()
+      await answers.saved()
+      await clearCheckpoint(pageId, 'notes')
       const summary = renderNotes(notes)
       const run: NotesRun = { pipeline: NOTES_PIPELINE, writer: writer.name, at: new Date().toISOString() }
       // Only the summary changes, so edits made elsewhere while the model worked are untouched.
@@ -273,10 +322,27 @@ export function createMeetingNotes(deps: {
     return true
   }
 
+  async function writeOwed(pageId: string): Promise<void> {
+    try {
+      const writer = await deps.writer().catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error)
+        log('notes', 'not generated', { pageId, error: message })
+        return null
+      })
+      if (writer) await generateNotes(pageId, 'auto')
+    } catch {
+      // A failed run was already reported through meeting:status and the log.
+    } finally {
+      // Not while quitting: then the run was cut short and is still owed (`settle`).
+      await settle(pageId, 'notes')
+    }
+  }
+
   return {
     generateNotes: async (pageId, trigger) => {
       await generateNotes(pageId, trigger)
     },
+    writeOwed,
     summaryEdited: edited,
     backfillStatus,
     backfill,
@@ -296,18 +362,7 @@ export function createMeetingNotes(deps: {
         if (action === 'cancel') stopBackfill()
       })
       onMeetingLabeled((pageId) => {
-        void deps.writer().then(
-          (writer) => {
-            if (!writer) return
-            generateNotes(pageId, 'auto').catch(() => {
-              // Already reported through meeting:status and the log.
-            })
-          },
-          (error: unknown) => {
-            const message = error instanceof Error ? error.message : String(error)
-            log('notes', 'not generated', { pageId, error: message })
-          }
-        )
+        void writeOwed(pageId)
       })
       ipcMain.handle('notes:generate', (_event, pageId: unknown) => generateNotes(z.string().parse(pageId), 'manual'))
       ipcMain.handle('notes:summaryEdited', (_event, pageId: unknown) => edited(z.string().parse(pageId)))

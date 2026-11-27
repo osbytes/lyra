@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
+import { PeopleActivity } from '../../shared/peopleActivity'
 import type { SearchQuery } from '../../shared/searchQuery'
 import { PACKAGED_FLAG } from '../meeting/notesFormat'
 import { log } from '../log'
@@ -518,6 +519,12 @@ async function writeQueued(): Promise<void> {
 export async function searchIndex(query: SearchQuery, limit: number): Promise<SessionHit[]> {
   await writeQueued()
   return call({ type: 'search', query, limit }, z.array(SessionHit))
+}
+
+/** Who spoke in which session; pending edits are written first, like a search. */
+export async function peopleActivity(): Promise<PeopleActivity> {
+  await writeQueued()
+  return call({ type: 'peopleActivity' }, PeopleActivity)
 }
 
 /** On quit: writes what's waiting and closes, without waiting for a reconcile to finish. */

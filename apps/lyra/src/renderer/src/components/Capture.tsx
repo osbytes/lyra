@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react'
-import { SYSTEM_AUDIO_BLOCKED_NOTICE, type DictationPhase } from '../hooks/useDictation'
+import type { SystemAudioState } from '../audio/recovery'
+import type { DictationPhase } from '../hooks/useDictation'
 import { shortcutLabel } from '../lib/format'
 import { cn } from '../lib/utils'
 import { phaseAnnouncement } from '../lib/status'
@@ -177,30 +178,69 @@ export function DictationMessage({
 }) {
   if (error) return <Toast tone="error" role="alert" text={error} onDismiss={onDismiss} />
   if (!notice) return null
-  return (
-    <Toast
-      text={notice}
-      onDismiss={onDismiss}
-      action={
-        notice === SYSTEM_AUDIO_BLOCKED_NOTICE ? (
-          <button
-            type="button"
-            className="toast-action"
-            onClick={() => {
-              window.api.openPermissionSettings('screen').then(
-                (opened) => {
-                  if (!opened) notify('Open your system settings to change this.')
-                },
-                () => {
-                  notify('Couldn’t open system settings.')
-                }
-              )
-            }}
-          >
-            Open Settings
-          </button>
-        ) : null
-      }
-    />
-  )
+  return <Toast text={notice} onDismiss={onDismiss} />
+}
+
+/**
+ * While computer audio was asked for but isn't being recorded: trying again, given up (Retry),
+ * or refused by macOS (Open Settings; it applies the change at launch). Stays until it's back,
+ * the recording stops, or it's closed.
+ */
+export function SystemAudioMessage({
+  state,
+  onRetry,
+  onDismiss
+}: {
+  state: SystemAudioState
+  onRetry: () => void
+  onDismiss: () => void
+}) {
+  switch (state) {
+    case 'off':
+    case 'live':
+      return null
+    case 'retrying':
+      return (
+        <Toast role="status" icon="spinner" text="Computer audio isn’t being recorded. Trying again…" onDismiss={onDismiss} />
+      )
+    case 'unavailable':
+      return (
+        <Toast
+          role="alert"
+          text="Couldn’t capture computer audio, so this is your microphone only."
+          onDismiss={onDismiss}
+          action={
+            <button type="button" className="toast-action" onClick={onRetry}>
+              Retry
+            </button>
+          }
+        />
+      )
+    case 'blocked':
+      return (
+        <Toast
+          role="alert"
+          text="macOS isn’t letting Lyra record computer audio, so this is your microphone only. Allow it, then restart Lyra."
+          onDismiss={onDismiss}
+          action={
+            <button
+              type="button"
+              className="toast-action"
+              onClick={() => {
+                window.api.openPermissionSettings('screen').then(
+                  (opened) => {
+                    if (!opened) notify('Open your system settings to change this.')
+                  },
+                  () => {
+                    notify('Couldn’t open system settings.')
+                  }
+                )
+              }}
+            >
+              Open Settings
+            </button>
+          }
+        />
+      )
+  }
 }

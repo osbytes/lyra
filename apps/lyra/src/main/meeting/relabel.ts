@@ -1,7 +1,8 @@
 import { BrowserWindow } from 'electron'
 import { z } from 'zod'
+import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { MeetingStatus, TranscriptWord } from '../../shared/types'
 import {
@@ -14,14 +15,16 @@ import {
   type SessionDoc,
   type SpeakerEntry
 } from '../../shared/sessionDoc'
+import { clearCheckpoint, readCheckpoint, writeCheckpoint } from '../checkpoints'
 import { log } from '../log'
+import { settle } from '../pendingWork'
 import { deleteSessionAudio, recordingPageId, trackPath } from '../recorder'
 import { editSession, readSession, sessionRawDir, updateManifest } from '../sessionStore'
 import { getSettings } from '../settings'
 import { notifyLabeled } from './events'
 import { changedLabels, noteSettled } from './labelChanges'
 import { learnSamples, mergeSamePerson, mergeTinySpeakers, nameSpeakers, nextPassId } from './pipeline'
-import type { DiarizedSegment } from './protocol'
+import { DiarizeResult, type DiarizeRequest, type DiarizedSegment } from './protocol'
 import { audioSeconds, diarize, ensureSpeakerModels } from './speakers'
 import { startEstimate } from './estimate'
 import { MIC_SIDE } from './clustering'
@@ -29,7 +32,7 @@ import { SPEAKER_EMBEDDING } from './speakerModel'
 import { movedLines, pinnedSpeakers } from './speakerRules'
 import { DIARIZE_THRESHOLD } from './thresholds'
 import { snapTurns } from './turnEdges'
-import { passClusters, type WrittenPass } from './voiceprints'
+import { clearLiveVoiceprints, passClusters, type WrittenPass } from './voiceprints'
 import { reportMeetingStatus } from './meetingActivity'
 
 /**
@@ -288,19 +291,74 @@ function broadcast(status: MeetingStatus): void {
 
 const running = new Map<string, Promise<void>>()
 
+/**
+ * Marks settling the speakers as done, and `next` as owed. Not while the session is being recorded
+ * again: that take owes its own relabel, which this run's ending mustn't cross off.
+ */
+async function speakersSettled(pageId: string, next: 'notes' | null = null): Promise<void> {
+  if (recordingPageId() === pageId) return
+  await settle(pageId, 'speakers', next ? [next] : [])
+}
+
+const DiarizeCheckpoint = z.object({ key: z.string(), result: DiarizeResult })
+
+/** What a diarization was worked out from: the audio as long as it is, the words, the settings. */
+async function diarizeKey(request: Omit<DiarizeRequest, 'type'>): Promise<string> {
+  const size = async (path: string | null): Promise<number | null> =>
+    path ? (await stat(path)).size : null
+  const input = {
+    mic: await size(request.micPath),
+    system: await size(request.systemPath),
+    models: request.models,
+    threshold: request.threshold,
+    words: request.words
+  }
+  return createHash('sha256').update(JSON.stringify(input)).digest('hex')
+}
+
+/**
+ * Diarizes the recording, or takes what an earlier try at the same audio and words worked out:
+ * the longest step of relabeling (minutes for an hour's meeting), so a quit, crash or failure
+ * after it doesn't cost it again. The checkpoint goes once the pass is written.
+ */
+async function diarizeOnce(
+  pageId: string,
+  request: Omit<DiarizeRequest, 'type'>
+): Promise<DiarizeResult> {
+  const key = await diarizeKey(request)
+  const kept = await readCheckpoint(pageId, 'diarize', DiarizeCheckpoint)
+  if (kept?.key === key) {
+    const segments = kept.result.segments.length
+    log('relabel', 'diarization kept from an earlier try', { pageId, segments })
+    return kept.result
+  }
+  const result = await diarize(request)
+  await writeCheckpoint(pageId, 'diarize', { key, result })
+  return result
+}
+
 /** Whether any session's speakers are being settled right now. */
 export function isRelabeling(): boolean {
   return running.size > 0
 }
 
+/**
+ * How a run ended: `labeled` wrote a pass with speakers (and asked for the summary), `unlabeled`
+ * wrote one with none, `skipped` wrote nothing (no audio or words, the session changed meanwhile,
+ * or it failed), so the session's lines are as they were.
+ */
+export type RelabelOutcome = 'labeled' | 'unlabeled' | 'skipped'
+
 /** Settles a session's speakers after a recording; one run per session at a time. */
-export function relabelSession(pageId: string): Promise<void> {
+export function relabelSession(pageId: string): Promise<RelabelOutcome> {
   const previous = running.get(pageId) ?? Promise.resolve()
   let finished = false
+  let outcome: RelabelOutcome = 'skipped'
   const next = previous
     .then(() => relabel(pageId))
-    .then(() => {
+    .then((result) => {
       finished = true
+      outcome = result
     })
     .catch((error: unknown) => {
       log('relabel', 'failed', { pageId, error: error instanceof Error ? error.message : String(error) })
@@ -308,6 +366,8 @@ export function relabelSession(pageId: string): Promise<void> {
     })
     .finally(async () => {
       if (running.get(pageId) === next) running.delete(pageId)
+      // Done or failed, it's no longer owed (a success already said what comes next).
+      await speakersSettled(pageId)
       if (getSettings().audioRetentionDays !== 0 || recordingPageId() === pageId) return
       // "Keep recordings until transcribed": this was the last step that needed the audio. A
       // failed run (a model download, a worker crash) keeps it: it's the only copy, and the next
@@ -316,7 +376,7 @@ export function relabelSession(pageId: string): Promise<void> {
       else log('relabel', 'kept audio after a failed relabel', { pageId })
     })
   running.set(pageId, next)
-  return next
+  return next.then(() => outcome)
 }
 
 /** Resolves once any relabeling of `pageId` has finished (fixtures wait on this). */
@@ -324,13 +384,13 @@ export function relabeled(pageId: string): Promise<void> {
   return running.get(pageId) ?? Promise.resolve()
 }
 
-async function relabel(pageId: string): Promise<void> {
+async function relabel(pageId: string): Promise<RelabelOutcome> {
   const micPath = trackPath(pageId, 'mic')
-  if (!existsSync(micPath)) return
+  if (!existsSync(micPath)) return 'skipped'
   const systemFile = trackPath(pageId, 'system')
   const systemPath = existsSync(systemFile) ? systemFile : null
   const words = await liveWords(pageId)
-  if (!words.length) return
+  if (!words.length) return 'skipped'
   const before = await readSession(pageId)
   const started = Date.now()
 
@@ -339,7 +399,7 @@ async function relabel(pageId: string): Promise<void> {
   broadcast({ pageId, task: 'speakers', state: 'diarizing', progress: 0, estimate: timing.estimate })
   const result = await mergeSamePerson(
     mergeTinySpeakers(
-      await diarize({
+      await diarizeOnce(pageId, {
         micPath,
         systemPath,
         models,
@@ -380,7 +440,7 @@ async function relabel(pageId: string): Promise<void> {
   if (stale((await readSession(pageId)).transcript)) {
     log('relabel', 'session changed while diarizing; left as is', { pageId })
     broadcast({ pageId, task: 'speakers', state: 'done', progress: 1 })
-    return
+    return 'skipped'
   }
 
   // Moved lines say who the user chose, not which diarized speaker continues whom.
@@ -413,7 +473,7 @@ async function relabel(pageId: string): Promise<void> {
   if (!written) {
     log('relabel', 'session changed while diarizing; left as is', { pageId })
     broadcast({ pageId, task: 'speakers', state: 'done', progress: 1 })
-    return
+    return 'skipped'
   }
   // Only now that the pass is in the session may it teach saved voices.
   await learnSamples(learn)
@@ -452,6 +512,10 @@ async function relabel(pageId: string): Promise<void> {
     ...manifest,
     passes: [...manifest.passes, { id: passId, kind: 'diarized', createdAt: pass.createdAt, model: pass.model }]
   }))
+  clearLiveVoiceprints(pageId)
+  await clearCheckpoint(pageId, 'diarize')
+  // The summary is owed before it is asked for, so a crash while it's written still resumes it.
+  await speakersSettled(pageId, fields.size >= 1 ? 'notes' : null)
   timing.finish()
   broadcast({ pageId, task: 'speakers', state: 'done', progress: 1 })
   // How much of what was labeled while recording this pass changed (`labelChanges.ts`).
@@ -465,5 +529,7 @@ async function relabel(pageId: string): Promise<void> {
     liveLabeledSeconds: +stability.labeled.toFixed(1),
     changedSeconds: +stability.changed.toFixed(1)
   })
-  if (fields.size >= 1) notifyLabeled(pageId)
+  if (fields.size < 1) return 'unlabeled'
+  notifyLabeled(pageId)
+  return 'labeled'
 }

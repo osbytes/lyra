@@ -3,12 +3,13 @@ import { PANEL_WIDTHS } from '../../shared/settings'
 import { summarySections } from '../../shared/summarySections'
 import type { PageSummary, WhisperStatus } from '../../shared/types'
 import type { TranscriptSegment } from '../../shared/sessionDoc'
-import { DictationMessage, RecordControl } from './components/Capture'
+import { DictationMessage, RecordControl, SystemAudioMessage } from './components/Capture'
 import { useContextMenu } from './components/ContextMenu'
 import { SummaryButton } from './components/SummaryButton'
 import { SummaryPane } from './components/SummaryPane'
 import { PlayerBar } from './components/PlayerBar'
 import { Home } from './components/Home'
+import { PeopleOverview, PersonPage } from './components/PeoplePages'
 import { Split } from './components/Split'
 import { Progress } from './components/ui/progress'
 import { ActivityToast, Toast, ToastStack } from './components/ToastStack'
@@ -89,6 +90,9 @@ import { sessionMarkdown } from './lib/sessionMarkdown'
 import { usePromptApps } from './hooks/usePromptApps'
 import { SendToMenu } from './components/SendToMenu'
 import { Button } from './components/ui/button'
+
+/** What shows while no session is open. */
+type HomeView = { kind: 'home' } | { kind: 'people' } | { kind: 'person'; personId: string }
 
 /** The overlay pill doesn't need every audio frame; ~12 updates a second look smooth. */
 const OVERLAY_FRAME_MS = 80
@@ -403,10 +407,21 @@ export default function App(): React.JSX.Element {
   const openPageRef = useRef(openPage)
   openPageRef.current = openPage
   const openFromSidebar = useCallback((id: string) => void openPageRef.current(id), [])
+  /** What shows while no session is open: Home, the People list, or one person. */
+  const [homeView, setHomeView] = useState<HomeView>({ kind: 'home' })
   const goHome = useCallback(() => {
     setFind(null)
+    setHomeView({ kind: 'home' })
     void close()
   }, [close])
+  const goPeople = useCallback(
+    (personId?: string) => {
+      setFind(null)
+      setHomeView(personId ? { kind: 'person', personId } : { kind: 'people' })
+      void close()
+    },
+    [close]
+  )
   const openSettings = useCallback(() => setShowSettings(true), [])
 
   const tasks = useActivity()
@@ -767,7 +782,8 @@ export default function App(): React.JSX.Element {
           <RecordingReadout
             startedAt={listeningSince}
             micName={dictation.micName}
-            systemAudio={systemAudio}
+            // Mic only in the readout while computer audio isn't actually being recorded.
+            systemAudio={dictation.systemAudio === 'live'}
             subscribeLevel={dictation.subscribeLevel}
           />
         ) : null
@@ -1000,7 +1016,12 @@ export default function App(): React.JSX.Element {
         if (drawer) setDrawerOpen(false)
         goHome()
       }}
-      homeActive={!current}
+      homeActive={!current && homeView.kind === 'home'}
+      onPeople={() => {
+        if (drawer) setDrawerOpen(false)
+        goPeople()
+      }}
+      peopleActive={!current && homeView.kind !== 'home'}
     />
   )
 
@@ -1174,6 +1195,13 @@ export default function App(): React.JSX.Element {
                     />
                   ) : null}
                   <DictationMessage error={dictation.error} notice={dictation.notice} onDismiss={dictation.dismissMessage} />
+                  {dictation.systemAudioMessageShown ? (
+                    <SystemAudioMessage
+                      state={dictation.systemAudio}
+                      onRetry={dictation.retrySystemAudio}
+                      onDismiss={dictation.dismissSystemAudio}
+                    />
+                  ) : null}
                   {toastElement}
                 </ToastStack>
               </div>
@@ -1183,7 +1211,23 @@ export default function App(): React.JSX.Element {
               <div className="drag flex h-(--band) shrink-0 items-center px-3" style={{ paddingLeft: !sidebarShown && window.api.platform === 'darwin' ? 84 : undefined }}>
                 {sidebarToggle}
               </div>
-              {pages.length ? (
+              {homeView.kind === 'people' ? (
+                <PeopleOverview
+                  pages={pages}
+                  people={people}
+                  onOpenPerson={goPeople}
+                  onAddPeople={() => openSettingsAt({ tab: 'people', section: 'Saved voices' })}
+                />
+              ) : homeView.kind === 'person' ? (
+                <PersonPage
+                  personId={homeView.personId}
+                  pages={pages}
+                  people={people}
+                  onBack={() => goPeople()}
+                  onOpenPerson={goPeople}
+                  onOpenSession={openFromSidebar}
+                />
+              ) : pages.length ? (
                 <Home pages={pages} recordingId={recordingId} onOpen={openFromSidebar} onNew={newSession} onSearch={openSearch} />
               ) : (
               <div className="empty">
@@ -1275,6 +1319,17 @@ export default function App(): React.JSX.Element {
                     keywords: 'dashboard overview close session',
                     icon: <HomeIcon />,
                     run: goHome
+                  }
+                ]
+              : []),
+            ...(current || homeView.kind !== 'people'
+              ? [
+                  {
+                    id: 'people',
+                    label: 'Go to People',
+                    keywords: 'voices speakers talk time contacts',
+                    icon: <PeopleIcon />,
+                    run: () => goPeople()
                   }
                 ]
               : []),

@@ -29,6 +29,15 @@ const Pass = z.object({
   model: z.string()
 })
 
+/**
+ * A step a recording still owes its session, from when it is due until it is done: its audio
+ * transcribed (the `untranscribed` marks in `raw/live.json` say which), speakers settled from the
+ * whole recording, then its summary. Kept in the manifest so a quit or crash in between is picked
+ * up at the next start (`resume.ts`), which then reads only the sessions that owe something.
+ */
+export const PendingWork = z.enum(['transcribe', 'speakers', 'notes'])
+export type PendingWork = z.infer<typeof PendingWork>
+
 export const ManifestSchema = z.object({
   version: z.literal(MANIFEST_VERSION),
   id: z.string(),
@@ -49,7 +58,8 @@ export const ManifestSchema = z.object({
   /** sha256 of the export as last written, to spot edits made outside Lyra. */
   exportHash: z.string().nullable(),
   /** The document changed since the last export (e.g. Lyra quit mid-debounce). */
-  dirty: z.boolean()
+  dirty: z.boolean(),
+  pending: z.array(PendingWork)
 })
 export type Manifest = z.infer<typeof ManifestSchema>
 export type TrackInfo = Manifest['tracks'][number]
@@ -115,7 +125,8 @@ export function parseManifest(input: unknown, id: string, now: string): ParsedMa
     tags: items(z.string(), input.tags),
     speakers: field(z.number(), input.speakers, 0),
     exportHash: field(z.string().nullable(), input.exportHash, null),
-    dirty: input.dirty === true
+    dirty: input.dirty === true,
+    pending: [...new Set(items(PendingWork, input.pending))]
   }
   return {
     kind: 'ok',

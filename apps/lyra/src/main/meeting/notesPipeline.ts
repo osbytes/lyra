@@ -11,6 +11,7 @@
  * summary is written from the sections' summaries, which are short enough to fit even a 4k
  * context; past that they are summarized in groups first. Pure: the model is the `ask` callback.
  */
+import { createHash } from 'node:crypto'
 import type { z } from 'zod'
 import {
   fitText,
@@ -51,6 +52,37 @@ export type NotesCall = { system: string; schema: z.ZodObject; name: string; pro
 export type NotesAsk = (call: NotesCall) => Promise<unknown>
 
 /**
+ * The answers an earlier try at the same notes already got (it was cut off by a quit, a crash or
+ * a failed call part way through a long meeting), by `callKey`, and where to keep each new one.
+ * A long meeting's notes are many calls; a retry then only asks what it doesn't have.
+ */
+export type NotesAnswers = {
+  known: Readonly<Record<string, unknown>>
+  save: (key: string, answer: unknown) => void
+}
+
+/** The same prompt under the same instructions asks the same thing, whichever run sends it. */
+export function callKey(call: NotesCall): string {
+  return createHash('sha256').update(`${call.name}\0${call.system}\0${call.prompt}`).digest('hex')
+}
+
+/**
+ * `ask`, answered from `answers` where an earlier try asked the same and its answer still fits
+ * the call's shape. Only answers that fit are kept: a bad one is asked again next time.
+ */
+export function rememberedAsk(ask: NotesAsk, answers: NotesAnswers | undefined): NotesAsk {
+  if (!answers) return ask
+  return async (call) => {
+    const key = callKey(call)
+    const known = answers.known[key]
+    if (known !== undefined && call.schema.safeParse(known).success) return known
+    const answer = await ask(call)
+    if (call.schema.safeParse(answer).success) answers.save(key, answer)
+    return answer
+  }
+}
+
+/**
  * The pipeline's version, recorded with each session's notes (`NotesRun`). Bump it when a change
  * would make old notes worth rewriting (better items, a new part of the notes): Settings then
  * offers to rewrite the untouched notes made before it. History: 1, one call or map-reduce;
@@ -81,6 +113,8 @@ export type WriteNotesOptions = {
   signal?: AbortSignal | undefined
   /** Calls done of those planned, after each one (a long meeting takes many). */
   onProgress?: ((done: number, total: number) => void) | undefined
+  /** What an earlier, unfinished try already asked; see `NotesAnswers`. */
+  answers?: NotesAnswers | undefined
 }
 
 function durationOf(lines: NotesLine[]): number {
@@ -208,7 +242,8 @@ async function overviewOf(sections: NoteSection[], options: WriteNotesOptions): 
 }
 
 /** Notes for a meeting: one call when it's short and fits, else by sections (see above). */
-export async function writeNotes(options: WriteNotesOptions): Promise<WrittenNotes> {
+export async function writeNotes(input: WriteNotesOptions): Promise<WrittenNotes> {
+  const options = { ...input, ask: rememberedAsk(input.ask, input.answers) }
   const { lines, budget, count, ask, signal, onProgress } = options
   if (!lines.length) throw new Error('This note has no transcript to summarize')
   const text = lines.map(lineText).join('\n')

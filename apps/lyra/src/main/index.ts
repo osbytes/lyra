@@ -14,8 +14,10 @@ import {
   type IpcMainInvokeEvent,
   type WebContents
 } from 'electron'
+import { release } from 'node:os'
 import { join } from 'node:path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import { systemAudioSource } from './systemAudioSource'
 import { installAppMenu } from './appMenu'
 import { isAppPage, type AppPages } from './appOrigin'
 import { checkConfig, config, ConfigError, configSummary } from './config'
@@ -78,6 +80,8 @@ import { prefetchNotesModel, releaseNotesModel, reportNotesModel, stopNotesWorke
 import { stopSpeakerWorker } from './meeting/speakers'
 import { startLiveLabels } from './meeting/liveLabels'
 import { relabelSession } from './meeting/relabel'
+import { markQuitting } from './lifecycle'
+import { resumeUnfinishedWork } from './resume'
 import {
   finishRecordingForQuit,
   identifiesSpeakers,
@@ -99,7 +103,7 @@ import { broadcastStatus, warmUp } from './whisper'
 import { log, logPath } from './log'
 import { searchSessions } from './search'
 import { appUsage, startUsageSampler } from './usage'
-import { closeSearchIndex, setIndexBusy, startSearchIndex } from './searchIndex/service'
+import { closeSearchIndex, peopleActivity, setIndexBusy, startSearchIndex } from './searchIndex/service'
 import type { Task } from './tasks/args'
 import { isTaskLaunch, prepareTaskProfile, runTaskIn, taskFromArgv } from './tasks/run'
 import { rememberWindowBounds, savedWindowBounds } from './windowState'
@@ -344,6 +348,7 @@ function registerIpc(): void {
   ipcMain.handle('pages:search', (_event, query: unknown) =>
     typeof query === 'string' ? searchSessions(query.slice(0, 200)) : []
   )
+  ipcMain.handle('people:activity', () => peopleActivity())
   ipcMain.handle('app:usage', () => appUsage())
   ipcMain.handle('pages:get', (_event, id: unknown) => getPage(PageIdArg.parse(id)))
   ipcMain.handle('pages:create', (_event, options: unknown) => createPage(CreatePageArg.parse(options)))
@@ -506,6 +511,8 @@ function registerPermissions(): void {
   })
   // Meetings ask for system audio via getDisplayMedia; answer with the loopback
   // device and the primary screen (its video track is discarded), so no picker shows.
+  const audio = systemAudioSource(process.platform, release())
+  log('capture', 'system audio source', { audio })
   session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
     const main = getMainWindow()
     const frame = request.frame
@@ -515,7 +522,10 @@ function registerPermissions(): void {
     }
     desktopCapturer.getSources({ types: ['screen'] }).then(
       ([screen]) => {
-        callback(screen ? { video: screen, audio: 'loopback' } : {})
+        // Electron types `audio` as 'loopback' | 'loopbackWithMute', but hands any of Chromium's
+        // loopback ids through; `loopbackWithoutChrome` is one (see systemAudioSource.ts).
+        // @ts-expect-error -- Chromium's process-loopback id isn't in Electron's type
+        callback(screen ? { video: screen, audio } : {})
       },
       (error: unknown) => {
         log('capture', 'could not list screens for system audio', String(error))
@@ -607,6 +617,7 @@ void app.whenReady().then(() => {
     enabled: !isTestRun,
     beforeInstall: () => {
       quitting = true
+      markQuitting()
     }
   })
   saveForPower = registerPowerHandling(saveWork)
@@ -659,6 +670,15 @@ void app.whenReady().then(() => {
     })
     startAudioRetention()
     createWindow()
+    // What a quit or crash cut short: transcription, speakers, summaries. Task runs have their own work.
+    const notes = services?.notes
+    if (!isTestRun && notes) {
+      void resumeUnfinishedWork({
+        speakers: identifiesSpeakers(),
+        relabel: relabelSession,
+        writeNotes: (pageId) => notes.writeOwed(pageId)
+      })
+    }
   })
   broadcastStatus({ state: 'idle' })
 
@@ -716,6 +736,7 @@ async function shutdownWork(): Promise<void> {
 let flushed = false
 app.on('before-quit', (event) => {
   quitting = true
+  markQuitting()
   // Finish a recording in progress, write pending exports and compact session logs before the
   // process goes away, but never let a stuck disk or worker keep the app from quitting.
   if (flushed) return

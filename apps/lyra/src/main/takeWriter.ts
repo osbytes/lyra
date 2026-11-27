@@ -25,7 +25,7 @@ const CONTEXT_CHARS = 300
 const STYLE_SEED = 'Okay, so here are my thoughts, written out in full sentences.'
 
 /** The session's title and the end of its transcript, as Whisper's first prompt. */
-function promptFor(title: string, transcript: string): string {
+export function promptFor(title: string, transcript: string): string {
   const tail = transcript.replace(/\s+/g, ' ').trim().slice(-CONTEXT_CHARS)
   const start = tail.length === CONTEXT_CHARS ? tail.indexOf(' ') + 1 : 0
   const heading = title && title !== 'Untitled' ? `${title}. ` : ''

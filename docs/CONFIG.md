@@ -45,4 +45,6 @@ lyra meeting <mic.wav> [system.wav]         the real speaker pipeline (pnpm smok
   [--larger-speaker-model]                  label with the opt-in speaker-activity model
   [--capture]                               play mic.wav as a fake microphone through the
                                             window's real capture path, in real time
+  [--crash]                                 the app dies half way through the recording;
+                                            then resumed as the next start resumes it
 ```

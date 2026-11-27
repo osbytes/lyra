@@ -12,8 +12,9 @@ import { readWav } from '../meeting/wav'
 import type { Services } from '../services'
 import { replayRecording } from '../meeting/replay'
 import { labelStability } from '../meeting/labelChanges'
-import { liveWords, relabeled } from '../meeting/relabel'
-import { onRecordingFinished, recordingPageId, trackPath } from '../recorder'
+import { liveWords, relabeled, relabelSession } from '../meeting/relabel'
+import { onRecordingFinished, recordingPageId, repairInterruptedAudio, trackPath } from '../recorder'
+import { resumeUnfinishedWork } from '../resume'
 import { toggleSession } from '../session'
 import { log } from '../log'
 import { transcribeWithParakeet } from '../parakeet'
@@ -83,7 +84,20 @@ export async function runMeetingFixture(task: MeetingTask, services: Services): 
       await processMeeting({ pageId: page.id, micPath, systemPath, seconds: 0 })
     } else {
       const transcribe = task.asr === 'parakeet' ? transcribeWithParakeet : transcribePcm
-      await replayRecording(page.id, wavPath, systemFixture, { transcribe, carryContext: task.context })
+      const crashAt = task.crash ? (await readWav(wavPath)).length / 16000 / 2 : undefined
+      const experiment = { transcribe, carryContext: task.context }
+      await replayRecording(page.id, wavPath, systemFixture, experiment, crashAt)
+      if (crashAt !== undefined) {
+        // What the next start does: mend the audio, then pick up the take where it stopped.
+        process.stdout.write(`meeting-fixture: crashed at ${crashAt.toFixed(1)} s; resuming
+`)
+        await repairInterruptedAudio()
+        await resumeUnfinishedWork({
+          speakers: task.relabel,
+          relabel: relabelSession,
+          writeNotes: (pageId) => services.notes.writeOwed(pageId)
+        })
+      }
       await relabeled(page.id)
     }
     await flushAllSessions()

@@ -17,7 +17,7 @@ import {
   type NotesLine,
   type WrittenNotes
 } from './notesFormat'
-import { writeNotes } from './notesPipeline'
+import { writeNotes, type NotesAnswers } from './notesPipeline'
 
 export type NotesOptions = {
   onDownload?: DownloadProgress | undefined
@@ -25,6 +25,8 @@ export type NotesOptions = {
   signal?: AbortSignal | undefined
   /** Model calls done of those planned; a long meeting takes one per section. */
   onProgress?: ((done: number, total: number) => void) | undefined
+  /** Answers an earlier, unfinished try at these notes got, and where to keep new ones. */
+  answers?: NotesAnswers | undefined
 }
 
 /**
@@ -109,7 +111,7 @@ export function createModelNotesWriter(model: LanguageModel, name: string, optio
   return {
     name,
     onDevice: options.onDevice ?? false,
-    async notes(lines, { signal, onProgress } = {}) {
+    async notes(lines, { signal, onProgress, answers } = {}) {
       try {
         return await writeNotes({
           lines,
@@ -117,6 +119,7 @@ export function createModelNotesWriter(model: LanguageModel, name: string, optio
           count,
           signal,
           onProgress,
+          answers,
           ask: async (call) => {
             const { output } = await generateText({
               model,

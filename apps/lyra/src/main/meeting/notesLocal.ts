@@ -52,6 +52,7 @@ type Pending = {
   resolve: (value: unknown) => void
   reject: (error: Error) => void
   onProgress?: ((done: number, total: number) => void) | undefined
+  onAnswer?: ((key: string, answer: unknown) => void) | undefined
 }
 const pending = new Map<number, Pending>()
 
@@ -70,6 +71,9 @@ function getWorker(): UtilityProcess {
     switch (message.kind) {
       case 'progress':
         entry.onProgress?.(message.done, message.total)
+        return
+      case 'answer':
+        entry.onAnswer?.(message.key, message.answer)
         return
       case 'result':
         pending.delete(message.id)
@@ -91,14 +95,13 @@ function getWorker(): UtilityProcess {
   return child
 }
 
-type Work = { kind: 'notes'; modelPath: string; lines: NotesLine[] } | { kind: 'title'; modelPath: string; text: string }
+type Work =
+  | { kind: 'notes'; modelPath: string; lines: NotesLine[]; known: Readonly<Record<string, unknown>> }
+  | { kind: 'title'; modelPath: string; text: string }
+type Hooks = Pick<Pending, 'onProgress' | 'onAnswer'>
 
 /** Sends one request to the worker; aborting `signal` stops it there too. */
-function ask(
-  work: Work,
-  signal?: AbortSignal,
-  onProgress?: (done: number, total: number) => void
-): Promise<unknown> {
+function ask(work: Work, signal?: AbortSignal, hooks: Hooks = {}): Promise<unknown> {
   signal?.throwIfAborted()
   const id = nextId++
   const child = getWorker()
@@ -111,7 +114,7 @@ function ask(
     }
     signal?.addEventListener('abort', onAbort, { once: true })
     pending.set(id, {
-      onProgress,
+      ...hooks,
       resolve: (value) => {
         signal?.removeEventListener('abort', onAbort)
         resolve(value)
@@ -135,10 +138,11 @@ export function createLocalNotesWriter(): NotesWriter {
   return {
     name: 'local',
     onDevice: true,
-    async notes(lines, { onDownload, signal, onProgress } = {}) {
+    async notes(lines, { onDownload, signal, onProgress, answers } = {}) {
       const modelPath = await fetchModel(onDownload)
+      const work: Work = { kind: 'notes', modelPath, lines, known: answers?.known ?? {} }
       // The worker's pipeline already tidied the notes; this checks what crossed the boundary.
-      return WrittenNotes.parse(await ask({ kind: 'notes', modelPath, lines }, signal, onProgress))
+      return WrittenNotes.parse(await ask(work, signal, { onProgress, onAnswer: answers?.save }))
     },
     async title(text, signal) {
       const modelPath = await ensureModelFile(MODEL)

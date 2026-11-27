@@ -5,13 +5,22 @@ import { join } from 'node:path'
 import { finished } from 'node:stream/promises'
 import type { AudioTrack, MeetingRecording, TranscriptProgress } from '../shared/types'
 import { getSettings } from './settings'
-import { mergeLivePass, readLiveFile, writeLiveFile, type LiveSegment } from './livePass'
+import {
+  closeOpenMarks,
+  liveSegmentOf,
+  mergeLivePass,
+  readLiveFile,
+  writeLiveFile,
+  type LiveSegment,
+  type Untranscribed
+} from './livePass'
 import { log } from './log'
 import { notifyLabeled } from './meeting/events'
+import { clearOwed, owe } from './pendingWork'
 import { resolveInNotes } from './pages'
 import { sessionAudioDir, sessionRawDir, sessionsRoot, updateManifest, type TrackInfo } from './sessionStore'
 import { TakeWriter } from './takeWriter'
-import { ChunkedTranscriber, type TranscribedChunk, type Transcribe, type UnfinishedSpan } from './transcriber'
+import { ChunkedTranscriber, type Transcribe } from './transcriber'
 import { createSpeechClassifier, ensureSpeechVad } from './speechVad'
 import {
   BYTES_PER_SECOND,
@@ -45,6 +54,12 @@ const HEADER_PATCH_MS = 5000
  * isn't transcribed by then is marked in `live.json` rather than silently lost.
  */
 const QUIT_TRANSCRIBE_MS = 5000
+/**
+ * How often the words so far are saved to `raw/live.json` while recording, with a mark of the
+ * audio not transcribed yet, so a crash loses only this much transcription (redone from the
+ * audio at the next start) rather than the whole take's.
+ */
+const LIVE_CHECKPOINT_MS = 5000
 
 type TrackFile = {
   track: AudioTrack
@@ -72,6 +87,12 @@ type Recording = {
   headerPatch: Promise<void>
   /** Whether `live.json` holds an untranscribed marker for this take, to clear when it's done. */
   marked: boolean
+  /** The next save of the words so far, if one is due. */
+  checkpointTimer: ReturnType<typeof setTimeout> | null
+  /** Saves of `live.json` in order, so a checkpoint never lands over the take's final save. */
+  saving: Promise<void>
+  /** A fixture's crash: words that come back after it go nowhere, as they would with the app gone. */
+  dead: boolean
 }
 
 let active: Recording | null = null
@@ -193,6 +214,9 @@ async function start(pageId: string, withSystem: boolean): Promise<number> {
     if (existing.state === 'corrupt') {
       log('recorder', 'live.json was unreadable; moved it aside', { pageId, aside: existing.aside })
     }
+    // An earlier take a crash cut short ends where this one starts.
+    const closed = existing.state === 'ok' ? closeOpenMarks(existing.file, offset) : null
+    if (closed) await writeLiveFile(sessionRawDir(pageId), closed)
     // Normally loaded by the window's warm-up already; replays and evals start here.
     if (transcribeAudio) {
       await ensureSpeechVad()
@@ -213,13 +237,18 @@ async function start(pageId: string, withSystem: boolean): Promise<number> {
         recording.headerPatch = recording.headerPatch.then(() => patchHeaders(recording))
       }, HEADER_PATCH_MS),
       marked: false,
+      checkpointTimer: null,
+      saving: Promise.resolve(),
+      dead: false,
       transcriber: new ChunkedTranscriber(
         [...tracks.keys()],
         aligned / 2,
         transcribeAudio ? experiment.transcribe : () => Promise.resolve([]),
         (chunk) => {
-          live.push(segmentOf(chunk))
+          if (recording.dead) return
+          live.push(liveSegmentOf(chunk))
           writer.write(chunk)
+          scheduleCheckpoint(recording)
           // Only while it's still being recorded: once stopped, the whole recording is settled.
           if (active === recording) for (const listener of chunkListeners) listener(liveTake(recording))
         },
@@ -242,6 +271,13 @@ async function start(pageId: string, withSystem: boolean): Promise<number> {
       return [{ name: track, file: `${track}.wav`, sampleRate: SAMPLE_RATE, seconds: bytes / BYTES_PER_SECOND }]
     })
     await updateManifest(pageId, (manifest) => ({ ...manifest, tracks: listed, audio: 'kept' }))
+    // Owed from the start: a take a crash cuts short still has its speakers settled next launch,
+    // and its audio transcribed, even if Whisper hadn't handed out a word yet.
+    await owe(pageId, [
+      ...(transcribeAudio ? (['transcribe'] as const) : []),
+      ...(identifySpeakers ? (['speakers'] as const) : [])
+    ])
+    if (transcribeAudio) await saveCheckpoint(recording)
     log('recorder', 'started', { pageId, tracks: [...tracks.keys()], offset })
     return offset
   } catch (error) {
@@ -294,19 +330,6 @@ function toFloat(bytes: Buffer): Float32Array {
   return out
 }
 
-/** A transcribed chunk as kept in `raw/live.json`, labeled with the track it was heard on. */
-function segmentOf(chunk: TranscribedChunk): LiveSegment {
-  return {
-    id: `live-${chunk.track}-${String(Math.round(chunk.start * 1000))}`,
-    start: chunk.words[0]?.start ?? chunk.start,
-    end: chunk.words.at(-1)?.end ?? chunk.end,
-    track: chunk.track,
-    cluster: null,
-    confidence: null,
-    words: chunk.words
-  }
-}
-
 function reportProgress(recording: Recording, progress: { queued: number; queuedSeconds: number }): void {
   if (progress.queued === recording.queued) return
   recording.queued = progress.queued
@@ -340,31 +363,70 @@ async function finalize(file: TrackFile): Promise<number> {
 }
 
 /**
- * Merges this take's words so far into `raw/live.json`, with a marker for the audio of the take
- * not transcribed yet. Saving again replaces both, so the take can be saved before Whisper is
- * done and again after. True when the take has words.
+ * Merges this take's words so far into `raw/live.json`, with markers for the audio of the take
+ * not transcribed yet. Saving again replaces both, so the take can be saved while recording,
+ * before Whisper is done, and after. Saves run one at a time. True when the take has words.
  */
-async function saveLivePass(recording: Recording, unfinished: readonly UnfinishedSpan[]): Promise<boolean> {
-  if (!recording.live.length && !unfinished.length && !recording.marked) return false
-  const dir = sessionRawDir(recording.pageId)
-  try {
-    const existing = await readLiveFile(dir)
-    if (existing.state === 'corrupt') {
-      log('recorder', 'live.json was unreadable; moved it aside', { pageId: recording.pageId, aside: existing.aside })
+function saveLivePass(
+  recording: Recording,
+  untranscribed: readonly Omit<Untranscribed, 'take'>[]
+): Promise<boolean> {
+  const save = recording.saving.then(async () => {
+    if (!recording.live.length && !untranscribed.length && !recording.marked) return false
+    const dir = sessionRawDir(recording.pageId)
+    try {
+      const existing = await readLiveFile(dir)
+      if (existing.state === 'corrupt') {
+        log('recorder', 'live.json was unreadable; moved it aside', { pageId: recording.pageId, aside: existing.aside })
+      }
+      const pass = mergeLivePass(existing.state === 'ok' ? existing.file : null, {
+        model: MODEL_LABEL,
+        createdAt: new Date().toISOString(),
+        take: recording.offset,
+        segments: recording.live,
+        untranscribed: untranscribed.map((span) => ({ take: recording.offset, ...span }))
+      })
+      await writeLiveFile(dir, pass)
+      recording.marked = untranscribed.length > 0
+    } catch (error) {
+      log('recorder', 'could not save the live words', { pageId: recording.pageId, error: errorMessage(error) })
     }
-    const pass = mergeLivePass(existing.state === 'ok' ? existing.file : null, {
-      model: MODEL_LABEL,
-      createdAt: new Date().toISOString(),
-      take: recording.offset,
-      segments: recording.live,
-      untranscribed: unfinished.map((span) => ({ take: recording.offset, ...span }))
-    })
-    await writeLiveFile(dir, pass)
-    recording.marked = unfinished.length > 0
-  } catch (error) {
-    log('recorder', 'could not save the live words', { pageId: recording.pageId, error: errorMessage(error) })
-  }
-  return recording.live.length > 0
+    return recording.live.length > 0
+  })
+  recording.saving = save.then(() => undefined)
+  return save
+}
+
+/** Lists the live pass in the manifest, once the session has one. */
+async function listLivePass(pageId: string, createdAt: string): Promise<void> {
+  await updateManifest(pageId, (manifest) => ({
+    ...manifest,
+    passes: manifest.passes.some((pass) => pass.id === 'live')
+      ? manifest.passes
+      : [...manifest.passes, { id: 'live', kind: 'live', createdAt, model: MODEL_LABEL }]
+  }))
+}
+
+/**
+ * Saves the words so far, marking everything after them as not transcribed, open-ended: if the
+ * app dies before the next save, the next start transcribes the take from there to the end of
+ * its audio (`resume.ts`).
+ */
+async function saveCheckpoint(recording: Recording): Promise<void> {
+  const marks = recording.transcriber
+    .handedOut()
+    .map(({ track, at }) => ({ track, start: at, end: at, open: true }))
+  const hasLive = await saveLivePass(recording, marks)
+  if (hasLive) await listLivePass(recording.pageId, new Date().toISOString())
+}
+
+/** A checkpoint a few seconds after a chunk lands, so a burst of chunks is one save. */
+function scheduleCheckpoint(recording: Recording): void {
+  if (recording.checkpointTimer || active !== recording) return
+  recording.checkpointTimer = setTimeout(() => {
+    recording.checkpointTimer = null
+    if (active === recording) void saveCheckpoint(recording)
+  }, LIVE_CHECKPOINT_MS)
 }
 
 /** Waits for the take's transcription, up to `limitMs` when given; 'timeout' if it ran out. */
@@ -396,6 +458,8 @@ async function stop(limitMs?: number): Promise<MeetingRecording | null> {
   if (!recording) return null
   active = null
   clearInterval(recording.headerTimer)
+  if (recording.checkpointTimer) clearTimeout(recording.checkpointTimer)
+  recording.checkpointTimer = null
   await recording.headerPatch
   const { pageId } = recording
   const mic = recording.tracks.get('mic')
@@ -426,7 +490,7 @@ async function stop(limitMs?: number): Promise<MeetingRecording | null> {
   const outcome = await transcriptionDone(transcribing, pageId, limitMs)
   const unfinished = outcome === 'timeout' ? recording.transcriber.unfinished() : []
   if (unfinished.length) {
-    // Not resumed on the next launch yet: the marker in live.json says what is missing.
+    // The markers in live.json say what is missing; the next start transcribes it (`resume.ts`).
     log('recorder', 'stopped before the transcription caught up', {
       pageId,
       untranscribed: unfinished.map((span) => ({ ...span, seconds: +(span.end - span.start).toFixed(1) }))
@@ -434,14 +498,9 @@ async function stop(limitMs?: number): Promise<MeetingRecording | null> {
   }
   const conversation = await recording.writer.end()
   hasLive = (await saveLivePass(recording, unfinished)) || hasLive
-  if (hasLive) {
-    await updateManifest(pageId, (manifest) => ({
-      ...manifest,
-      passes: manifest.passes.some((pass) => pass.id === 'live')
-        ? manifest.passes
-        : [...manifest.passes, { id: 'live', kind: 'live', createdAt: endedAt, model: MODEL_LABEL }]
-    }))
-  }
+  if (hasLive) await listLivePass(pageId, endedAt)
+  // All of it transcribed: nothing for the next start to pick up, even if this stop is the quit's.
+  if (!unfinished.length) await clearOwed(pageId, 'transcribe')
 
   const result: MeetingRecording = {
     pageId,
@@ -459,7 +518,10 @@ async function stop(limitMs?: number): Promise<MeetingRecording | null> {
   // audio and announces the labeled session; without, the live words are final.
   if (!identifySpeakers) {
     if (getSettings().audioRetentionDays === 0) await deleteSessionAudio(pageId)
-    if (conversation) notifyLabeled(pageId)
+    if (conversation) {
+      await owe(pageId, ['notes'])
+      notifyLabeled(pageId)
+    }
   }
   for (const listener of listeners) listener(result)
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send('recorder:finished', result)
@@ -557,7 +619,29 @@ export const recorderFixture = {
   caughtUp: async (): Promise<void> => {
     await active?.transcriber.settled()
   },
-  stop
+  stop,
+  /**
+   * The app dying mid-recording, as far as one process can play it: the audio reaches the disk
+   * with its header as last patched, the words saved so far stay as they are, and nothing is
+   * finished, saved or announced. Resolves once the dead take's Whisper calls are done, so they
+   * don't run alongside whatever comes next.
+   */
+  crash: async (): Promise<void> => {
+    const recording = active
+    if (!recording) return
+    active = null
+    recording.dead = true
+    clearInterval(recording.headerTimer)
+    if (recording.checkpointTimer) clearTimeout(recording.checkpointTimer)
+    await recording.headerPatch
+    await recording.saving
+    for (const file of recording.tracks.values()) {
+      file.stream.end()
+      await finished(file.stream).catch(() => undefined)
+    }
+    await recording.transcriber.settled()
+    log('recorder', 'crashed (fixture)', { pageId: recording.pageId })
+  }
 }
 
 export function registerRecorderIpc(options: { identifySpeakers: boolean; transcribe: boolean }): void {

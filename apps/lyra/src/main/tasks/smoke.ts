@@ -19,6 +19,8 @@ import {
   editSession,
   readManifestOf,
   openSessionFor,
+  peekManifest,
+  sessionCheckpointDir,
   readSession,
   readSessionFromDisk,
   restoreSession,
@@ -61,6 +63,8 @@ import {
 import { getSettings, overrideSettings, updateSettings } from '../settings'
 import { assignSpeaker, sessionAudio } from '../meeting/pipeline'
 import { relabelSession } from '../meeting/relabel'
+import { resumeUnfinishedWork } from '../resume'
+import { readCheckpoint, writeCheckpoint } from '../checkpoints'
 import { MANIFEST_VERSION } from '../sessionManifest'
 import { wavHeader } from '../wavFile'
 import { defaultTitle, partOfDay } from '../sessionTitle'
@@ -72,6 +76,7 @@ import { classifyMicUser, meetingFromTitles } from '../meetingApps'
 import { MeetingDetector, type DetectorPolicy } from '../meetingDetector'
 import { exportIgnoredAppsTo, importIgnoredAppsFrom } from '../ignoredAppsFile'
 import { mergeIgnoredApps } from '../../shared/ignoredApps'
+import { PeopleActivity } from '../../shared/peopleActivity'
 import { ConfigError, parseConfig } from '../config'
 import { parseTask } from './args'
 import { MockLanguageModelV4 } from 'ai/test'
@@ -830,6 +835,13 @@ async function checkChunkedTranscriber(): Promise<void> {
   if (cuts.some((cut) => cut.seconds > 28.5)) fail(`a chunk ran past Whisper's window: ${JSON.stringify(cuts)}`)
   if (tracks.filter((track) => track === 'mic').length < 3) fail(`a long stretch was not cut: ${out.join(' ')}`)
   if (transcriber.progress().queued !== 0) fail('chunks still queued after finishing')
+
+  // A later take's marks start where that take does, never at the session's start.
+  const later = new ChunkedTranscriber(['mic'], 300 * 16000, () => Promise.resolve([]), () => undefined)
+  const marks = later.handedOut()
+  if (marks.length !== 1 || marks[0]?.at !== 300) fail(`a new take's mark: ${JSON.stringify(marks)}`)
+  later.audio('mic', new Float32Array(16000))
+  if (later.unfinished().some((span) => span.start < 300)) fail(`unfinished before the take: ${JSON.stringify(later.unfinished())}`)
 }
 
 async function checkTranscriptModel(): Promise<void> {
@@ -1175,6 +1187,81 @@ async function checkRelabelKeepsAudio(): Promise<void> {
   }
 }
 
+/**
+ * What a quit or crash cut short is picked up at the next start: a summary still owed is
+ * written, owed speakers with no way to settle them are let go, untranscribed marks whose audio
+ * is gone are dropped (the words kept), and a summary's checkpoint goes once the summary is in.
+ * Only sessions that owe something are read, and an unreadable live.json is left where it is.
+ */
+async function checkResume(): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`resume: ${message}`)
+  }
+  const owesNotes = await createPage()
+  const owesSpeakers = await createPage()
+  const marked = await createPage()
+  const owesNothing = await createPage()
+  const unreadable = await createPage()
+  const pages = [owesNotes, owesSpeakers, marked, owesNothing, unreadable]
+  try {
+    await updateManifest(owesNotes.id, (manifest) => ({ ...manifest, pending: ['notes'] }))
+    await updateManifest(owesSpeakers.id, (manifest) => ({ ...manifest, pending: ['speakers'] }))
+    const segment = { id: 'live-mic-0', start: 0, end: 1, track: 'mic', cluster: null, confidence: null, words: [] }
+    const open = { take: 0, track: 'mic', start: 1, end: 1, open: true }
+    const markedFile = JSON.stringify({ segments: [segment], untranscribed: [open] })
+    const liveOf = (id: string): string => join(sessionRawDir(id), 'live.json')
+    for (const page of [marked, owesNothing, unreadable]) await mkdir(sessionRawDir(page.id), { recursive: true })
+    await writeFile(liveOf(marked.id), markedFile)
+    await writeFile(liveOf(owesNothing.id), markedFile)
+    await writeFile(liveOf(unreadable.id), '{"segments": [')
+    await updateManifest(marked.id, (manifest) => ({ ...manifest, pending: ['transcribe'] }))
+    await updateManifest(unreadable.id, (manifest) => ({ ...manifest, pending: ['transcribe'] }))
+
+    const notes: string[] = []
+    const relabeled: string[] = []
+    await resumeUnfinishedWork({
+      speakers: false,
+      relabel: (pageId) => {
+        relabeled.push(pageId)
+        return Promise.resolve('skipped' as const)
+      },
+      writeNotes: (pageId) => {
+        notes.push(pageId)
+        return Promise.resolve()
+      }
+    })
+    if (!notes.includes(owesNotes.id) || notes.includes(owesSpeakers.id)) fail(`notes asked for ${JSON.stringify(notes)}`)
+    if (relabeled.length) fail('relabeled without speaker models')
+    if (peekManifest(owesSpeakers.id)?.pending.length) fail('owed speakers were kept without a way to settle them')
+    const live: unknown = JSON.parse(await readFile(liveOf(marked.id), 'utf8'))
+    const kept = z.looseObject({ segments: z.array(z.unknown()) }).safeParse(live)
+    if (!kept.success || kept.data.segments.length !== 1 || 'untranscribed' in kept.data) {
+      fail(`marks with no audio left: ${JSON.stringify(live)}`)
+    }
+    if (peekManifest(marked.id)?.pending.length) fail('transcription still owed with nothing left to do')
+    if ((await readFile(liveOf(owesNothing.id), 'utf8')) !== markedFile) fail('read a session that owed nothing')
+    if (!existsSync(liveOf(unreadable.id))) fail('moved an unreadable live.json aside')
+    if (!peekManifest(unreadable.id)?.pending.includes('transcribe')) fail('gave up on an unreadable live.json')
+
+    // A summary written for good takes its checkpoint with it, and is no longer owed.
+    await editSession(owesNotes.id, (doc) => {
+      replaceTranscript(doc, [{ id: 'r0', rawId: 'r0', start: 0, end: 2, cluster: 'c0', confidence: null, text: 'We ship Friday.' }])
+    })
+    const writer = createFakeNotesWriter({
+      notes: { decisions: [], actionItems: [], openQuestions: [], summary: 'Shipping.' },
+      title: null
+    })
+    await writeCheckpoint(owesNotes.id, 'notes', { writer: writer.name, answers: { a: 1 } })
+    if (!(await readCheckpoint(owesNotes.id, 'notes', z.unknown()))) fail('the checkpoint was not saved')
+    await createMeetingNotes({ writer: () => Promise.resolve(writer) }).generateNotes(owesNotes.id)
+    if (existsSync(join(sessionCheckpointDir(owesNotes.id), 'notes.json'))) fail('a written summary kept its checkpoint')
+    await createMeetingNotes({ writer: () => Promise.resolve(null) }).writeOwed(owesNotes.id)
+    if (peekManifest(owesNotes.id)?.pending.includes('notes')) fail('a summary was still owed after its run')
+  } finally {
+    for (const page of pages) await deletePage(page.id)
+  }
+}
+
 /** A WAV whose header was never finalised (a crash) still plays: its audio runs to the end. */
 async function checkUnfinishedWav(): Promise<void> {
   const page = await createPage()
@@ -1366,6 +1453,48 @@ async function checkSessionEdits(win: BrowserWindow): Promise<void> {
 }
 
 /** Copy buttons: the sandboxed preload has no clipboard module, so text goes through main. */
+/** The People pages' numbers: who spoke where, through the bridge, from the index. */
+async function checkPeopleActivity(win: BrowserWindow): Promise<void> {
+  const fail = (message: string): never => {
+    throw new Error(`people activity: ${message}`)
+  }
+  const page = await createPage({ startedAt: '2026-05-06T07:08:09' })
+  await editSession(page.id, (doc) => {
+    editDoc(doc, { title: 'People smoke', summary: 'Summary\nWe met.\n\nAction items\n- [ ] Ana: send the deck' })
+    addTag(doc, 'Planning')
+    upsertSpeaker(doc, 'c0', { name: 'Ana', personId: 'smoke-people-ana', confirmed: true })
+    upsertSpeaker(doc, 'c1', { name: 'Ben', personId: 'smoke-people-ben', confirmed: true })
+    upsertSpeaker(doc, 'c2', { name: 'Speaker 3' })
+    // Named by hand, with no saved voice: still someone.
+    upsertSpeaker(doc, 'c3', { name: 'Dillon' })
+    replaceTranscript(doc, [
+      { id: 's1', rawId: null, start: 0.5, end: 4, cluster: 'c0', confidence: null, text: 'The budget is ready to go.' },
+      { id: 's2', rawId: null, start: 4, end: 6, cluster: 'c1', confidence: null, text: 'Thanks Ana.' },
+      { id: 's3', rawId: null, start: 6, end: 7, cluster: 'c2', confidence: null, text: 'Bye.' },
+      { id: 's4', rawId: null, start: 7, end: 8, cluster: 'c3', confidence: null, text: 'See you.' }
+    ])
+  })
+  try {
+    const raw: unknown = await win.webContents.executeJavaScript('window.api.peopleActivity()')
+    const activity = PeopleActivity.parse(raw)
+    const session = activity.sessions.find((entry) => entry.id === page.id)
+    // Everyone's talk counts toward the session, the unnamed speaker too.
+    if (session?.title !== 'People smoke' || session.talkSeconds !== 7.5 || session.tags.join() !== 'planning') {
+      fail(`session wrong: ${JSON.stringify(session)}`)
+    }
+    const mine = activity.appearances
+      .filter((entry) => entry.sessionId === page.id)
+      .map((entry) => `${entry.personId ?? '-'}/${entry.name}:${String(entry.talkSeconds)}:${String(entry.lines)}:${String(entry.words)}`)
+      .sort()
+    // "Speaker 3" is nobody yet, so it's left out.
+    if (mine.join('|') !== '-/Dillon:1:1:2|smoke-people-ana/Ana:3.5:1:6|smoke-people-ben/Ben:2:1:2') fail(`appearances wrong: ${mine.join('|')}`)
+    const items = activity.actionItems.filter((item) => item.sessionId === page.id)
+    if (items.length !== 1 || items[0]?.owner !== 'Ana' || items[0].done) fail(`action items wrong: ${JSON.stringify(items)}`)
+  } finally {
+    await deletePage(page.id)
+  }
+}
+
 async function checkCopy(win: BrowserWindow): Promise<void> {
   const text = `lyra smoke copy ${String(Date.now())}`
   await win.webContents.executeJavaScript(`window.api.copyText(${JSON.stringify(text)})`)
@@ -1423,9 +1552,11 @@ export async function runUiSmoke(win: BrowserWindow): Promise<void> {
     await checkVoices()
     await checkSettingsFile()
     await checkRelabelKeepsAudio()
+    await checkResume()
     await checkUnfinishedWav()
     // Last of the index checks: the rebuilt index holds only what changed since (see the report).
     await checkSearchIndexRecovery()
+    await checkPeopleActivity(win)
     await checkCopy(win)
     await checkPromptApps(win)
     await checkRecordingManifest(win)

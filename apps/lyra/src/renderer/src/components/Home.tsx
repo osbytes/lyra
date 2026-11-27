@@ -23,7 +23,7 @@ type Props = {
 const CHART_DAYS = 14
 
 /** A KPI: its label, the number, and how it moved against the week before (neutral ink). */
-function Tile({ label, value, delta, hint }: { label: string; value: string; delta: string | null; hint?: string }) {
+export function Tile({ label, value, delta, hint }: { label: string; value: string; delta: string | null; hint?: string }) {
   return (
     <div className="grid min-w-0 content-start gap-1 rounded-lg border-(length:--border-width) border-border bg-card px-4 py-3.5">
       <span className="text-caps font-semibold tracking-[0.06em] text-text-3 uppercase">{label}</span>

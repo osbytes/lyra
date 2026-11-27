@@ -246,7 +246,7 @@ export function createOllamaNotesWriter(options: OllamaWriterOptions): NotesWrit
   return {
     name,
     onDevice: options.onDevice,
-    async notes(lines, { signal, onProgress } = {}) {
+    async notes(lines, { signal, onProgress, answers } = {}) {
       try {
         const numCtx = await contextFor(fetchFn, root, model, apiKey)
         const numPredict = Math.min(2048, Math.floor(numCtx / 4))
@@ -256,6 +256,7 @@ export function createOllamaNotesWriter(options: OllamaWriterOptions): NotesWrit
           count: estimateTokens,
           signal,
           onProgress,
+          answers,
           // The pipeline checks the answer against the call's schema; this checks it's JSON.
           ask: (call) =>
             chat(
