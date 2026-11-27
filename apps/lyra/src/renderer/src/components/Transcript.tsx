@@ -25,6 +25,7 @@ import { clockLabel as clock } from '../lib/format'
 import { log } from '../lib/log'
 import { unusedSpeakerName } from '../lib/status'
 import { notify } from '../lib/toast'
+import { sendToPromptApp, usePromptApps } from '../hooks/usePromptApps'
 import { useContextMenu } from './ContextMenu'
 import { pausePlayback, play, playbackState, resumePlayback, stopPlayback, usePlayback } from '../lib/playback'
 import { scrollBehavior } from '../lib/motion'
@@ -38,8 +39,10 @@ import {
   ErrorIcon,
   LowConfidenceIcon,
   PauseIcon,
+  PersonIcon,
   PlayIcon,
   PlusIcon,
+  SplitIcon,
   StopIcon,
   WarningIcon
 } from './Icons'
@@ -862,6 +865,7 @@ export function Transcript({
   onReference
 }: Props) {
   const people = usePeople()
+  const promptApps = usePromptApps()
   const nowPlaying = usePlayingKey(pageId)
   // Leaving the session (or closing it) stops whatever is playing from it.
   useEffect(() => stopPlayback, [pageId])
@@ -951,6 +955,11 @@ export function Transcript({
       window.api.copyText(text)
       settle()
       notify('Copied')
+    },
+    promptApps,
+    ask: (app, text) => {
+      settle()
+      sendToPromptApp(app, text)
     },
     listen: (line) => {
       playFromLine(pageId, line, transcript)
@@ -1174,10 +1183,12 @@ export function Transcript({
                 speakerMenu.open(event, speaker.name, [
                   {
                     label: stateOf(speaker) === 'sure' ? 'Rename…' : 'Who is this…',
+                    icon: <PersonIcon />,
                     run: () => openPicker(speaker.id, null, target)
                   },
                   {
                     label: 'Split into two speakers…',
+                    icon: <SplitIcon />,
                     run: () => {
                       setPicker(null)
                       setSplit({ speaker: speaker.id, anchor: target.getBoundingClientRect() })

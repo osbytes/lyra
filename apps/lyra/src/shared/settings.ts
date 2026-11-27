@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { ModelId, ProviderId } from './ai'
 import { TranscriptionLanguage } from './languages'
+import { SendPart } from './sendParts'
 import { Vocabulary } from './vocabulary'
 
 /** Both formats are always readable; this one is used for new notes. */
@@ -89,7 +90,9 @@ export const SettingsSchema = z.object({
    * Tell speakers apart with a larger model (a 121 MB download; slower computers take longer
    * to label a session).
    */
-  largerSpeakerModel: z.boolean()
+  largerSpeakerModel: z.boolean(),
+  /** What "Send to…" puts in a session's prompt for another app; the person's last choice. */
+  sendToParts: z.array(SendPart)
 })
 export type Settings = z.infer<typeof SettingsSchema>
 

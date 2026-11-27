@@ -233,6 +233,7 @@ export const Sidebar = memo(function Sidebar({
             },
             {
               label: 'Copy title',
+              icon: <CopyIcon />,
               run: () => {
                 window.api.copyText(title)
                 notify('Copied the title')

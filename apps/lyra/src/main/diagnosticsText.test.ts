@@ -23,7 +23,8 @@ const settings: Settings = {
   sidebarWidth: 260,
   meetingNoticeSeen: true,
   semanticSearch: false,
-  largerSpeakerModel: false
+  largerSpeakerModel: false,
+  sendToParts: []
 }
 
 describe('shortenHome', () => {
