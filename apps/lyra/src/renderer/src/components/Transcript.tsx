@@ -19,6 +19,7 @@ import {
 } from '../../../shared/sessionDoc'
 import { expandToEdits, visibleText, type Span, type TranscriptEdit } from '../../../shared/transcriptOverlay'
 import type { NewSpeaker } from '../hooks/usePages'
+import { useAnchoredPosition } from '../hooks/useAnchoredPosition'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { rovingIndex } from '../lib/focus'
 import { clockLabel as clock } from '../lib/format'
@@ -362,8 +363,7 @@ function SpeakerPicker({
           ? `Who is ${speaker.name}?`
           : speaker.name
   const sample = line ?? own[0]
-  const top = Math.min(picker.anchor.bottom + 8, window.innerHeight - 420)
-  const left = Math.min(picker.anchor.left, window.innerWidth - 356)
+  const position = useAnchoredPosition(dialog, picker.anchor)
 
   const active = options[highlight]
   const count = justLine ? 1 : own.length
@@ -398,11 +398,11 @@ function SpeakerPicker({
     <div className="picker-layer" onMouseDown={onClose}>
       <ScrollArea
         ref={dialog}
-        className={cn('picker fixed z-[100] flex max-h-[calc(100vh-16px)] flex-col overflow-y-auto rounded-lg border-(length:--border-width) border-border bg-popover p-2.5 text-body-sm text-popover-foreground shadow-md', 'w-[320px]')}
+        className={cn('picker fixed z-[100] flex max-h-[calc(100vh-16px)] flex-col overflow-y-auto rounded-lg border-(length:--border-width) border-border bg-popover p-2.5 text-body-sm text-popover-foreground shadow-md', 'w-[320px] max-w-[calc(100vw-16px)]')}
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        style={{ top: Math.max(8, top), left: Math.max(8, left) }}
+        style={position}
         onMouseDown={(event) => {
           event.stopPropagation()
         }}
@@ -516,7 +516,7 @@ function SpeakerPicker({
                 >
                   {option.kind === 'person' ? (
                     <>
-                      <SpeakerBadge name={option.person.name} slot={speakerSlot(people, option.person.id)} />
+                      <PersonBadge person={option.person} speakers={allSpeakers} people={people} />
                       <span className="min-w-0 flex-1 truncate">
                         {option.person.name}
                         {option.person.self ? ' (you)' : ''}
@@ -525,7 +525,11 @@ function SpeakerPicker({
                     </>
                   ) : option.kind === 'speaker' ? (
                     <>
-                      <SpeakerBadge name={option.speaker.name} slot={speakerSlot(allSpeakers, option.speaker.id)} />
+                      <SpeakerBadge
+                        name={option.speaker.name}
+                        slot={speakerSlot(allSpeakers, option.speaker.id)}
+                        certainty={stateOf(option.speaker)}
+                      />
                       <span className="min-w-0 flex-1 truncate">{option.speaker.name}</span>
                       <span className="text-label text-text-3">{justLine ? 'Move here' : 'Merge'}</span>
                     </>
@@ -583,6 +587,28 @@ function SpeakerPicker({
   )
 }
 
+/**
+ * A saved voice's badge in the picker: someone named in this session wears their speaker's
+ * badge, as on the timeline and the transcript; anyone else (a voice only suggested here
+ * included) their badge from Saved voices.
+ */
+function PersonBadge({
+  person,
+  speakers,
+  people
+}: {
+  person: Person
+  speakers: readonly SpeakerEntry[]
+  people: readonly Person[]
+}) {
+  const here = speakers.find((entry) => entry.personId === person.id && stateOf(entry) === 'sure')
+  return here ? (
+    <SpeakerBadge name={here.name} slot={speakerSlot(speakers, here.id)} />
+  ) : (
+    <SpeakerBadge name={person.name} slot={speakerSlot(people, person.id)} />
+  )
+}
+
 /** How well a saved voice matches, in plain words rather than a percentage. */
 function MatchStrength({ score }: { score: number | null }) {
   if (score === null) return null
@@ -624,8 +650,7 @@ function SplitDialog({
   const valid = picked.size > 0 && picked.size < own.length
   const dialog = useRef<HTMLElement>(null)
   useDialogFocus(dialog, true)
-  const top = Math.min(anchor.bottom + 8, window.innerHeight - 440)
-  const left = Math.min(anchor.left, window.innerWidth - 536)
+  const position = useAnchoredPosition(dialog, anchor)
 
   const least = own[0]?.id
   return (
@@ -636,7 +661,7 @@ function SplitDialog({
         role="dialog"
         aria-modal="true"
         aria-label={`Split ${speaker.name}`}
-        style={{ top: Math.max(8, top), left: Math.max(8, left) }}
+        style={position}
         onMouseDown={(event) => {
           event.stopPropagation()
         }}
