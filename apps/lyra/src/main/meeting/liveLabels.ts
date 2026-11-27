@@ -10,7 +10,8 @@ import { ensureSpeakerModels, rollDiarize } from './speakers'
 import { movedLines, pinnedSpeakers } from './speakerRules'
 import { DIARIZE_THRESHOLD } from './thresholds'
 import { snapTurns } from './turnEdges'
-import { passClusters } from './voiceprints'
+import { SPEAKER_EMBEDDING } from './speakerModel'
+import { passClusters, setLiveVoiceprints } from './voiceprints'
 
 /**
  * Speaker labels while a recording is still going. Lines are written with no speaker
@@ -19,7 +20,8 @@ import { passClusters } from './voiceprints'
  * kept between rounds so a round costs only the new audio) and the lines up to there get their
  * speakers. Words said since stay unlabeled until the next round: a name is shown once the
  * voices have been compared, never on a guess from the track. Nothing here is kept as a pass
- * or teaches a saved voice; the pass after the recording stops (`relabel.ts`) settles it.
+ * or teaches a saved voice on its own; the pass after the recording stops (`relabel.ts`) settles
+ * it. Each round's voiceprints are held in memory, so a voice the user names meanwhile can be.
  */
 
 /** The first round waits for this much of a take: under it there is too little to tell voices apart. */
@@ -112,7 +114,7 @@ async function label(take: LiveTake): Promise<void> {
       lines.filter((line) => line.pinned === null && line.speaker >= 0),
       transcript.filter((line) => !movedIds.has(line.id))
     )
-    writeLines(doc, {
+    const { idOf } = writeLines(doc, {
       known,
       named,
       continues,
@@ -123,6 +125,12 @@ async function label(take: LiveTake): Promise<void> {
     // Labels a reader already saw that this round took back: the cost of labeling early.
     const { changed } = changedLabels(transcript, doc.transcript)
     return {
+      prints: new Map(
+        named.flatMap((speaker) => {
+          const id = idOf.get(speaker.cluster)
+          return id ? [[id, { vector: speaker.embedding, model: SPEAKER_EMBEDDING.model }] as const] : []
+        })
+      ),
       words: words.length,
       waiting: speakers.filter((speaker) => speaker < 0).length,
       lines: lines.length,
@@ -130,12 +138,14 @@ async function label(take: LiveTake): Promise<void> {
     }
   })
   if (!written) return
-  noteRound(pageId, written.changedSeconds)
+  const { prints, ...counts } = written
+  setLiveVoiceprints(pageId, prints)
+  noteRound(pageId, counts.changedSeconds)
   log('relabel', 'labeled so far', {
     pageId,
     audioSeconds: +merged.seconds.toFixed(1),
     speakers: named.length,
-    ...written,
+    ...counts,
     // What it cost: the worker's share, how much audio was new, and how much was kept.
     ms: Date.now() - started,
     workerMs: result.stats.ms,

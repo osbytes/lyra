@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { SELF_MIC_SHARE } from './thresholds'
 import { SPEAKER_EMBEDDING } from './speakerModel'
-import { couldBeOnePerson, differentVoices, movedLines, ownedVoiceprints, pickSelfSpeaker, pinnedSpeakers } from './speakerRules'
+import {
+  couldBeOnePerson,
+  differentVoices,
+  movedLines,
+  ownedVoiceprints,
+  pickSelfSpeaker,
+  pinnedSpeakers,
+  withLiveVoiceprints
+} from './speakerRules'
 
 describe('pickSelfSpeaker', () => {
   it('prefers the mic-side speaker who talked most over the first one heard', () => {
@@ -160,5 +168,31 @@ describe('differentVoices', () => {
     expect(differentVoices([], [0, 1], 0.35)).toBe(false)
     expect(differentVoices([1, 0], [], 0.35)).toBe(false)
     expect(differentVoices([1, 0], [0, 1, 0], 0.35)).toBe(false)
+  })
+})
+
+describe('withLiveVoiceprints', () => {
+  const print = (x: number): { vector: number[]; model: string } => ({ vector: [x, 1], model: 'm' })
+
+  it('gives a speaker named while recording the voiceprint the live round heard', () => {
+    // No pass yet: live lines have no raw id, so only the round can vouch for the voice.
+    const transcript = [{ cluster: 's1', userCluster: false }]
+    const found = withLiveVoiceprints(new Map(), new Map([['s1', print(1)]]), transcript)
+    expect(found.get('s1')).toEqual(print(1))
+  })
+
+  it('outranks an older pass for the same speaker', () => {
+    const transcript = [{ cluster: 's1', userCluster: false }]
+    const found = withLiveVoiceprints(new Map([['s1', print(0)]]), new Map([['s1', print(2)]]), transcript)
+    expect(found.get('s1')).toEqual(print(2))
+  })
+
+  it("doesn't vouch for a speaker who only holds lines the user moved, or none", () => {
+    const transcript = [{ cluster: 's1', userCluster: true }, { cluster: null }]
+    const live = new Map([
+      ['s1', print(1)],
+      ['s2', print(2)]
+    ])
+    expect(withLiveVoiceprints(new Map([['s0', print(0)]]), live, transcript)).toEqual(new Map([['s0', print(0)]]))
   })
 })
