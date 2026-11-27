@@ -126,6 +126,8 @@ const api: VoicePagesApi = {
   markActivitySeen: (ids) => ipcRenderer.invoke('activity:seen', ids),
   permissionStatus: () => ipcRenderer.invoke('permissions:status'),
   openPermissionSettings: (kind) => ipcRenderer.invoke('permissions:openSettings', kind),
+  promptApps: () => ipcRenderer.invoke('promptApps:list'),
+  openInPromptApp: (request) => ipcRenderer.invoke('promptApps:open', request),
   copyText: (text) => ipcRenderer.send('clipboard:write', text),
   platform: process.platform,
   arch: process.arch,

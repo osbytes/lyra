@@ -1,5 +1,5 @@
 import { ipcMain, type BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
-import type { OverlayFrame, SessionCommand, SessionPhase, SessionState } from '../shared/types'
+import { OverlayFrame, SessionState, type SessionCommand } from '../shared/types'
 import { log } from './log'
 
 /**
@@ -8,10 +8,8 @@ import { log } from './log'
  * global hotkey, and the overlay pill.
  */
 
-const PHASES: readonly SessionPhase[] = ['idle', 'starting', 'listening', 'finishing']
-
 let mainWindow: BrowserWindow | null = null
-let state: SessionState = { phase: 'idle', startedAt: null, micName: '' }
+let state: SessionState = { phase: 'idle', startedAt: null, micName: '', systemAudio: false }
 const listeners = new Set<(state: SessionState) => void>()
 const frameListeners = new Set<(frame: OverlayFrame) => void>()
 
@@ -87,39 +85,20 @@ function publish(next: SessionState): void {
  */
 export function resetSessionState(): void {
   if (state.phase === 'idle') return
-  publish({ phase: 'idle', startedAt: null, micName: '' })
-}
-
-function parseState(value: unknown): SessionState | null {
-  if (!value || typeof value !== 'object') return null
-  const raw = value as Record<string, unknown>
-  const phase = PHASES.find((p) => p === raw.phase)
-  if (!phase) return null
-  return {
-    phase,
-    startedAt: typeof raw.startedAt === 'number' ? raw.startedAt : null,
-    micName: typeof raw.micName === 'string' ? raw.micName : ''
-  }
-}
-
-function parseFrame(value: unknown): OverlayFrame | null {
-  if (!value || typeof value !== 'object') return null
-  const raw = value as Record<string, unknown>
-  if (typeof raw.level !== 'number' || typeof raw.status !== 'string') return null
-  return { level: Math.max(0, Math.min(1, raw.level)), status: raw.status.slice(0, 80) }
+  publish({ phase: 'idle', startedAt: null, micName: '', systemAudio: false })
 }
 
 export function registerSessionIpc(): void {
   ipcMain.on('session:report', (event, value: unknown) => {
     if (event.sender !== getMainWindow()?.webContents) return
-    const next = parseState(value)
-    if (next) publish(next)
+    const next = SessionState.safeParse(value)
+    if (next.success) publish(next.data)
   })
   ipcMain.on('overlay:frame', (event, value: unknown) => {
     if (event.sender !== getMainWindow()?.webContents) return
-    const frame = parseFrame(value)
-    if (!frame) return
-    for (const listener of frameListeners) listener(frame)
+    const frame = OverlayFrame.safeParse(value)
+    if (!frame.success) return
+    for (const listener of frameListeners) listener(frame.data)
   })
   ipcMain.handle('session:get', () => state)
   ipcMain.on('session:requestStop', () => {

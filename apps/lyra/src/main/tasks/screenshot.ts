@@ -165,6 +165,28 @@ async function reviewTranscriptEditing(
     steps.push(`${String(await lineText('s0'))} / ${String(await lineText('s1'))}`)
   }
   process.stdout.write(`transcript undo (${theme}):\n  ${steps.join('\n  ')}\n`)
+
+  // The session's menu, then "Send to…": which parts to include, then the installed apps.
+  await run(`document.querySelector('[aria-label="More actions"]')?.click()`)
+  await settle()
+  await save(dir, `session-menu-${theme}.png`)
+  await run(
+    `[...document.querySelectorAll('[data-slot="dropdown-menu-item"]')].find((el) => el.textContent.includes('Send to'))?.click()`
+  )
+  await settle()
+  await save(dir, `session-menu-send-to-${theme}.png`)
+  // Ticking a part keeps the menu open and is remembered; untick it again for the next shots.
+  const tick = (): Promise<unknown> =>
+    run(`[...document.querySelectorAll('[role="menuitemcheckbox"]')].find((el) => el.textContent === 'Summary')?.click()`)
+  await tick()
+  await settle()
+  await save(dir, `session-menu-send-to-summary-${theme}.png`)
+  await tick()
+  await settle()
+  for (let i = 0; i < 2; i++) {
+    win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
+    await settle()
+  }
 }
 
 /**

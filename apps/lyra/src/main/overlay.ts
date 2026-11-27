@@ -13,8 +13,14 @@ import {
   onSessionState
 } from './session'
 
-const WIDTH = 340
-const PILL_HEIGHT = 44
+/** The prompt card's width: room for its question and a row of buttons. */
+const PROMPT_WIDTH = 340
+/**
+ * The pill fits its content (Stop, the time past an hour, the meter), since the window's
+ * transparent margin would still catch clicks meant for whatever is under it.
+ */
+const PILL_WIDTH = 204
+const PILL_HEIGHT = 40
 /** Room for the question, the shortcut line and a row of buttons. */
 const PROMPT_HEIGHT = 152
 const MARGIN = 24
@@ -80,7 +86,7 @@ function saveAnchor(win: BrowserWindow): void {
 
 function createOverlay(): BrowserWindow {
   const win = new BrowserWindow({
-    width: WIDTH,
+    width: PILL_WIDTH,
     height: PILL_HEIGHT,
     show: false,
     frame: false,
@@ -134,21 +140,21 @@ function createOverlay(): BrowserWindow {
 }
 
 /** The user's spot when it's still on a connected screen (kept inside it), else bottom centre. */
-function place(win: BrowserWindow, height: number): void {
+function place(win: BrowserWindow, width: number, height: number): void {
   if (anchor === undefined) anchor = readAnchor()
   let x: number
   let y: number
   if (anchor) {
     const { workArea } = screen.getDisplayNearestPoint({ x: anchor.x, y: anchor.bottom })
-    x = Math.min(Math.max(anchor.x, workArea.x), workArea.x + workArea.width - WIDTH)
+    x = Math.min(Math.max(anchor.x, workArea.x), workArea.x + workArea.width - width)
     y = Math.min(Math.max(anchor.bottom - height, workArea.y), workArea.y + workArea.height - height)
   } else {
     const { workArea } = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
-    x = workArea.x + (workArea.width - WIDTH) / 2
+    x = workArea.x + (workArea.width - width) / 2
     y = workArea.y + workArea.height - height - MARGIN
   }
   placed = { x: Math.round(x), y: Math.round(y) }
-  win.setBounds({ ...placed, width: WIDTH, height })
+  win.setBounds({ ...placed, width, height })
 }
 
 /** The main window is what the user is looking at, so the pill would be redundant. */
@@ -199,7 +205,7 @@ function update(state: SessionState): void {
   if (mainWindowInView()) {
     overlay.hide()
   } else if (!overlay.isVisible() || hadPrompt) {
-    place(overlay, PILL_HEIGHT)
+    place(overlay, PILL_WIDTH, PILL_HEIGHT)
     overlay.showInactive()
     log('overlay', 'shown', { phase: state.phase })
   }
@@ -224,7 +230,7 @@ export function showPrompt(next: MicPrompt): void {
   }
   if (win.webContents.isLoading()) win.webContents.once('did-finish-load', send)
   else send()
-  place(win, PROMPT_HEIGHT)
+  place(win, PROMPT_WIDTH, PROMPT_HEIGHT)
   win.showInactive()
   if (promptTimer) clearTimeout(promptTimer)
   promptTimer = setTimeout(expirePrompt, PROMPT_TIMEOUT_MS)

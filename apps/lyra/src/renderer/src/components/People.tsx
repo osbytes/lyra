@@ -7,7 +7,7 @@ import { log } from '../lib/log'
 import { notify } from '../lib/toast'
 import { ConfirmDialog } from './ConfirmDialog'
 import { useContextMenu } from './ContextMenu'
-import { TrashIcon } from './Icons'
+import { PersonIcon, TrashIcon } from './Icons'
 import { tip } from './Tooltip'
 import { speakerSlot } from '../lib/speakerTone'
 import { SpeakerBadge } from './SpeakerBadge'
@@ -329,7 +329,7 @@ function PersonRow({ person, people }: { person: Person; people: readonly Person
       className="person"
       onContextMenu={(event) => {
         menu.open(event, person.name, [
-          ...(person.self ? [] : [{ label: 'This is me', run: makeSelf }]),
+          ...(person.self ? [] : [{ label: 'This is me', icon: <PersonIcon />, run: makeSelf }]),
           { label: 'Delete voice…', icon: <TrashIcon />, danger: true, run: () => setConfirming(true) }
         ])
       }}

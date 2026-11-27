@@ -103,7 +103,8 @@ describe('chooseWriter', () => {
     sidebarWidth: 260,
     meetingNoticeSeen: true,
     semanticSearch: false,
-  largerSpeakerModel: false
+  largerSpeakerModel: false,
+  sendToParts: []
   }
   const choose = (patch: Partial<Settings>, fetchFn: Fetch) =>
     chooseWriter({

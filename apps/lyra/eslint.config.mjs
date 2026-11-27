@@ -16,7 +16,6 @@ const CAST_BASELINE = [
   'src/main/meeting/pipeline.ts',
   'src/main/meeting/worker.ts',
   'src/main/pages.ts',
-  'src/main/session.ts',
   'src/main/sessionStore.ts',
   'src/main/settings.ts',
   'src/main/tasks/screenshot.ts',

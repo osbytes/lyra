@@ -91,6 +91,8 @@ import { cancelModelDownload } from './models'
 import { modelStatuses, onModelRetry, retryModel } from './modelStatus'
 import { detectServers, listServerModels, testWriter } from './notesServers'
 import { openPermissionSettings, permissionStatus } from './permissions'
+import { installedPromptApps, openInPromptApp } from './promptApps'
+import { PromptAppRequest } from '../shared/promptApps'
 import { createTray } from './tray'
 import { registerUpdater } from './updater'
 import { broadcastStatus, warmUp } from './whisper'
@@ -451,6 +453,13 @@ function registerSettingsToolsIpc(): void {
   ipcMain.handle('permissions:openSettings', (event, kind: unknown) => {
     requireMainWindow(event)
     return openPermissionSettings(PermissionKindArg.parse(kind))
+  })
+  ipcMain.handle('promptApps:list', async () =>
+    (await installedPromptApps()).map(({ id, name, icon }) => ({ id, name, icon }))
+  )
+  ipcMain.handle('promptApps:open', (event, request: unknown) => {
+    requireMainWindow(event)
+    return openInPromptApp(PromptAppRequest.parse(request))
   })
 }
 
