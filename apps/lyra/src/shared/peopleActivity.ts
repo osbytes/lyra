@@ -1,12 +1,11 @@
 import { z } from 'zod'
 
 /**
- * What the People pages are built from: every session a saved person spoke in, read from the
- * search index. Only speakers linked to a saved person count; a speaker named by hand without
- * saving their voice has no person to count toward.
+ * What the People pages are built from: every session someone spoke in, read from the search
+ * index. Someone is a speaker linked to a saved voice or given a name; "Speaker 2" is nobody yet.
  */
 export const PeopleActivity = z.object({
-  /** Sessions with at least one saved person in them, newest first. */
+  /** Sessions with at least one such speaker in them, newest first. */
   sessions: z.array(
     z.object({
       id: z.string(),
@@ -18,11 +17,13 @@ export const PeopleActivity = z.object({
       tags: z.array(z.string())
     })
   ),
-  /** One per person per session (a person heard as two speakers is summed). */
+  /** One per speaker per session; the renderer works out who each one is. */
   appearances: z.array(
     z.object({
       sessionId: z.string(),
-      personId: z.string(),
+      /** The saved voice they're linked to; null for a speaker only given a name. */
+      personId: z.string().nullable(),
+      name: z.string(),
       talkSeconds: z.number(),
       lines: z.number().int(),
       words: z.number().int()

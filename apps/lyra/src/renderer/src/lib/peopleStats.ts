@@ -5,6 +5,77 @@ import type { PeopleActivity } from '../../../shared/peopleActivity'
 type PersonRef = { id: string; name: string }
 type Session = PeopleActivity['sessions'][number]
 
+/** Someone on the People pages: a saved voice, or a name given to speakers in sessions. */
+export type RosterPerson = {
+  /** The saved person's id, or `name:` and the lower-cased name for someone only named. */
+  id: string
+  name: string
+  self: boolean
+  /** Their saved voice; null when they've only been named. */
+  voice: { createdAt: string; samples: number } | null
+}
+
+type SavedPerson = { id: string; name: string; self: boolean; createdAt: string; samples: number }
+
+const nameKey = (name: string): string => name.trim().toLowerCase()
+/** "Speaker 2" (or a blank name) is a speaker nobody has named yet. */
+const unnamed = (name: string): boolean => !name.trim() || /^speaker\s+\d+$/i.test(name.trim())
+
+/**
+ * Everyone to list: each saved voice, then each name given to speakers that isn't one, and the
+ * activity with every speaker pointed at who they are. A speaker linked to a saved voice is that
+ * person; one only named joins the saved person of the same name, or their name's own entry. A
+ * person heard as two speakers in one session counts once, their talk added up. "Me" with no
+ * saved voice marked as you is you: the mic track is labeled "Me" until one is.
+ */
+export function rosterOf(
+  saved: readonly SavedPerson[],
+  activity: PeopleActivity
+): { people: RosterPerson[]; activity: PeopleActivity } {
+  const byId = new Map(saved.map((person) => [person.id, person]))
+  const byName = new Map(saved.map((person) => [nameKey(person.name), person]))
+  const hasSelf = saved.some((person) => person.self)
+  const named = new Map<string, RosterPerson>()
+  const merged = new Map<string, PeopleActivity['appearances'][number]>()
+  for (const entry of activity.appearances) {
+    let id = entry.personId !== null && byId.has(entry.personId) ? entry.personId : null
+    if (id === null) {
+      if (unnamed(entry.name)) continue
+      const key = nameKey(entry.name)
+      const person = byName.get(key)
+      id = person ? person.id : `name:${key}`
+      if (!person && !named.has(id)) {
+        named.set(id, { id, name: entry.name.trim(), self: !hasSelf && key === 'me', voice: null })
+      }
+    }
+    const at = `${entry.sessionId}\u0000${id}`
+    const before = merged.get(at)
+    merged.set(
+      at,
+      before
+        ? {
+            ...before,
+            talkSeconds: before.talkSeconds + entry.talkSeconds,
+            lines: before.lines + entry.lines,
+            words: before.words + entry.words
+          }
+        : { ...entry, personId: id }
+    )
+  }
+  return {
+    people: [
+      ...saved.map((person) => ({
+        id: person.id,
+        name: person.name,
+        self: person.self,
+        voice: { createdAt: person.createdAt, samples: person.samples }
+      })),
+      ...named.values()
+    ],
+    activity: { ...activity, appearances: [...merged.values()] }
+  }
+}
+
 export type PersonTotals = {
   sessions: number
   talkSeconds: number
@@ -119,9 +190,10 @@ export function personDetail(person: PersonRef, activity: PeopleActivity, weekCo
   for (const session of activity.sessions) {
     const entry = mine.get(session.id)
     if (!entry) continue
-    const others = activity.appearances
-      .filter((other) => other.sessionId === session.id && other.personId !== person.id)
-      .map((other) => other.personId)
+    // After rosterOf every speaker has an id; an unresolved one (null) is nobody to list.
+    const others = activity.appearances.flatMap((other) =>
+      other.sessionId === session.id && other.personId !== null && other.personId !== person.id ? [other.personId] : []
+    )
     for (const id of others) together.set(id, (together.get(id) ?? 0) + 1)
     for (const tag of session.tags) tags.set(tag, (tags.get(tag) ?? 0) + 1)
     sessions.push({

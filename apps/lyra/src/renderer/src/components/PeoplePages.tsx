@@ -2,7 +2,16 @@ import { useMemo, useState, type ReactNode } from 'react'
 import type { PageSummary, Person } from '../../../shared/types'
 import { usePeopleActivity } from '../hooks/usePeopleActivity'
 import { durationLabel } from '../lib/dashboard'
-import { personDetail, personTotals, sortPeople, totalsOf, type PeopleSort, type PersonTotals } from '../lib/peopleStats'
+import {
+  personDetail,
+  personTotals,
+  rosterOf,
+  sortPeople,
+  totalsOf,
+  type PeopleSort,
+  type PersonTotals,
+  type RosterPerson
+} from '../lib/peopleStats'
 import { speakerSlot } from '../lib/speakerTone'
 import { cn } from '../lib/utils'
 import { rowTime } from '../lib/when'
@@ -63,6 +72,28 @@ const SORTS: { value: PeopleSort; label: string }[] = [
   { value: 'name', label: 'Name' }
 ]
 
+/**
+ * Everyone to show and what they did: saved voices from the start, joined by each name given to
+ * speakers once the sessions are read.
+ */
+function useRoster(pages: PageSummary[], saved: Person[]) {
+  const loaded = usePeopleActivity(pages, saved)
+  const ready = loaded.state === 'ready' ? loaded.activity : null
+  const roster = useMemo(() => (ready ? rosterOf(saved, ready) : null), [saved, ready])
+  const people: RosterPerson[] = useMemo(
+    () =>
+      roster?.people ??
+      saved.map((person) => ({
+        id: person.id,
+        name: person.name,
+        self: person.self,
+        voice: { createdAt: person.createdAt, samples: person.samples }
+      })),
+    [roster, saved]
+  )
+  return { loaded, people, activity: roster?.activity ?? null }
+}
+
 type ListProps = {
   pages: PageSummary[]
   people: Person[]
@@ -70,11 +101,13 @@ type ListProps = {
   onAddPeople: () => void
 }
 
-/** Home → People: everyone with a saved voice, how often they're heard and how much they say. */
-export function PeopleOverview({ pages, people, onOpenPerson, onAddPeople }: ListProps) {
-  const loaded = usePeopleActivity(pages, people)
+/**
+ * Home → People: everyone named in a session or with a saved voice, how often they're heard and
+ * how much they say.
+ */
+export function PeopleOverview({ pages, people: saved, onOpenPerson, onAddPeople }: ListProps) {
+  const { loaded, people, activity } = useRoster(pages, saved)
   const [sort, setSort] = useState<PeopleSort>('talk')
-  const activity = loaded.state === 'ready' ? loaded.activity : null
   const totals = useMemo(() => (activity ? personTotals(people, activity) : new Map<string, PersonTotals>()), [people, activity])
   const sorted = useMemo(() => sortPeople(people, totals, sort), [people, totals, sort])
   const talk = [...totals.values()].reduce((sum, t) => sum + t.talkSeconds, 0)
@@ -95,11 +128,11 @@ export function PeopleOverview({ pages, people, onOpenPerson, onAddPeople }: Lis
 
       {loaded.state === 'failed' ? <LoadError onRetry={loaded.retry} /> : null}
 
-      {people.length === 0 ? (
+      {loaded.state === 'loading' && people.length === 0 ? null : people.length === 0 ? (
         <div className="grid max-w-[480px] gap-3">
           <p className="m-0 text-body-sm text-text-2">
-            No saved voices yet. Save someone’s voice and Lyra names them in meetings, then counts
-            how often they’re heard and how much they say here.
+            Nobody yet. Name a speaker in a meeting, or save someone’s voice so Lyra names them for
+            you, and this counts how often they’re heard and how much they say.
           </p>
           <Button variant="primary" className="justify-self-start" onClick={onAddPeople}>
             Add a person
@@ -108,14 +141,19 @@ export function PeopleOverview({ pages, people, onOpenPerson, onAddPeople }: Lis
       ) : (
         <>
           <section className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3" aria-label="Everyone">
-            <Tile label="People" value={String(people.length)} delta={null} hint="With a saved voice" />
+            <Tile
+              label="People"
+              value={String(people.length)}
+              delta={null}
+              hint={`${String(saved.length)} with a saved voice`}
+            />
             <Tile
               label="Sessions"
               value={activity ? String(activity.sessions.length) : '—'}
               delta={null}
-              hint="With someone saved in them"
+              hint="With someone named in them"
             />
-            <Tile label="Talk time" value={activity ? durationLabel(talk) : '—'} delta={null} hint="Everyone saved, together" />
+            <Tile label="Talk time" value={activity ? durationLabel(talk) : '—'} delta={null} hint="Everyone, together" />
             <Tile
               label="Heard most"
               value={top && topTalk > 0 ? top.name : '—'}
@@ -124,7 +162,7 @@ export function PeopleOverview({ pages, people, onOpenPerson, onAddPeople }: Lis
             />
           </section>
 
-          <section className="grid gap-2" aria-label="Everyone with a saved voice">
+          <section className="grid gap-2" aria-label="Everyone">
             <div className="flex flex-wrap items-center gap-2">
               <h2 className={cn(heading, 'flex-1')}>Everyone</h2>
               <span className="text-label text-text-3" id="people-sort-label">
@@ -201,8 +239,8 @@ export function PeopleOverview({ pages, people, onOpenPerson, onAddPeople }: Lis
               })}
             </ul>
             <p className="m-0 text-label text-text-3">
-              Counts speakers named as a saved person. Share of talk is their part of everything said in
-              the sessions they were in.
+              Counts every speaker given a name, and those Lyra named from a saved voice. Share of talk
+              is their part of everything said in the sessions they were in.
             </p>
           </section>
         </>
@@ -276,10 +314,9 @@ type PersonProps = {
 }
 
 /** One person: how much they're heard, week by week, in which sessions and with whom. */
-export function PersonPage({ personId, pages, people, onBack, onOpenPerson, onOpenSession }: PersonProps) {
-  const loaded = usePeopleActivity(pages, people)
+export function PersonPage({ personId, pages, people: saved, onBack, onOpenPerson, onOpenSession }: PersonProps) {
+  const { loaded, people, activity } = useRoster(pages, saved)
   const person = people.find((entry) => entry.id === personId)
-  const activity = loaded.state === 'ready' ? loaded.activity : null
   const now = useMemo(() => new Date(), [])
   const totals = useMemo(
     () => (activity && person ? totalsOf(personTotals([person], activity), person.id) : null),
@@ -289,7 +326,7 @@ export function PersonPage({ personId, pages, people, onBack, onOpenPerson, onOp
     () => (activity && person ? personDetail(person, activity, WEEKS, now) : null),
     [activity, person, now]
   )
-  const nameOf = (id: string): string => people.find((entry) => entry.id === id)?.name ?? 'Deleted person'
+  const nameOf = (id: string): string => people.find((entry) => entry.id === id)?.name ?? 'Someone'
 
   const back = (
     <Button variant="ghost" size="sm" className="justify-self-start" onClick={onBack}>
@@ -302,7 +339,13 @@ export function PersonPage({ personId, pages, people, onBack, onOpenPerson, onOp
     return (
       <Frame label="Person">
         {back}
-        <p className="m-0 text-body-sm text-text-2">This person’s voice was deleted. Sessions that named them keep the name.</p>
+        {loaded.state === 'loading' ? null : loaded.state === 'failed' ? (
+          <LoadError onRetry={loaded.retry} />
+        ) : (
+          <p className="m-0 text-body-sm text-text-2">
+            They’re no longer named in any session, and have no saved voice.
+          </p>
+        )}
       </Frame>
     )
   }
@@ -321,7 +364,9 @@ export function PersonPage({ personId, pages, people, onBack, onOpenPerson, onOp
             <span className="rounded-full bg-brand-soft px-2 py-0.5 text-label font-semibold text-brand-text">You</span>
           ) : null}
           <span className="ml-auto font-mono text-label text-text-3">
-            Voice saved {dateLabel(person.createdAt)} · {plural(person.samples, 'sample')}
+            {person.voice
+              ? `Voice saved ${dateLabel(person.voice.createdAt)} · ${plural(person.voice.samples, 'sample')}`
+              : 'Named in sessions · no saved voice'}
           </span>
         </header>
       </div>
@@ -429,7 +474,7 @@ export function PersonPage({ personId, pages, people, onBack, onOpenPerson, onOp
             ) : (
               <p className="m-0 flex items-center gap-2 text-body-sm text-text-3">
                 <PeopleIcon />
-                No one else saved has been in a session with them.
+                No one else named has been in a session with them.
               </p>
             )}
           </section>

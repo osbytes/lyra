@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { PeopleActivity } from '../../../shared/peopleActivity'
-import { personDetail, personTotals, sortPeople, totalsOf, weekStart } from './peopleStats'
+import { personDetail, personTotals, rosterOf, sortPeople, totalsOf, weekStart } from './peopleStats'
 
 const ana = { id: 'a', name: 'Ana' }
 const ben = { id: 'b', name: 'Ben' }
@@ -14,9 +14,9 @@ const activity: PeopleActivity = {
     { id: 's2', title: 'Plan', startedAt: '2026-11-10T10:00:00', seconds: 200, talkSeconds: 120, tags: ['sync', 'plan'] }
   ],
   appearances: [
-    { sessionId: 's1', personId: 'a', talkSeconds: 300, lines: 10, words: 600 },
-    { sessionId: 's1', personId: 'b', talkSeconds: 200, lines: 5, words: 300 },
-    { sessionId: 's2', personId: 'a', talkSeconds: 30, lines: 2, words: 50 }
+    { sessionId: 's1', personId: 'a', name: 'Ana', talkSeconds: 300, lines: 10, words: 600 },
+    { sessionId: 's1', personId: 'b', name: 'Ben', talkSeconds: 200, lines: 5, words: 300 },
+    { sessionId: 's2', personId: 'a', name: 'Ana', talkSeconds: 30, lines: 2, words: 50 }
   ],
   actionItems: [
     { sessionId: 's1', owner: 'ana ', task: 'Send the deck', done: false },
@@ -122,5 +122,46 @@ describe('sortPeople', () => {
     // Ana and Ben were both last heard in s1: the name breaks the tie; never heard goes last.
     expect(names('recent')).toEqual(['Ana', 'Ben', 'Cy'])
     expect(names('name')).toEqual(['Ana', 'Ben', 'Cy'])
+  })
+})
+
+describe('rosterOf', () => {
+  const anaVoice = { id: 'a', name: 'Ana', self: false, createdAt: '2026-11-01T00:00:00', samples: 2 }
+  const saved = [anaVoice]
+  const named: PeopleActivity = {
+    sessions: activity.sessions,
+    appearances: [
+      // Linked to Ana's voice, and heard again as a second speaker only named "ana".
+      { sessionId: 's1', personId: 'a', name: 'Ana', talkSeconds: 300, lines: 10, words: 600 },
+      { sessionId: 's1', personId: null, name: 'ana', talkSeconds: 20, lines: 1, words: 40 },
+      { sessionId: 's1', personId: null, name: 'Dillon', talkSeconds: 200, lines: 5, words: 300 },
+      { sessionId: 's1', personId: null, name: 'Speaker 3', talkSeconds: 50, lines: 2, words: 90 },
+      // A deleted voice falls back to the name.
+      { sessionId: 's2', personId: 'gone', name: 'Dillon', talkSeconds: 30, lines: 2, words: 50 },
+      { sessionId: 's2', personId: null, name: 'Me', talkSeconds: 60, lines: 3, words: 100 }
+    ],
+    actionItems: []
+  }
+  const roster = rosterOf(saved, named)
+
+  it('lists saved voices first, then each name, and leaves "Speaker N" out', () => {
+    expect(roster.people.map((person) => [person.id, person.name, person.self, person.voice?.samples ?? null])).toEqual([
+      ['a', 'Ana', false, 2],
+      ['name:dillon', 'Dillon', false, null],
+      ['name:me', 'Me', true, null]
+    ])
+  })
+
+  it('points every speaker at who they are, adding up a person heard twice in one session', () => {
+    const totals = personTotals(roster.people, roster.activity)
+    expect(totalsOf(totals, 'a').talkSeconds).toBe(320)
+    expect(totalsOf(totals, 'a').sessions).toBe(1)
+    expect(totalsOf(totals, 'name:dillon').talkSeconds).toBe(230)
+    expect(totalsOf(totals, 'name:dillon').sessions).toBe(2)
+  })
+
+  it('keeps "Me" as someone else when a saved voice is you', () => {
+    const mine = rosterOf([{ ...anaVoice, self: true }], named)
+    expect(mine.people.find((person) => person.id === 'name:me')?.self).toBe(false)
   })
 })

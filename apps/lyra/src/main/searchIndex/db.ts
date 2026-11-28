@@ -548,8 +548,14 @@ export async function stats(db: Client, space: string | null): Promise<Omit<Inde
 const WORDS = `CASE WHEN trim(sg.text) = '' THEN 0
   ELSE length(trim(sg.text)) - length(replace(trim(sg.text), ' ', '')) + 1 END`
 
-/** Sessions with a saved person in them. */
-const WITH_PEOPLE = `SELECT DISTINCT session_id FROM speakers WHERE person_id IS NOT NULL`
+/**
+ * A speaker who is someone: linked to a saved voice, or given a name. "Speaker 2" is nobody yet
+ * (the renderer checks the same rule exactly; this only keeps the rows down).
+ */
+const SOMEONE = `(person_id IS NOT NULL OR (trim(name) != '' AND name NOT GLOB 'Speaker [0-9]*'))`
+
+/** Sessions with someone in them. */
+const WITH_PEOPLE = `SELECT DISTINCT session_id FROM speakers WHERE ${SOMEONE}`
 
 /** Who spoke where, for the People pages; the renderer works out the numbers. */
 export async function peopleActivity(db: Client): Promise<PeopleActivity> {
@@ -567,14 +573,12 @@ export async function peopleActivity(db: Client): Promise<PeopleActivity> {
   )
   const appearances = await rows(
     db,
-    z.object({ session_id: text, person_id: text, talk: num, lines: num, words: num }),
-    `SELECT session_id, person_id, sum(talk_sec) AS talk, sum(segments) AS lines, sum(words) AS words
-     FROM (
-       SELECT sp.session_id, sp.person_id, sp.talk_sec, sp.segments,
-         (SELECT coalesce(sum(${WORDS}), 0) FROM segments sg
-          WHERE sg.session_id = sp.session_id AND sg.cluster = sp.cluster) AS words
-       FROM speakers sp WHERE sp.person_id IS NOT NULL
-     ) GROUP BY session_id, person_id`
+    z.object({ session_id: text, person_id: textOrNull, name: text, talk: num, lines: num, words: num }),
+    `SELECT sp.session_id, sp.person_id, sp.name, sp.talk_sec AS talk, sp.segments AS lines,
+       (SELECT coalesce(sum(${WORDS}), 0) FROM segments sg
+        WHERE sg.session_id = sp.session_id AND sg.cluster = sp.cluster) AS words
+     FROM speakers sp WHERE ${SOMEONE}
+     ORDER BY sp.session_id, sp.n`
   )
   const actions = await rows(
     db,
@@ -597,6 +601,7 @@ export async function peopleActivity(db: Client): Promise<PeopleActivity> {
     appearances: appearances.map((row) => ({
       sessionId: row.session_id,
       personId: row.person_id,
+      name: row.name,
       talkSeconds: row.talk,
       lines: row.lines,
       words: row.words

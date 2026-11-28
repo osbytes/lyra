@@ -1372,10 +1372,13 @@ async function checkPeopleActivity(win: BrowserWindow): Promise<void> {
     upsertSpeaker(doc, 'c0', { name: 'Ana', personId: 'smoke-people-ana', confirmed: true })
     upsertSpeaker(doc, 'c1', { name: 'Ben', personId: 'smoke-people-ben', confirmed: true })
     upsertSpeaker(doc, 'c2', { name: 'Speaker 3' })
+    // Named by hand, with no saved voice: still someone.
+    upsertSpeaker(doc, 'c3', { name: 'Dillon' })
     replaceTranscript(doc, [
       { id: 's1', rawId: null, start: 0.5, end: 4, cluster: 'c0', confidence: null, text: 'The budget is ready to go.' },
       { id: 's2', rawId: null, start: 4, end: 6, cluster: 'c1', confidence: null, text: 'Thanks Ana.' },
-      { id: 's3', rawId: null, start: 6, end: 7, cluster: 'c2', confidence: null, text: 'Bye.' }
+      { id: 's3', rawId: null, start: 6, end: 7, cluster: 'c2', confidence: null, text: 'Bye.' },
+      { id: 's4', rawId: null, start: 7, end: 8, cluster: 'c3', confidence: null, text: 'See you.' }
     ])
   })
   try {
@@ -1383,14 +1386,15 @@ async function checkPeopleActivity(win: BrowserWindow): Promise<void> {
     const activity = PeopleActivity.parse(raw)
     const session = activity.sessions.find((entry) => entry.id === page.id)
     // Everyone's talk counts toward the session, the unnamed speaker too.
-    if (session?.title !== 'People smoke' || session.talkSeconds !== 6.5 || session.tags.join() !== 'planning') {
+    if (session?.title !== 'People smoke' || session.talkSeconds !== 7.5 || session.tags.join() !== 'planning') {
       fail(`session wrong: ${JSON.stringify(session)}`)
     }
     const mine = activity.appearances
       .filter((entry) => entry.sessionId === page.id)
-      .map((entry) => `${entry.personId}:${String(entry.talkSeconds)}:${String(entry.lines)}:${String(entry.words)}`)
+      .map((entry) => `${entry.personId ?? '-'}/${entry.name}:${String(entry.talkSeconds)}:${String(entry.lines)}:${String(entry.words)}`)
       .sort()
-    if (mine.join('|') !== 'smoke-people-ana:3.5:1:6|smoke-people-ben:2:1:2') fail(`appearances wrong: ${mine.join('|')}`)
+    // "Speaker 3" is nobody yet, so it's left out.
+    if (mine.join('|') !== '-/Dillon:1:1:2|smoke-people-ana/Ana:3.5:1:6|smoke-people-ben/Ben:2:1:2') fail(`appearances wrong: ${mine.join('|')}`)
     const items = activity.actionItems.filter((item) => item.sessionId === page.id)
     if (items.length !== 1 || items[0]?.owner !== 'Ana' || items[0].done) fail(`action items wrong: ${JSON.stringify(items)}`)
   } finally {
