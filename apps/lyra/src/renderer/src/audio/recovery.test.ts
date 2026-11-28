@@ -3,6 +3,7 @@ import {
   RECONNECT_DELAYS_MS,
   microphoneErrorMessage,
   nextStall,
+  nextSystemAudio,
   retryOpen,
   shouldReopenSystem,
   type StallState
@@ -138,5 +139,34 @@ describe('microphoneErrorMessage', () => {
   })
   it('leaves unknown errors to their own message', () => {
     expect(microphoneErrorMessage('TypeError', 'darwin')).toBeNull()
+  })
+})
+
+describe('nextSystemAudio', () => {
+  it('goes live when computer audio opens, from any try', () => {
+    expect(nextSystemAudio('retrying', 'restored')).toBe('live')
+    expect(nextSystemAudio('unavailable', 'restored')).toBe('live')
+    expect(nextSystemAudio('blocked', 'restored')).toBe('live')
+  })
+
+  it('gives up after the retries, and tries again on request', () => {
+    expect(nextSystemAudio('retrying', 'unavailable')).toBe('unavailable')
+    expect(nextSystemAudio('unavailable', 'retrying')).toBe('retrying')
+    expect(nextSystemAudio('live', 'retrying')).toBe('retrying')
+  })
+
+  it('keeps an OS refusal over the retries, which cannot fix it', () => {
+    expect(nextSystemAudio('retrying', 'blocked')).toBe('blocked')
+    expect(nextSystemAudio('blocked', 'retrying')).toBe('blocked')
+    expect(nextSystemAudio('blocked', 'unavailable')).toBe('blocked')
+  })
+
+  it('ignores a late refusal once computer audio is recording', () => {
+    expect(nextSystemAudio('live', 'blocked')).toBe('live')
+  })
+
+  it('stays off when computer audio was not asked for', () => {
+    expect(nextSystemAudio('off', 'restored')).toBe('off')
+    expect(nextSystemAudio('off', 'unavailable')).toBe('off')
   })
 })

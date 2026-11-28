@@ -6,7 +6,13 @@ import {
   type CaptureEvent,
   type CaptureHandle
 } from '../audio/capture'
-import { nextStall, type StallState } from '../audio/recovery'
+import {
+  nextStall,
+  nextSystemAudio,
+  type StallState,
+  type SystemAudioChange,
+  type SystemAudioState
+} from '../audio/recovery'
 import { SessionRecorder } from '../audio/sessionRecorder'
 import { rms } from '../../../shared/audio/vad'
 import type { TranscriptProgress } from '../../../shared/types'
@@ -28,10 +34,6 @@ const SILENT_MIC_RMS = 0.0002
 const SILENT_MIC_MS = 8000
 /** How long "Reconnected to …" stays up. */
 const RESTORED_NOTICE_MS = 8000
-const NO_SYSTEM_AUDIO_NOTICE = 'Couldn’t capture computer audio. Recording your microphone only.'
-/** The dock offers the system settings page beside this one. macOS applies the change at launch. */
-export const SYSTEM_AUDIO_BLOCKED_NOTICE =
-  'macOS isn’t letting Lyra record computer audio, so this is your microphone only. Allow it, then restart Lyra.'
 const SILENT_MIC_NOTICE = 'Your microphone isn’t picking anything up. Check that it isn’t muted.'
 const NARROWBAND_NOTICE =
   'Your microphone is a headset in call mode, which lowers the quality of your voice and the computer’s audio. A built-in or wired mic transcribes better.'
@@ -59,6 +61,7 @@ type Session = {
   /** The start that made this session: state is only reset by the stop of the newest one. */
   owner: Attempt
   stop: () => Promise<void>
+  retrySystem: () => void
 }
 
 const level = (samples: Float32Array): number => Math.min(1, rms(samples) * 14)
@@ -95,6 +98,12 @@ export function useDictation({ getDeviceId }: Options) {
   const [micName, setMicName] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  /**
+   * Computer audio, apart from `notice`: a mic notice mustn't hide that the other side of a call
+   * isn't being recorded. `systemHidden`: the user closed its message; the next change shows it.
+   */
+  const [systemAudio, setSystemAudio] = useState<SystemAudioState>('off')
+  const [systemHidden, setSystemHidden] = useState(false)
   const [progress, setProgress] = useState<TranscriptProgress | null>(null)
   /** The session being recorded (or starting, or finishing), wherever the window has navigated. */
   const [pageId, setPageId] = useState<string | null>(null)
@@ -145,6 +154,8 @@ export function useDictation({ getDeviceId }: Options) {
     const cancelled = (): boolean => attempt.cancelled
     setError(null)
     setNotice(null)
+    setSystemAudio('off')
+    setSystemHidden(false)
     setProgress(null)
     setPageId(record.pageId)
     setPhase('starting')
@@ -185,20 +196,25 @@ export function useDictation({ getDeviceId }: Options) {
 
       system = record.systemAudio ? await openSystemAudio() : null
       if (cancelled()) return await giveUp()
+      const changeSystem = (change: SystemAudioChange): void => {
+        if (owner.current !== attempt) return
+        setSystemAudio((current) => nextSystemAudio(current, change))
+        setSystemHidden(false)
+      }
+      // When it didn't open, the capture keeps a silent computer track and tries again.
+      setSystemAudio(!record.systemAudio ? 'off' : system ? 'live' : 'retrying')
       if (record.systemAudio && !system) {
-        setNotice(NO_SYSTEM_AUDIO_NOTICE)
         // Why, when the OS can say: a refused permission has a settings page to send them to.
         window.api.permissionStatus().then(
           (status) => {
-            if (status.screen === 'granted') return
-            setNotice((current) => (current === NO_SYSTEM_AUDIO_NOTICE ? SYSTEM_AUDIO_BLOCKED_NOTICE : current))
+            if (status.screen !== 'granted') changeSystem('blocked')
           },
           () => {
-            // The plain notice stands.
+            // The plain message stands.
           }
         )
       }
-      recorder = await SessionRecorder.start(record.pageId, system !== null)
+      recorder = await SessionRecorder.start(record.pageId, record.systemAudio)
       if (cancelled()) return await giveUp()
       const activeRecorder = recorder
 
@@ -228,6 +244,18 @@ export function useDictation({ getDeviceId }: Options) {
             }, RESTORED_NOTICE_MS)
             break
           }
+          case 'system-retrying': {
+            changeSystem('retrying')
+            break
+          }
+          case 'system-restored': {
+            changeSystem('restored')
+            break
+          }
+          case 'system-unavailable': {
+            changeSystem('unavailable')
+            break
+          }
         }
       }
       const reopenMic = async (): Promise<MediaStream> =>
@@ -240,7 +268,7 @@ export function useDictation({ getDeviceId }: Options) {
           void stopRef.current()
         },
         {
-          ...(system ? { system, reopenSystem: openSystemAudio } : {}),
+          ...(record.systemAudio ? { system, reopenSystem: openSystemAudio } : {}),
           reopenMic,
           onEvent: onCaptureEvent,
           onTracks: (micFrame: Float32Array, other: Float32Array | null) => {
@@ -306,10 +334,13 @@ export function useDictation({ getDeviceId }: Options) {
           if (restoredTimer) clearTimeout(restoredTimer)
           handle.stop()
           levelListeners.current.forEach((listener) => {
-            listener({ mic: 0, system: system ? 0 : null })
+            listener({ mic: 0, system: record.systemAudio ? 0 : null })
           })
           // Main transcribes what's left before this resolves.
           await activeRecorder.stop()
+        },
+        retrySystem: () => {
+          handle.retrySystem()
         }
       }
       setMicName(handle.micName)
@@ -324,6 +355,7 @@ export function useDictation({ getDeviceId }: Options) {
       log('dictation', 'failed to start', errorText(caught))
       if (owner.current === attempt) {
         setError(caught instanceof Error ? caught.message : 'Recording failed')
+        setSystemAudio('off')
         setPageId(null)
         setPhase('idle')
       }
@@ -366,6 +398,7 @@ export function useDictation({ getDeviceId }: Options) {
           recordingPage.current = null
           setProgress(null)
           setMicName('')
+          setSystemAudio('off')
           setPageId(null)
           setPhase('idle')
         }
@@ -407,6 +440,14 @@ export function useDictation({ getDeviceId }: Options) {
     setNotice(null)
   }, [])
 
+  /** The Retry on "Couldn't capture computer audio". */
+  const retrySystemAudio = useCallback(() => {
+    session.current?.retrySystem()
+  }, [])
+  const dismissSystemAudio = useCallback(() => {
+    setSystemHidden(true)
+  }, [])
+
   return {
     phase,
     recording: phase === 'listening' || phase === 'starting',
@@ -416,6 +457,10 @@ export function useDictation({ getDeviceId }: Options) {
     error,
     notice,
     dismissMessage,
+    systemAudio,
+    systemAudioMessageShown: !systemHidden,
+    retrySystemAudio,
+    dismissSystemAudio,
     start,
     stop,
     subscribeLevel

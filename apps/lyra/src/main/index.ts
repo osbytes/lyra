@@ -14,8 +14,10 @@ import {
   type IpcMainInvokeEvent,
   type WebContents
 } from 'electron'
+import { release } from 'node:os'
 import { join } from 'node:path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import { systemAudioSource } from './systemAudioSource'
 import { installAppMenu } from './appMenu'
 import { isAppPage, type AppPages } from './appOrigin'
 import { checkConfig, config, ConfigError, configSummary } from './config'
@@ -497,6 +499,8 @@ function registerPermissions(): void {
   })
   // Meetings ask for system audio via getDisplayMedia; answer with the loopback
   // device and the primary screen (its video track is discarded), so no picker shows.
+  const audio = systemAudioSource(process.platform, release())
+  log('capture', 'system audio source', { audio })
   session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
     const main = getMainWindow()
     const frame = request.frame
@@ -506,7 +510,10 @@ function registerPermissions(): void {
     }
     desktopCapturer.getSources({ types: ['screen'] }).then(
       ([screen]) => {
-        callback(screen ? { video: screen, audio: 'loopback' } : {})
+        // Electron types `audio` as 'loopback' | 'loopbackWithMute', but hands any of Chromium's
+        // loopback ids through; `loopbackWithoutChrome` is one (see systemAudioSource.ts).
+        // @ts-expect-error -- Chromium's process-loopback id isn't in Electron's type
+        callback(screen ? { video: screen, audio } : {})
       },
       (error: unknown) => {
         log('capture', 'could not list screens for system audio', String(error))

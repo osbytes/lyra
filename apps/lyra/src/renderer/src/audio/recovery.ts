@@ -70,6 +70,34 @@ export function shouldReopenSystem(change: {
   return change.before !== change.after
 }
 
+/**
+ * When computer audio didn't open as recording started: three more tries with backoff, since the
+ * output device is often briefly busy (another app opening it, a headset's software starting up).
+ */
+export const SYSTEM_START_DELAYS_MS: readonly number[] = [1000, 2000, 4000]
+
+/**
+ * Computer audio during a recording: not asked for, being recorded, being opened (again), given
+ * up on (a Retry away), or refused by the OS (a settings page away).
+ */
+export type SystemAudioState = 'off' | 'live' | 'retrying' | 'unavailable' | 'blocked'
+
+export type SystemAudioChange = 'retrying' | 'restored' | 'unavailable' | 'blocked'
+
+/** Follows what the capture reports about computer audio. A refusal by the OS outlasts the retries. */
+export function nextSystemAudio(state: SystemAudioState, change: SystemAudioChange): SystemAudioState {
+  if (state === 'off') return 'off'
+  switch (change) {
+    case 'restored':
+      return 'live'
+    case 'blocked':
+      return state === 'live' ? 'live' : 'blocked'
+    case 'retrying':
+    case 'unavailable':
+      return state === 'blocked' ? 'blocked' : change
+  }
+}
+
 /** How many stalled heartbeats in a row before the user is told nothing is being captured. */
 export const STALLS_BEFORE_NOTICE = 2
 

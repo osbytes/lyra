@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import type { ActivityItem } from '../../../shared/activity'
+import type { SystemAudioState } from '../audio/recovery'
 import { useMeetingStatus } from '../hooks/useMeetingStatus'
 import { clockLabel } from '../lib/format'
 import { log } from '../lib/log'
@@ -27,7 +28,7 @@ function useElapsed(since: number | null): number {
 type ReadoutProps = {
   startedAt: number | null
   micName: string | null
-  systemAudio: boolean
+  systemAudio: SystemAudioState
   /** The recorder's levels, for a meter per source. */
   subscribeLevel: SubscribeLevel
 }
@@ -48,12 +49,22 @@ export function RecordingReadout({ startedAt, micName, systemAudio, subscribeLev
         <MicIcon className="shrink-0" />
         <LevelMeter subscribe={subscribeLevel} track="mic" />
       </span>
-      {systemAudio ? (
+      {systemAudio === 'live' ? (
         <span className="inline-flex items-center gap-1" {...tip('Computer audio')}>
           <SpeakerIcon className="shrink-0" />
           <LevelMeter subscribe={subscribeLevel} track="system" />
         </span>
-      ) : null}
+      ) : systemAudio === 'off' ? null : (
+        // A flat meter would look like a quiet call; say it isn't being recorded at all.
+        <span
+          className="inline-flex items-center opacity-40"
+          role="img"
+          aria-label="Computer audio isn’t being recorded"
+          {...tip('Computer audio isn’t being recorded')}
+        >
+          <SpeakerIcon className="shrink-0" />
+        </span>
+      )}
     </span>
   )
 }
