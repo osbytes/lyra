@@ -95,6 +95,7 @@ const api: VoicePagesApi = {
   setSelfPerson: (id) => ipcRenderer.invoke('people:setSelf', id),
   deletePerson: (id) => ipcRenderer.invoke('people:delete', id),
   restorePerson: (id) => ipcRenderer.invoke('people:restore', id),
+  peopleActivity: () => ipcRenderer.invoke('people:activity'),
   resolveSpeaker: (pageId, speakerId, assignment) =>
     ipcRenderer.invoke('meeting:resolveSpeaker', pageId, speakerId, assignment),
   similarLines: (pageId, moved, from) => ipcRenderer.invoke('meeting:similarLines', pageId, moved, from),

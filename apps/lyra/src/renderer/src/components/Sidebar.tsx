@@ -10,6 +10,7 @@ import { rowTime } from '../lib/when'
 import { useContextMenu } from './ContextMenu'
 import { ScrollArea } from './Controls'
 import { HomeLink } from './Home'
+import { PeopleLink } from './PeoplePages'
 import { notify } from '../lib/toast'
 import {
   CheckIcon,
@@ -51,6 +52,9 @@ type Props = {
   /** Back to the Home dashboard; active while no session is open. */
   onHome: () => void
   homeActive: boolean
+  /** The People pages, under Home; active on the list or one person. */
+  onPeople: () => void
+  peopleActive: boolean
   /** Opens a session with its title selected, to rename it. */
   onRename: (id: string) => void
   /** Summaries are on, so a meeting's menu can write one. */
@@ -150,6 +154,8 @@ export const Sidebar = memo(function Sidebar({
   onTagFilter,
   onHome,
   homeActive,
+  onPeople,
+  peopleActive,
   onRename,
   canSummarize
 }: Props) {
@@ -361,6 +367,7 @@ export const Sidebar = memo(function Sidebar({
       </div>
 
       <HomeLink active={homeActive} onClick={onHome} />
+      <PeopleLink active={peopleActive} onClick={onPeople} />
       <div className="flex flex-col gap-2 px-2.5 pt-2 pb-2">
         <div className="flex items-center gap-2">
         <ToggleGroup

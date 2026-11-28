@@ -5,6 +5,7 @@ import {
   type PersonRecord,
   type SessionRecord
 } from './protocol'
+import type { PeopleActivity } from '../../shared/peopleActivity'
 import { PRESERVED_TABLES, SCHEMA, SCHEMA_VERSION, VECTOR_SCHEMA, VECTOR_STORE_VERSION } from './schema'
 
 /**
@@ -541,4 +542,65 @@ export async function stats(db: Client, space: string | null): Promise<Omit<Inde
       args: [space]
     })
   })
+}
+
+/** Words in a line: runs of non-space; an approximation SQLite can count without a tokenizer. */
+const WORDS = `CASE WHEN trim(sg.text) = '' THEN 0
+  ELSE length(trim(sg.text)) - length(replace(trim(sg.text), ' ', '')) + 1 END`
+
+/** Sessions with a saved person in them. */
+const WITH_PEOPLE = `SELECT DISTINCT session_id FROM speakers WHERE person_id IS NOT NULL`
+
+/** Who spoke where, for the People pages; the renderer works out the numbers. */
+export async function peopleActivity(db: Client): Promise<PeopleActivity> {
+  const sessions = await rows(
+    db,
+    z.object({ id: text, title: text, started_at: text, seconds: numOrNull, talk: num }),
+    `SELECT s.id, s.title, s.started_at, s.seconds,
+       (SELECT coalesce(sum(talk_sec), 0) FROM speakers WHERE session_id = s.id) AS talk
+     FROM sessions s WHERE s.id IN (${WITH_PEOPLE}) ORDER BY s.started_at DESC`
+  )
+  const tags = await rows(
+    db,
+    z.object({ session_id: text, tag: text }),
+    `SELECT session_id, tag FROM tags WHERE session_id IN (${WITH_PEOPLE}) ORDER BY session_id, n`
+  )
+  const appearances = await rows(
+    db,
+    z.object({ session_id: text, person_id: text, talk: num, lines: num, words: num }),
+    `SELECT session_id, person_id, sum(talk_sec) AS talk, sum(segments) AS lines, sum(words) AS words
+     FROM (
+       SELECT sp.session_id, sp.person_id, sp.talk_sec, sp.segments,
+         (SELECT coalesce(sum(${WORDS}), 0) FROM segments sg
+          WHERE sg.session_id = sp.session_id AND sg.cluster = sp.cluster) AS words
+       FROM speakers sp WHERE sp.person_id IS NOT NULL
+     ) GROUP BY session_id, person_id`
+  )
+  const actions = await rows(
+    db,
+    z.object({ session_id: text, owner: text, task: text, done: flag }),
+    `SELECT session_id, owner, task, done FROM action_items
+     WHERE owner IS NOT NULL AND trim(owner) != '' AND session_id IN (${WITH_PEOPLE})
+     ORDER BY session_id, n`
+  )
+  const tagsOf = new Map<string, string[]>()
+  for (const row of tags) tagsOf.set(row.session_id, [...(tagsOf.get(row.session_id) ?? []), row.tag])
+  return {
+    sessions: sessions.map((row) => ({
+      id: row.id,
+      title: row.title,
+      startedAt: row.started_at,
+      seconds: row.seconds,
+      talkSeconds: row.talk,
+      tags: tagsOf.get(row.id) ?? []
+    })),
+    appearances: appearances.map((row) => ({
+      sessionId: row.session_id,
+      personId: row.person_id,
+      talkSeconds: row.talk,
+      lines: row.lines,
+      words: row.words
+    })),
+    actionItems: actions.map((row) => ({ sessionId: row.session_id, owner: row.owner, task: row.task, done: row.done }))
+  }
 }

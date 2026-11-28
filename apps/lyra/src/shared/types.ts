@@ -1,6 +1,7 @@
 import type { Settings } from './settings'
 import type { KeySource, ProviderId } from './ai'
 import type { ActivityAction, ActivityItem } from './activity'
+import type { PeopleActivity } from './peopleActivity'
 import type { SessionChanges, SessionDoc, SessionOp } from './sessionDoc'
 
 export type Page = {
@@ -415,6 +416,8 @@ export type VoicePagesApi = {
   deletePerson: (id: string) => Promise<void>
   /** Undoes `deletePerson` (voiceprint included) until Lyra quits. */
   restorePerson: (id: string) => Promise<void>
+  /** Which sessions each saved person spoke in, and for how long (the People pages). */
+  peopleActivity: () => Promise<PeopleActivity>
   /** Speakers of a processed meeting note, or null if it isn't one. */
   /**
    * Works out who a session's speaker is: a saved person, or a new name. Teaches the voiceprint

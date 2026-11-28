@@ -179,6 +179,8 @@ export const IndexRequest = z.discriminatedUnion('type', [
   /** A session as the index holds it, rebuilt from its rows; for checks. */
   z.object({ type: z.literal('readSession'), id: z.string() }),
   z.object({ type: z.literal('readPeople') }),
+  /** Who spoke in which session, for the People pages. */
+  z.object({ type: z.literal('peopleActivity') }),
   z.object({ type: z.literal('stats') }),
   z.object({ type: z.literal('close') })
 ])
