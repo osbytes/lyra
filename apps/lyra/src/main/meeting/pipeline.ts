@@ -490,7 +490,8 @@ export async function processMeeting(recording: MeetingRecording): Promise<void>
           // stays Lyra's guess, so a later pass can still correct it.
           confirmed: false,
           confidence: speaker.confidence,
-          matches: speaker.matches
+          matches: speaker.matches,
+          introduced: null
         })
       }
       replaceTranscript(doc, segments)
@@ -570,10 +571,10 @@ export async function assignSpeaker(
     const into = speakerToMergeInto(doc, id, name, personId)
     if (into) {
       // Naming two speakers the same person merges them.
-      upsertSpeaker(doc, into, { name, personId, confirmed: true })
+      upsertSpeaker(doc, into, { name, personId, confirmed: true, introduced: null })
       mergeSpeakers(doc, id, into, false)
     } else {
-      upsertSpeaker(doc, id, { name, personId, confirmed: true })
+      upsertSpeaker(doc, id, { name, personId, confirmed: true, introduced: null })
     }
     return into
   })

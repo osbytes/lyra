@@ -251,7 +251,9 @@ export function writeLines(
           personId: speaker.personId,
           confirmed: false,
           confidence: speaker.confidence,
-          matches: speaker.matches
+          matches: speaker.matches,
+          // Asked again of the notes model once the pass is in (`speakerNaming.ts`).
+          introduced: null
         }
     fields.set(fresh, entry)
     // Written now so the next newSpeakerId doesn't hand the id out again.

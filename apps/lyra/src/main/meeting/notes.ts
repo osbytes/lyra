@@ -160,6 +160,11 @@ export function createMeetingNotes(deps: {
   writer: () => Promise<NotesWriter | null>
   /** After Lyra writes a summary into a session, with that summary (the title follows it). */
   onWritten?: (pageId: string, summary: string) => void
+  /**
+   * Before the summary a labeled recording owes, with the same writer: naming its speakers from
+   * the transcript (`speakerNaming.ts`), so the summary uses the names. Never throws.
+   */
+  beforeSummary?: (pageId: string, writer: NotesWriter) => Promise<unknown>
 }): MeetingNotesService {
   const jobs = createJobs()
   /** The bulk run going, if any: whether it was asked to stop, and the session it is on. */
@@ -329,7 +334,10 @@ export function createMeetingNotes(deps: {
         log('notes', 'not generated', { pageId, error: message })
         return null
       })
-      if (writer) await generateNotes(pageId, 'auto')
+      if (writer) {
+        await deps.beforeSummary?.(pageId, writer)
+        await generateNotes(pageId, 'auto')
+      }
     } catch {
       // A failed run was already reported through meeting:status and the log.
     } finally {

@@ -3,7 +3,14 @@ import { join } from 'node:path'
 import { log } from '../log'
 import { ensureModelFile, hasModelFile, type DownloadProgress, type ModelFile } from '../models'
 import { downloadReporter, reportModelFailure, setModelStatus } from '../modelStatus'
-import { cleanTitle, PACKAGED_FLAG, TitleSuggestion, WrittenNotes, type NotesLine } from './notesFormat'
+import {
+  cleanTitle,
+  PACKAGED_FLAG,
+  SpeakersFound,
+  TitleSuggestion,
+  WrittenNotes,
+  type NotesLine
+} from './notesFormat'
 import { NotesWorkerResponse, type NotesWorkerRequest } from './notesProtocol'
 import type { NotesWriter } from './notesWriter'
 
@@ -97,7 +104,7 @@ function getWorker(): UtilityProcess {
 
 type Work =
   | { kind: 'notes'; modelPath: string; lines: NotesLine[]; known: Readonly<Record<string, unknown>> }
-  | { kind: 'title'; modelPath: string; text: string }
+  | { kind: 'title' | 'speakers'; modelPath: string; text: string }
 type Hooks = Pick<Pending, 'onProgress' | 'onAnswer'>
 
 /** Sends one request to the worker; aborting `signal` stops it there too. */
@@ -149,6 +156,12 @@ export function createLocalNotesWriter(): NotesWriter {
       const answer = await ask({ kind: 'title', modelPath, text }, signal)
       const parsed = TitleSuggestion.safeParse(answer)
       return parsed.success ? cleanTitle(parsed.data.title) : null
+    },
+    async speakers(transcript, signal) {
+      const modelPath = await ensureModelFile(MODEL)
+      // The grammar shapes the answer; this checks what crossed the process boundary.
+      const parsed = SpeakersFound.safeParse(await ask({ kind: 'speakers', modelPath, text: transcript }, signal))
+      return parsed.success ? parsed.data : { speakers: [] }
     },
     // A title alone never starts the ~2 GB download.
     canTitle: () => hasModelFile(MODEL)

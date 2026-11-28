@@ -183,7 +183,7 @@ process) once changes pause for a quarter second, and at least every second whil
 SessionDoc
 ├─ title, summary, notes: string      ← notes are the user's markdown; summary is generated notes
 ├─ tags: string[]
-├─ speakers: { id, name, personId, confirmed, confidence, matches }[]
+├─ speakers: { id, name, personId, confirmed, confidence, matches, introduced }[]
 ├─ transcript: segment[]              ← one per line, in time order
 │   ├─ id, rawId                       (rawId → the RawPass segment it came from)
 │   ├─ start, end                      (seconds; audio playback and the margin timestamp)

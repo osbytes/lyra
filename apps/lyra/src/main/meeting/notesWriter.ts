@@ -7,10 +7,12 @@ import {
   type LanguageModel
 } from 'ai'
 import type { DownloadProgress } from '../models'
-import { estimateTokens, fitText, lineText, titlePrompt, type TokenCounter } from './notesChunks'
+import { estimateTokens, fitText, lineText, speakersPrompt, titlePrompt, type TokenCounter } from './notesChunks'
 import { CALL_TIMEOUT_MS, callSignal, isAbort } from './notesJobs'
 import {
   cleanTitle,
+  SPEAKERS_SYSTEM_PROMPT,
+  SpeakersFound,
   TITLE_SYSTEM_PROMPT,
   TitleSuggestion,
   type MeetingNotes,
@@ -48,6 +50,11 @@ export type NotesWriter = {
   /** A short heading, or null when the model gave nothing usable. */
   title(text: string, signal?: AbortSignal): Promise<string | null>
   /**
+   * Who the unnamed speakers in a numbered transcript are (`SPEAKERS_SYSTEM_PROMPT`), as far as
+   * what was said makes clear. Like `title`, one short call on the start of the text.
+   */
+  speakers(transcript: string, signal?: AbortSignal): Promise<SpeakersFound>
+  /**
    * Whether a title can be asked for now without a slow first step (a 2 GB download). Notes may
    * still take one; titles never start it.
    */
@@ -81,6 +88,8 @@ function friendlyError(name: string, error: unknown, signal?: AbortSignal): unkn
 /** How much a model may write: notes are short, and a cap stops a runaway answer billing on. */
 const NOTES_OUTPUT_TOKENS = 2048
 const TITLE_OUTPUT_TOKENS = 100
+/** Room for a few speakers' labels, names and line numbers. */
+export const SPEAKERS_OUTPUT_TOKENS = 400
 
 export type ModelWriterOptions = {
   /** See `NotesWriter.onDevice`; false unless the caller knows the server is on this machine. */
@@ -152,6 +161,21 @@ export function createModelNotesWriter(model: LanguageModel, name: string, optio
         throw friendlyError(name, error, signal)
       }
     },
+    async speakers(transcript, signal) {
+      try {
+        const { output } = await generateText({
+          model,
+          instructions: SPEAKERS_SYSTEM_PROMPT,
+          prompt: speakersPrompt(fitText(transcript, budget, count)),
+          output: Output.object({ schema: SpeakersFound, name: 'speakers' }),
+          maxOutputTokens: SPEAKERS_OUTPUT_TOKENS,
+          abortSignal: callSignal(signal, timeoutMs)
+        })
+        return output
+      } catch (error) {
+        throw friendlyError(name, error, signal)
+      }
+    },
     canTitle: () => Promise.resolve(true)
   }
 }
@@ -178,7 +202,11 @@ export async function testNotesWriter(writer: NotesWriter, signal?: AbortSignal)
 }
 
 /** A writer that answers with fixed values and records what it was asked: for tests. */
-export function createFakeNotesWriter(answer: { notes: MeetingNotes; title: string | null }): NotesWriter & {
+export function createFakeNotesWriter(answer: {
+  notes: MeetingNotes
+  title: string | null
+  speakers?: SpeakersFound
+}): NotesWriter & {
   readonly asked: string[]
 } {
   const asked: string[] = []
@@ -193,6 +221,10 @@ export function createFakeNotesWriter(answer: { notes: MeetingNotes; title: stri
     title(text) {
       asked.push(text)
       return Promise.resolve(answer.title)
+    },
+    speakers(transcript) {
+      asked.push(transcript)
+      return Promise.resolve(answer.speakers ?? { speakers: [] })
     },
     canTitle: () => Promise.resolve(true)
   }

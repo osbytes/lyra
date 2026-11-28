@@ -29,6 +29,13 @@ const finite = z.number().refine(Number.isFinite, 'Expected a finite number')
 export const SpeakerMatch = z.object({ personId: z.string(), score: finite })
 export type SpeakerMatch = z.infer<typeof SpeakerMatch>
 
+/**
+ * A name the transcript gives a speaker ("I'm Maya", "Maya, go ahead"), shown by `lineId`, as
+ * the notes model read it. Only Lyra's guess: the speaker is "likely" them until the user says yes.
+ */
+export const SpeakerIntroduction = z.object({ name: z.string(), lineId: z.string() })
+export type SpeakerIntroduction = z.infer<typeof SpeakerIntroduction>
+
 export const SpeakerEntry = z.object({
   id: z.string(),
   name: z.string(),
@@ -38,7 +45,9 @@ export const SpeakerEntry = z.object({
   /** Voice match for `personId`, 0–1; null when no saved voice matched. */
   confidence: finite.nullable(),
   /** Saved voices ranked by how well they match, best first. */
-  matches: z.array(SpeakerMatch)
+  matches: z.array(SpeakerMatch),
+  /** Where the name came from, when it's what the transcript says (`meeting/speakerNames.ts`). */
+  introduced: SpeakerIntroduction.nullable().default(null)
 })
 export type SpeakerEntry = z.infer<typeof SpeakerEntry>
 
@@ -395,6 +404,7 @@ export function upsertSpeaker(
     confirmed: false,
     confidence: null,
     matches: [],
+    introduced: null,
     ...defined,
     id
   })
@@ -710,7 +720,7 @@ export function applyOp(doc: SessionDoc, op: SessionOp): void {
       return
     case 'name': {
       const into = speakerToMergeInto(doc, op.id, op.name, op.personId)
-      upsertSpeaker(doc, into ?? op.id, { name: op.name, personId: op.personId, confirmed: true })
+      upsertSpeaker(doc, into ?? op.id, { name: op.name, personId: op.personId, confirmed: true, introduced: null })
       if (into) mergeSpeakers(doc, op.id, into, true)
       return
     }

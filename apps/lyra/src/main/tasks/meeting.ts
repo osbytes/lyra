@@ -125,6 +125,18 @@ export async function runMeetingFixture(task: MeetingTask, services: Services): 
       await writeFile(output, JSON.stringify({ seconds: +took, labels, segments, words }, null, 2), 'utf8')
     }
 
+    // With --notes, the speakers are named from the transcript first, as after a real recording.
+    if (task.notes) {
+      overrideSettings({ notesEngine: task.notes })
+      const namingStarted = Date.now()
+      const named = await services.nameSpeakers(page.id)
+      const guesses = (await readSession(page.id)).speakers.map((speaker) =>
+        speaker.introduced ? `${speaker.id}=${speaker.name}` : `${speaker.id}=(${speaker.name})`
+      )
+      const namingTook = ((Date.now() - namingStarted) / 1000).toFixed(1)
+      process.stdout.write(`meeting-fixture speaker names (${task.notes}, ${namingTook} s): ${String(named)} named; ${guesses.join(', ')}\n`)
+    }
+
     // Name the first speaker and save their voice, as the speaker picker does.
     const first = labeled.speakers[0]
     if (!first) {

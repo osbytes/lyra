@@ -64,7 +64,7 @@ describe('legacySessionDoc', () => {
       notes: 'Hello world',
       tags: ['design'],
       speakers: [
-        { id: 'c1', name: 'Sam', personId: null, confirmed: true, confidence: null, matches: [{ personId: 'p1', score: 0.75 }] }
+        { id: 'c1', name: 'Sam', personId: null, confirmed: true, confidence: null, matches: [{ personId: 'p1', score: 0.75 }], introduced: null }
       ],
       // The fixture's line text differs from its original without `edited` set, so (as Lyra read
       // it) there is no overlay to rebuild: the text is kept as stored.
