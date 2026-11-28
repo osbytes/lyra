@@ -10,7 +10,8 @@ const speaker = (id: string, name: string, personId: string | null = null): Spea
   personId,
   confirmed: false,
   confidence: null,
-  matches: []
+  matches: [],
+  introduced: null
 })
 
 const label = (option: SpeakerOption): string =>

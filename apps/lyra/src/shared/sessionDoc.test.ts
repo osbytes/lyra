@@ -103,7 +103,8 @@ describe('upsertSpeaker', () => {
         personId: 'p1',
         confirmed: true,
         confidence: null,
-        matches: [{ personId: 'p1', score: 0.9 }]
+        matches: [{ personId: 'p1', score: 0.9 }],
+        introduced: null
       }
     ])
   })
@@ -425,6 +426,18 @@ describe('applyOp', () => {
       ['c0', false],
       ['c0', true]
     ])
+  })
+
+  it('drops the name a speaker gave once the user names them', () => {
+    const doc = meeting()
+    upsertSpeaker(doc, 'c0', { name: 'Maya', introduced: { name: 'Maya', lineId: 'a' } })
+    applyOp(doc, { op: 'name', id: 'c0', name: 'Maya', personId: 'p1' })
+    expect(doc.speakers.find((entry) => entry.id === 'c0')).toMatchObject({
+      name: 'Maya',
+      personId: 'p1',
+      confirmed: true,
+      introduced: null
+    })
   })
 
   it('drops edits past the end of a line', () => {

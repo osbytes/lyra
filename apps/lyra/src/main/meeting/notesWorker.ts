@@ -12,8 +12,14 @@ import type {
 import { z } from 'zod'
 import { loadLlamaModule } from '../llamaModule'
 import { log } from '../log'
-import { fitText, promptTokens, titlePrompt, type TokenCounter } from './notesChunks'
-import { NOTES_SYSTEM_PROMPTS, TitleSuggestion, TITLE_SYSTEM_PROMPT } from './notesFormat'
+import { fitText, promptTokens, speakersPrompt, titlePrompt, type TokenCounter } from './notesChunks'
+import {
+  NOTES_SYSTEM_PROMPTS,
+  SPEAKERS_SYSTEM_PROMPT,
+  SpeakersGrammar,
+  TitleSuggestion,
+  TITLE_SYSTEM_PROMPT
+} from './notesFormat'
 import { callSignal } from './notesJobs'
 import { limitNotesSchema } from './notesLimits'
 import { writeNotes } from './notesPipeline'
@@ -23,6 +29,8 @@ const CONTEXT_SIZE = 8192
 /** Notes for one section are short; the cap also stops a model that never closes its JSON. */
 const NOTES_OUTPUT_TOKENS = 1536
 const TITLE_OUTPUT_TOKENS = 64
+/** A few speakers' labels, names and line numbers. */
+const SPEAKERS_OUTPUT_TOKENS = 400
 /** The chat template's own tokens around the system prompt and the message. */
 const TEMPLATE_TOKENS = 64
 /** A 3B model on a slow CPU takes a few minutes on a full context; longer than this, it's stuck. */
@@ -131,6 +139,12 @@ async function answer(
       const text = titlePrompt(fitText(request.text, room - count(titlePrompt('')), count))
       return prompt(model, { grammar, system: TITLE_SYSTEM_PROMPT, text, maxTokens: TITLE_OUTPUT_TOKENS, signal })
     }
+    case 'speakers': {
+      const grammar = await runtime.createGrammarForJsonSchema(grammarSchema(SpeakersGrammar))
+      const room = CONTEXT_SIZE - SPEAKERS_OUTPUT_TOKENS - count(SPEAKERS_SYSTEM_PROMPT) - TEMPLATE_TOKENS
+      const text = speakersPrompt(fitText(request.text, room - count(speakersPrompt('')), count))
+      return prompt(model, { grammar, system: SPEAKERS_SYSTEM_PROMPT, text, maxTokens: SPEAKERS_OUTPUT_TOKENS, signal })
+    }
     case 'notes': {
       // One grammar per answer shape (whole meeting, section, overview), built on first use.
       const grammars = new Map<z.ZodObject, LlamaGrammar>()
@@ -202,7 +216,8 @@ process.parentPort.on('message', (event: Electron.MessageEvent) => {
       void enqueue(unload)
       return
     case 'notes':
-    case 'title': {
+    case 'title':
+    case 'speakers': {
       const controller = new AbortController()
       running.set(request.id, controller)
       const onProgress = (done: number, total: number): void => {

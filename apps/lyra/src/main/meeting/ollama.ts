@@ -6,11 +6,19 @@
  * it is unit-tested with a fake `fetch`.
  */
 import { z } from 'zod'
-import { estimateTokens, fitText, promptTokens, titlePrompt } from './notesChunks'
+import { estimateTokens, fitText, promptTokens, speakersPrompt, titlePrompt } from './notesChunks'
 import { callSignal } from './notesJobs'
-import { cleanTitle, NOTES_SYSTEM_PROMPTS, TITLE_SYSTEM_PROMPT, TitleSuggestion } from './notesFormat'
+import {
+  cleanTitle,
+  NOTES_SYSTEM_PROMPTS,
+  SPEAKERS_SYSTEM_PROMPT,
+  SpeakersFound,
+  SpeakersGrammar,
+  TITLE_SYSTEM_PROMPT,
+  TitleSuggestion
+} from './notesFormat'
 import { writeNotes } from './notesPipeline'
-import type { NotesWriter } from './notesWriter'
+import { SPEAKERS_OUTPUT_TOKENS, type NotesWriter } from './notesWriter'
 
 export type Fetch = typeof fetch
 
@@ -286,6 +294,28 @@ export function createOllamaNotesWriter(options: OllamaWriterOptions): NotesWrit
           signal
         )
         return cleanTitle(answer.title)
+      } catch (error) {
+        throw ollamaError(name, root, model, error, signal)
+      }
+    },
+    async speakers(transcript, signal) {
+      try {
+        const numCtx = await contextFor(fetchFn, root, model, apiKey)
+        const room = numCtx - SPEAKERS_OUTPUT_TOKENS - estimateTokens(SPEAKERS_SYSTEM_PROMPT) - 64
+        return await chat(
+          {
+            system: SPEAKERS_SYSTEM_PROMPT,
+            prompt: speakersPrompt(fitText(transcript, room, estimateTokens)),
+            // Ollama turns the schema into a llama.cpp grammar: see `SpeakersGrammar`.
+            schema: SpeakersGrammar,
+            numCtx,
+            numPredict: SPEAKERS_OUTPUT_TOKENS,
+            // The summary is asked for next: keep the model loaded for it.
+            unload: false
+          },
+          SpeakersFound,
+          signal
+        )
       } catch (error) {
         throw ollamaError(name, root, model, error, signal)
       }

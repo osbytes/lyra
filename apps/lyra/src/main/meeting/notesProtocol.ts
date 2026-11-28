@@ -13,6 +13,8 @@ export const NotesWorkerRequest = z.discriminatedUnion('kind', [
     known: z.record(z.string(), z.unknown())
   }),
   z.object({ kind: z.literal('title'), id: z.number(), modelPath: z.string(), text: z.string() }),
+  /** Who the unnamed speakers in a numbered transcript are (`SpeakersFound`). */
+  z.object({ kind: z.literal('speakers'), id: z.number(), modelPath: z.string(), text: z.string() }),
   /** Stops request `id`, running or queued. */
   z.object({ kind: z.literal('cancel'), id: z.number() }),
   /** Frees the model's memory once the queued work is done (a recording is starting). */

@@ -83,6 +83,7 @@ import { MockLanguageModelV4 } from 'ai/test'
 import type { ProviderId } from '../../shared/ai'
 import { parseSettings, type Settings } from '../../shared/settings'
 import { createMeetingNotes } from '../meeting/notes'
+import { suggestSpeakerNames } from '../meeting/speakerNaming'
 import { activityItem, markSeen } from '../activity'
 import { reportLargerModelFailure } from '../meeting/meetingActivity'
 import { NOTES_PIPELINE } from '../meeting/notesPipeline'
@@ -248,6 +249,49 @@ async function checkNotesWriters(): Promise<void> {
   await service.generateNotes(page.id)
   const summary = (await readSession(page.id)).summary
   if (!summary.includes('Fix the installer') || local.asked.length !== 1) fail(`service summary: ${JSON.stringify(summary)}`)
+
+  // Speaker names: the adapter returns the model's answer as parsed, and a recording's owed
+  // summary first names its speakers from the transcript, so the summary has the names.
+  const naming = new MockLanguageModelV4({
+    doGenerate: () =>
+      Promise.resolve({
+        content: [{ type: 'text', text: JSON.stringify({ speakers: [{ label: 'Speaker A', name: 'Priya', line: 1 }] }) }],
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: {
+          inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+          outputTokens: { total: 1, text: 1, reasoning: 0 }
+        },
+        warnings: []
+      })
+  })
+  const heard = await createModelNotesWriter(naming, 'mock').speakers('[1] Speaker A: Hi, I’m Priya.')
+  if (heard.speakers[0]?.name !== 'Priya') fail(`adapter speakers: ${JSON.stringify(heard)}`)
+  const named = await createPage()
+  await editSession(named.id, (doc) => {
+    upsertSpeaker(doc, 'c0', { name: 'Speaker 1' })
+    upsertSpeaker(doc, 'c1', { name: 'Dana', confirmed: true })
+    replaceTranscript(doc, [
+      { id: 'p0', rawId: 'p0', start: 0, end: 2, cluster: 'c0', confidence: null, text: 'Hi, I’m Priya.' },
+      { id: 'p1', rawId: 'p1', start: 2, end: 4, cluster: 'c1', confidence: null, text: 'Welcome, Priya. We ship Friday.' }
+    ])
+  })
+  const namer = createFakeNotesWriter({
+    notes,
+    title: null,
+    speakers: { speakers: [{ label: 'Speaker A', name: 'Priya', line: 1 }, { label: 'Dana', name: 'Sam', line: 2 }] }
+  })
+  await createMeetingNotes({ writer: () => Promise.resolve(namer), beforeSummary: suggestSpeakerNames }).writeOwed(named.id)
+  const priya = (await readSession(named.id)).speakers.find((speaker) => speaker.id === 'c0')
+  if (priya?.name !== 'Priya' || priya.confirmed || priya.introduced?.lineId !== 'p0') {
+    fail(`speaker named from the transcript: ${JSON.stringify(priya)}`)
+  }
+  if ((await readSession(named.id)).speakers.find((speaker) => speaker.id === 'c1')?.name !== 'Dana') {
+    fail('a named speaker was renamed from the transcript')
+  }
+  if (namer.asked[0] !== '[1] Speaker A: Hi, I’m Priya.\n[2] Dana: Welcome, Priya. We ship Friday.') {
+    fail(`speakers were not asked first, as shown: ${JSON.stringify(namer.asked)}`)
+  }
+  await deletePage(named.id)
 
   // Each run records how the notes were made, so notes from an older pipeline can be redone in bulk.
   const run = (await readSession(page.id)).notesRun

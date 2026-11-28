@@ -150,7 +150,7 @@ type SpeakerState = 'sure' | 'likely' | 'unknown'
 function stateOf(speaker: SpeakerEntry | undefined): SpeakerState {
   if (!speaker) return 'unknown'
   if (speaker.confirmed || (speaker.confidence ?? 0) >= SURE_MATCH) return 'sure'
-  return speaker.personId ? 'likely' : 'unknown'
+  return speaker.personId !== null || speaker.introduced !== null ? 'likely' : 'unknown'
 }
 
 function tier(confidence: number | null): 1 | 2 | 3 {
@@ -267,6 +267,16 @@ function SpeakerPicker({
   const matched = speaker.personId
     ? people.find((person) => person.id === speaker.personId)
     : undefined
+  // The line that names them ("I'm Maya", "Maya, go ahead"), when that's where the guess comes from.
+  const introLine = speaker.introduced
+    ? lines.find((entry) => entry.id === speaker.introduced?.lineId)
+    : undefined
+  // Who "Yes" names: the saved person, or a new one by the name they gave.
+  const guess: Option | null = matched
+    ? { kind: 'person', person: matched, score: speaker.confidence, group: 'match' }
+    : speaker.introduced
+      ? { kind: 'new', name: speaker.introduced.name }
+      : null
 
   const options = useMemo(
     () => speakerOptions({ query, speaker, speakers: allSpeakers, people }),
@@ -357,12 +367,12 @@ function SpeakerPicker({
       ? `Who said “${words.length > 32 ? `${words.slice(0, 31).trimEnd()}…` : words}”?`
       : justLine
       ? 'Who said this?'
-      : state === 'likely' && matched
-        ? `Is this ${matched.name}?`
+      : state === 'likely' && guess
+        ? `Is this ${matched?.name ?? speaker.name}?`
         : state === 'unknown'
           ? `Who is ${speaker.name}?`
           : speaker.name
-  const sample = line ?? own[0]
+  const sample = line ?? introLine ?? own[0]
   const position = useAnchoredPosition(dialog, picker.anchor)
 
   const active = options[highlight]
@@ -414,7 +424,7 @@ function SpeakerPicker({
             <small className="text-label text-text-3">
               {justLine
                 ? `${clock(line.start)}${line.confidence === null ? '' : ` · ${percent(line.confidence)} like ${speaker.name}`}`
-                : `${String(own.length)} ${own.length === 1 ? 'line' : 'lines'}${speaker.confidence === null ? '' : ` · ${percent(speaker.confidence)} voice match`}`}
+                : `${String(own.length)} ${own.length === 1 ? 'line' : 'lines'}${speaker.confidence === null ? '' : ` · ${percent(speaker.confidence)} voice match`}${introLine && state === 'likely' ? ` · named at ${clock(introLine.start)}` : ''}`}
             </small>
           </div>
           {sampleButton}
@@ -454,14 +464,10 @@ function SpeakerPicker({
           </div>
         ) : null}
 
-        {scope === 'all' && state === 'likely' && matched ? (
+        {scope === 'all' && state === 'likely' && guess ? (
           <div className="picker-confirm mb-2 flex gap-2">
-            <Button
-              variant="primary"
-              className="flex-1"
-              onClick={() => void run({ kind: 'person', person: matched, score: speaker.confidence, group: 'match' })}
-            >
-              Yes, it’s {matched.name}
+            <Button variant="primary" className="flex-1" onClick={() => void run(guess)}>
+              Yes, it’s {matched?.name ?? speaker.name}
             </Button>
             <Button onClick={() => input.current?.focus()}>Someone else</Button>
           </div>
@@ -1216,7 +1222,9 @@ export function Transcript({
               {...tip(
                 stateOf(speaker) === 'likely' && speaker.confidence !== null
                   ? `${percent(speaker.confidence)} voice match · click to confirm`
-                  : stateOf(speaker) === 'unknown'
+                  : stateOf(speaker) === 'likely' && speaker.introduced
+                    ? 'Named in the transcript · click to confirm'
+                    : stateOf(speaker) === 'unknown'
                     ? 'No saved voice matched · click to name'
                     : speaker.name
               )}

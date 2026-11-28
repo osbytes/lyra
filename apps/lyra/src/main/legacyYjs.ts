@@ -806,7 +806,8 @@ export function legacySessionDoc(doc: LegacyDoc): SessionDoc {
       personId: typeof entry.personId === 'string' ? entry.personId : null,
       confirmed: entry.confirmed === true,
       confidence: numOrNull(entry.confidence),
-      matches: legacyMatches(entry.matches)
+      matches: legacyMatches(entry.matches),
+      introduced: null
     }
   })
   const seq = meta.speakerSeq

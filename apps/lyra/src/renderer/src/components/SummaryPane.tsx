@@ -50,7 +50,7 @@ function useTalk(page: OpenPage) {
 
 function certaintyOf(speaker: OpenPage['speakers'][number]): Certainty {
   if (speaker.confirmed || (speaker.confidence ?? 0) >= SURE_MATCH) return 'sure'
-  return speaker.personId ? 'likely' : 'unknown'
+  return speaker.personId !== null || speaker.introduced !== null ? 'likely' : 'unknown'
 }
 
 /** A block under the notes: a caps label, like "Your notes", with no frame of its own. */
